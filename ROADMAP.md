@@ -83,15 +83,19 @@ Patients and patient numbers; the OPD encounter; a thin admission with bed stays
 
 Service-point queues and appointments; triage and vitals; consultation notes; ICD diagnoses; orders that raise charges; printable prescriptions. Lab: test catalogue, specimen accession, results entry, and verification by a second person.
 
-**Exit:** a full OPD journey (registration → triage → consultation → lab → pharmacy → cashier) with no manual charge posting.
+**Exit:** a full OPD journey (registration → triage → consultation → lab → cashier) with no manual charge posting. Medication orders produce printable prescriptions; dispensing joins the journey in P4.
 
 ### P4 · Pharmacy and stores
 
 **Size:** L.
 
-Main store, pharmacy and ward sub-stores; transfers; goods received; batches and FEFO dispensing; dispense → charge; returns; the controlled-drug register; stock take. Units of sale wait on open question 2 in `SPEC.md`.
+Main store, pharmacy and ward sub-stores; transfers; goods received; batches and FEFO dispensing; dispense → charge; returns; the controlled-drug register; stock take; reorder levels; expiry and low-stock alerts (the nightly job in `CLAUDE.md` §7). Units of sale wait on open question 2 in `SPEC.md`.
 
-**Exit:** the stock identity holds per store and batch (on hand = Σ movements, never negative); the controlled-drug register balances against movements.
+**Exit:**
+- The stock identity holds per store and batch (on hand = Σ movements, never negative).
+- The controlled-drug register balances against movements.
+- A batch nearing expiry and an item below its reorder level each produce an alert.
+- The full OPD journey now includes pharmacy (registration → triage → consultation → lab → pharmacy → cashier), still with no manual charge posting.
 
 ### P5 · Inpatient clinical
 
@@ -108,13 +112,17 @@ Bed board; transfers; nursing notes; observation charts; the medication administ
 Everything the pilot needs to leave its current system on one day:
 
 - **Migration** from the pilot's current system: patients and legacy numbers (`SCHEMA.md` §6), open balances and deposits. The hospital is new, so the volume is small; the tooling is still built to be reused.
+- **Opening stock**, from a physical count on cutover day: per store and batch (batch number, expiry, quantity, cost), loaded as `opening_balance` movements (`SCHEMA.md` §8). Controlled drugs also get an opening entry in their register, matching the old register's closing balance. Without this, stock on hand would be zero on day one and nothing could be dispensed.
 - **Reports a facility must file or run daily:** MOH 705A/705B and 717, revenue and cashier summaries, stock status.
 - **PWA offline support** at the service points that need it.
 - **Backups and a disaster-recovery drill**, and a security review before real patient data arrives.
 - **Training and the simplicity test** (`SPEC.md` §7.9): new staff in each role do their daily tasks after one short session, watched and timed. Where they get stuck is fixed before go-live.
 - **Legal clearance** from P0: written confirmation that the pilot may run this system before certification.
 
-**Exit:** the pilot runs entirely on this system for cash and M-Pesa patients, with the old system switched off.
+**Exit:**
+- The pilot runs entirely on this system for cash and M-Pesa patients, with the old system switched off.
+- Stock on hand per store and batch, after the opening load, equals the signed count sheets.
+- Each controlled drug's register balance equals the old register's closing balance.
 
 ### P7 · Payers and claims
 

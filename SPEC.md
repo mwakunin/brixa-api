@@ -89,7 +89,7 @@ All taken 2026-11-03. D1 and D8 were revised the same day, once it was clear tha
 | **D1** | What if DHA certification is slow? | There is **no manual SHA channel** to fall back on. While certification runs, lead with hospitals that are not SHA-contracted or have little SHA volume: they can run on this product for cash and private insurers. Partnering with an already-certified vendor is the fallback if certification stalls. Go/no-go at the Phase 0 gate (`ROADMAP.md`) |
 | **D2** | May unit prices carry fractional shillings (e.g. KES 2.50 a tablet)? | **Yes for unit prices.** Each charge's amount is rounded to whole shillings once, at capture. Invoice totals, payments, allocations and refunds are whole shillings |
 | **D3** | Snapshot a charge's price at capture or at billing? | **At capture.** Re-pricing is an explicit, audited act on unassigned charges only |
-| **D4** | Default handling of amounts a payer disallows | **A policy per reason code.** Facility-caused reasons (coding errors, missing documents, late submission) default to **write-off**. Patient-caused reasons (not a member, limit exceeded, item not covered) default to **rebill to the patient**. Always approved by a second person (rule 24) |
+| **D4** | Default handling of amounts a payer disallows | **A policy per reason code.** Facility-caused reasons (coding errors, missing documents, late submission) default to **write-off**: the disallowance is absorbed as the facility's loss, with no second deduction (`SCHEMA.md` §7.5). Patient-caused reasons (not a member, limit exceeded, item not covered) default to **rebill to the patient**. Always approved by a second person (rule 24) |
 | **D5** | Access model for sensitive records (HIV, mental health, GBV) | **v1: facility-wide roles, plus break-glass** for sensitive categories: state a reason, audit it, alert the record owner. Ward and department scoping later |
 | **D6** | Is the facility the RLS boundary? | **Yes** (tenant = facility). Two branches of one group keep separate patient registers. Sharing patients across a group later needs a cross-facility patient index above the tenants, not a looser tenant |
 | **D7** | eTIMS in v1? | **Decided by a tax adviser's answer in Phase 0.** Fiscal numbering (`SCHEMA.md` §6.1) and the outbox already leave room for an eTIMS gateway, so waiting costs little |
@@ -131,7 +131,7 @@ All taken 2026-11-03. D1 and D8 were revised the same day, once it was clear tha
 - Charges are captured at source and priced by one function from the encounter's billing plan. An item missing from a payer's price list is not covered.
 - Every money row belongs to a debtor account (patient or payer). Invoices are split by account, and a co-pay is a split of a charge.
 - Deposits are payments held as credit on the patient's account; refunds return what payer cover leaves unused.
-- Claims are immutable once submitted; corrections are new versions. Disallowed amounts move by adjustment documents, then rebill or write-off.
+- Claims are immutable once submitted; corrections are new versions. A disallowed amount is one adjustment on the payer's invoice, then either rebilled or absorbed as a loss, never deducted twice.
 - Invoice lines and charges **snapshot the price**, so later price changes never alter past bills.
 
 ### 7.4 Pharmacy and stores
@@ -139,7 +139,7 @@ All taken 2026-11-03. D1 and D8 were revised the same day, once it was clear tha
 - **Per-facility inventory items** reference a catalogue entry and carry the facility's own cost price and selling price; payer price lists add their own prices.
 - **Stores:** a main store, the pharmacy, and ward and other sub-stores, with requested, approved and received transfers.
 - **Batch-level stock:** batch number, expiry date, quantity, cost price. Dispense first-expiry-first-out. Generate expiry and low-stock alerts.
-- **Stock ledger:** every receipt, dispense, transfer, adjustment, return and write-off is an entry; current stock is derived per store and batch. Supports audit and stock-take reconciliation.
+- **Stock ledger:** every opening balance, receipt, dispense, transfer, adjustment, return and write-off is an entry; current stock is derived per store and batch. Supports audit and stock-take reconciliation.
 - **Prices:** cost and selling price kept separate. Optional default markup percentage per category, overridable per item. Only `facility_admin` and `finance_manager` change prices; changes are audited with old and new values.
 - **Controlled substances:** catalogue items carry a controlled flag and schedule (I–IV). Dispensing these writes to a separate register (patient, prescriber, quantity, running balance) and is restricted to authorized roles.
 - **Flow:** medication order → dispense (deducts stock, raises the charge) → invoice line.

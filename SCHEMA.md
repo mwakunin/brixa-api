@@ -266,7 +266,7 @@ Re-pricing an encounter (for example, coverage confirmed after the charges were 
 
 ### 7.5 Adjustments: credit notes, waivers, write-offs, disallowances
 
-`invoice_adjustments`: `invoice_id`, `account_id`, `kind` (credit_note \| waiver \| write_off \| payer_disallowance), `amount_cents`, `number` (credit notes are fiscal documents), `reason_code`, `requested_by`, `approved_by` with `CHECK (approved_by <> requested_by)` (rule 24), `reversed_at` + reason.
+`invoice_adjustments`: `invoice_id`, `account_id`, `kind` (credit_note \| waiver \| write_off \| payer_disallowance), `amount_cents`, `number` (credit notes are fiscal documents), `reason_code`, `disposition` (rebill \| absorb; set on payer disallowances only, `CHECK ((kind = 'payer_disallowance') = (disposition IS NOT NULL))`), `requested_by`, `approved_by` with `CHECK (approved_by <> requested_by)` (rule 24), `reversed_at` + reason.
 
 Adjustments **share an invoice's capacity with allocations** (M3). An invoice cannot be both paid in full and credited.
 
@@ -274,8 +274,13 @@ Adjustments **share an invoice's capacity with allocations** (M3). An invoice ca
 
 1. Adjudication records `approved_cents` on the claim (§9).
 2. A `payer_disallowance` adjustment for the difference is raised on the payer's invoice.
-3. The facility's policy for that reason code (`SPEC.md` D4) decides what happens next. By default, facility-caused reasons are written off and patient-caused reasons are rebilled. Either a **supplementary invoice** to the patient (or a secondary payer), whose `rebill` lines point at that adjustment, or a **write-off**.
-4. Σ rebilled from an adjustment ≤ the adjustment (M5).
+3. The facility's policy for that reason code (`SPEC.md` D4) sets the disallowance's **disposition** when it is raised, and a second person approves it. By default, facility-caused reasons are absorbed (what D4 calls a write-off) and patient-caused reasons are rebilled.
+   - **`rebill`:** a **supplementary invoice** to the patient (or a secondary payer), whose `rebill` lines point at the disallowance. Σ rebilled ≤ the disallowance (M5).
+   - **`absorb`:** nothing further is billed, and no rebill line may point at it. The disallowance itself is the facility's loss.
+
+**One deduction per amount.** The disallowance already removed the amount from the payer's invoice. Absorbing it raises **no** second adjustment there: a `write_off` on the same invoice would deduct the amount twice, and M3 refuses it, because allocations plus the disallowance already equal the total. The `write_off` kind is for a different case: a patient-account invoice (including a supplementary one) that the facility stops pursuing, i.e. bad debt. Each amount is therefore deducted once, on exactly one invoice.
+
+**Reversing an adjustment** changes only its reversal columns, needs a second person's approval like the original, and returns the amount to the invoice's balance. A disallowance cannot be reversed while a live rebill line points at it; credit the supplementary invoice first.
 
 Resubmitting a claim does **not** raise a credit note. It creates a new claim version (§9), and money moves only at final adjudication.
 
@@ -289,7 +294,7 @@ The cross-row invariants live in `lib/billing.ts` and `lib/allocations.ts`, the 
 | **M2** | Σ live allocations + Σ live refunds ≤ the payment's amount | Service, payment locked |
 | **M3** | Σ live allocations + Σ live adjustments ≤ the invoice's total | Service, invoices locked |
 | **M4** | Σ live assignments ≤ the charge's amount; no final bill while a live charge is not fully assigned | Service, charges locked |
-| **M5** | Σ rebilled from a disallowance ≤ the disallowance | Service |
+| **M5** | Σ rebilled from a disallowance ≤ the disallowance, and zero if its disposition is `absorb`; a disallowance with live rebill lines cannot be reversed | Service |
 | **M6** | A remittance is one payment on the payer's account; its lines become allocations plus disallowance adjustments in one transaction; an unexplained shortfall stays open | Service, one transaction |
 | **M7** | Σ charges = Σ invoiced + derived allowances + waivers; Σ payments = Σ allocations + Σ refunds + unallocated credit | Reconciliation tests and a daily check |
 | **M8** | Lock order: encounter → charges (by id) → payment → invoices (by id) | Documented once, followed everywhere (rule 23) |
@@ -310,7 +315,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 
 **Lab.** `lab_tests` is the facility's catalogue (specimen type, reference ranges by sex and age, billable item). `specimens` carry the accession number (§6.1), collection and receipt times, and a rejection reason. `lab_results` are versioned with `supersedes_id`. `verified_by` must differ from the person who entered the result, and a result reaches the clinician only once verified.
 
-**Pharmacy and stores.** `inventory_items` reference the shared `drug_catalogue` (or describe a non-drug consumable) and a billable item. `stores` covers the main store, the pharmacy, wards and other sub-stores. `stock_batches` hold batch number, expiry and cost. `stock_movements` are append-only signed quantities (receipt, dispense, transfer out/in, adjustment, write-off, return) with typed source FKs. **On hand per store and batch = Σ movements, never stored, never negative** (checked under a batch lock). `dispenses` take stock first-expiry-first-out and raise the charge. `controlled_drug_register` is append-only with a running balance per item and store. `goods_received` records the supplier as text in v1, since supplier payables come later. Units of sale are still open (`SPEC.md` §4).
+**Pharmacy and stores.** `inventory_items` reference the shared `drug_catalogue` (or describe a non-drug consumable) and a billable item. `stores` covers the main store, the pharmacy, wards and other sub-stores. `stock_batches` hold batch number, expiry and cost. `stock_movements` are append-only signed quantities (opening balance, receipt, dispense, transfer out/in, adjustment, write-off, return) with typed source FKs. An opening balance loads counted stock at go-live; it is its own kind so it never reads as a purchase. Each item has a reorder level per store, which drives the low-stock alert. **On hand per store and batch = Σ movements, never stored, never negative** (checked under a batch lock). `dispenses` take stock first-expiry-first-out and raise the charge. `controlled_drug_register` is append-only with a running balance per item and store. `goods_received` records the supplier as text in v1, since supplier payables come later. Units of sale are still open (`SPEC.md` §4).
 
 ---
 
@@ -349,13 +354,13 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 
 **Immutable once finalised** (a trigger refuses updates to frozen columns; corrections are a credit note, a new version or an addendum):
 
-- finalised invoices and their lines; adjustments
+- finalised invoices and their lines
 - submitted claims and their items
 - signed clinical notes and discharge summaries
 - verified lab results
 - dispenses
 
-**Reversal only:** payments, allocations, charges and refunds may change only their reversal or cancellation columns.
+**Reversal only:** payments, allocations, charges, refunds and invoice adjustments may change only their reversal or cancellation columns. Every other column is frozen from the moment the row is written.
 
 The school SaaS's `mpesa_transactions_immutable()` and `report_cards_snapshot_frozen()` triggers are the pattern.
 
