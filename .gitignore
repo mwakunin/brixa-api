@@ -1,0 +1,15 @@
+# Identifying or commercial details — the repository is public
+PRIVATE-NOTES.md
+
+# deps and build output
+node_modules/
+dist/
+coverage/
+
+# env
+.env
+.env.production
+
+# editors
+.idea/
+.DS_Store
