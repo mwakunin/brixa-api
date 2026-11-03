@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import db from "@/db";
 import { user } from "@/db/schema";
+import { AccountExistsError } from "@/lib/accounts";
+import { auth } from "@/lib/auth";
 import { createTestAccount, nextEmail, postJson, resetDb, TEST_PASSWORD } from "@/test/helpers";
 
 /**
@@ -33,6 +35,20 @@ describe("accounts", () => {
 
     expect(res.status).toBe(200);
     expect(res.headers.get("set-cookie")).toContain("session_token");
+  });
+
+  it("finishes an account a failed run left without a password, instead of colliding with it", async () => {
+    const email = nextEmail();
+    // What a run that died between its two writes leaves behind.
+    const context = await auth.$context;
+    await context.internalAdapter.createUser({ email, name: "Half Made", emailVerified: true }, { method: "admin" });
+
+    await createTestAccount(email);
+
+    const res = await postJson("/api/auth/sign-in/email", { email, password: TEST_PASSWORD });
+    expect(res.status).toBe(200);
+    // A finished account is not made twice.
+    await expect(createTestAccount(email)).rejects.toBeInstanceOf(AccountExistsError);
   });
 
   it("refuses a wrong password", async () => {

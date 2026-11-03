@@ -1,4 +1,4 @@
-import { desc, sql } from "drizzle-orm";
+import { desc, eq, ne, sql } from "drizzle-orm";
 import * as HttpStatusCodes from "stoker/http-status-codes";
 
 import type { outbox } from "@/db/schema";
@@ -13,7 +13,8 @@ import type { CreateInvitationRoute, ListInvitationsRoute, RevokeInvitationRoute
 type InvitationRow = typeof invitations.$inferSelect;
 type OutboxStatus = (typeof outbox.$inferSelect)["status"];
 
-const DELIVERY = { pending: "queued", done: "sent", failed: "failed" } as const;
+/** `skipped`: the outbox found nothing to send (revoked, expired, suspended). */
+const DELIVERY = { pending: "queued", done: "sent", skipped: "not_sent", failed: "failed" } as const;
 
 /** Expiry is derived, never stored (SCHEMA.md conventions). */
 function present(row: InvitationRow, sendStatus: OutboxStatus | null, now = new Date()) {
@@ -51,26 +52,38 @@ export const createInvitation: TenantRouteHandler<CreateInvitationRoute> = async
   }
 };
 
+/** Closed invitations listed: history, capped. Open ones are never capped. */
+const CLOSED_LIMIT = 200;
+
 export const listInvitations: TenantRouteHandler<ListInvitationsRoute> = async (c) => {
-  // RLS scopes both tables to the facility; a facility sends a handful a
-  // month, so the cap is a backstop rather than pagination.
-  const rows = await c.var.db
-    .select({
-      invitation: invitations,
-      // The outer column is named in full: in a one-table query Drizzle
-      // renders `invitations.id` as a bare "id", which inside this subquery
-      // would mean outbox.id and match nothing.
-      sendStatus: sql<OutboxStatus | null>`(
-        SELECT o.status FROM outbox o
-        WHERE o.subject_id = "invitations"."id" AND o.operation = 'invitation.send'
-        ORDER BY o.created_at DESC LIMIT 1
-      )`,
-    })
-    .from(invitations)
-    .orderBy(desc(invitations.createdAt), desc(invitations.id))
-    .limit(200);
+  const columns = {
+    invitation: invitations,
+    // The outer column is named in full: in a one-table query Drizzle renders
+    // `invitations.id` as a bare "id", which inside this subquery would mean
+    // outbox.id and match nothing.
+    sendStatus: sql<OutboxStatus | null>`(
+      SELECT o.status FROM outbox o
+      WHERE o.subject_id = "invitations"."id" AND o.operation = 'invitation.send'
+      ORDER BY o.created_at DESC LIMIT 1
+    )`,
+  };
+  const newestFirst = [desc(invitations.createdAt), desc(invitations.id)];
+
+  /*
+   * Every pending invitation, uncapped: its link works until it expires, so
+   * an admin must always be able to find it to revoke it. At most one per
+   * address (a unique index), so this is bounded by the people invited and
+   * not yet arrived. History is capped. RLS scopes both to the facility.
+   */
+  const [open, closed] = await Promise.all([
+    c.var.db.select(columns).from(invitations).where(eq(invitations.status, "pending")).orderBy(...newestFirst),
+    c.var.db.select(columns).from(invitations).where(ne(invitations.status, "pending")).orderBy(...newestFirst).limit(CLOSED_LIMIT),
+  ]);
 
   const now = new Date();
+  const rows = [...open, ...closed].sort((a, b) =>
+    b.invitation.createdAt.getTime() - a.invitation.createdAt.getTime() || b.invitation.id.localeCompare(a.invitation.id));
+
   return c.json({
     invitations: rows.map(r => present(r.invitation, r.sendStatus, now)),
   }, HttpStatusCodes.OK);

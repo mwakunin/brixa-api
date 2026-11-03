@@ -9,7 +9,7 @@ import { drainOutbox } from "@/jobs/outbox-worker";
  * the email is printed to the console (lib/email.ts).
  */
 drainOutbox().then((tally) => {
-  console.log(`Outbox: ${tally.done} done, ${tally.retried} to retry, ${tally.failed} failed.`);
+  console.log(`Outbox: ${tally.done} done, ${tally.skipped} skipped, ${tally.retried} to retry, ${tally.failed} failed.`);
   process.exit(0);
 }, (err) => {
   console.error("Outbox drain failed:", err instanceof Error ? err.message : err);

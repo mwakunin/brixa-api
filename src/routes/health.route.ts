@@ -1,14 +1,19 @@
 import { createRoute, z } from "@hono/zod-openapi";
-import { sql } from "drizzle-orm";
 import * as HttpStatusCodes from "stoker/http-status-codes";
 import { jsonContent } from "stoker/openapi/helpers";
 
-import db from "@/db";
+import { checkConnections } from "@/db";
 import { createRouter } from "@/lib/create-app";
 
 const HealthSchema = z.object({
   status: z.enum(["ok", "degraded"]),
+  /** `up` only when every connection below is. */
   database: z.enum(["up", "down"]),
+  connections: z.object({
+    owner: z.boolean(),
+    app: z.boolean().describe("hospital_app: every tenant request"),
+    auth: z.boolean().describe("hospital_auth: sign-in and sessions"),
+  }),
   uptime: z.number().describe("Process uptime in seconds"),
 });
 
@@ -20,56 +25,31 @@ const router = createRouter()
       path: "/health",
       summary: "Readiness check",
       description:
-        "Verifies the process is up AND that it can reach the database. Use "
-        + "this for load-balancer / container readiness probes, not `GET /`.",
+        "Verifies the process is up AND that each of its three database "
+        + "connections can run a query, since each signs in as its own role. "
+        + "Use this for readiness probes, not `GET /`.",
       responses: {
         [HttpStatusCodes.OK]: jsonContent(HealthSchema, "Everything is reachable"),
-        [HttpStatusCodes.SERVICE_UNAVAILABLE]: jsonContent(
-          HealthSchema,
-          "The database is unreachable",
-        ),
+        [HttpStatusCodes.SERVICE_UNAVAILABLE]: jsonContent(HealthSchema, "A connection is down"),
       },
     }),
     async (c) => {
-      let database: "up" | "down" = "up";
+      // Bounded by the pools' connection timeout and a statement_timeout
+      // (db/index.ts), so the probe fails rather than hangs.
+      const connections = await checkConnections();
+      const up = connections.owner && connections.app && connections.auth;
 
-      try {
-        /*
-         * Bounded on both halves, and bounded by Postgres rather than by a
-         * timer here.
-         *
-         * Waiting for a connection is capped by the pool's
-         * `connectionTimeoutMillis` (see db/index.ts). Running the query is
-         * capped by a transaction-local `statement_timeout`, so a probe that
-         * outlives its welcome is cancelled server-side instead of being
-         * abandoned client-side while the backend keeps working — which is
-         * what a bare `Promise.race` would do, and why this is not one.
-         *
-         * A readiness probe that can hang is worse than one that fails: the
-         * load balancer learns nothing either way, but a hung probe also holds
-         * a connection while it does so.
-         */
-        await db.transaction(async (tx) => {
-          await tx.execute(sql`SET LOCAL statement_timeout = 2000`);
-          await tx.execute(sql`select 1`);
-        });
-      }
-      catch (err) {
-        database = "down";
-        c.var.logger.error({ err }, "health check: database unreachable");
-      }
-
-      const body = {
-        status: database === "up" ? "ok" as const : "degraded" as const,
-        database,
-        uptime: Math.round(process.uptime()),
-      };
+      if (!up)
+        c.var.logger.error({ connections }, "health check: a database connection is down");
 
       return c.json(
-        body,
-        database === "up"
-          ? HttpStatusCodes.OK
-          : HttpStatusCodes.SERVICE_UNAVAILABLE,
+        {
+          status: up ? "ok" as const : "degraded" as const,
+          database: up ? "up" as const : "down" as const,
+          connections,
+          uptime: Math.round(process.uptime()),
+        },
+        up ? HttpStatusCodes.OK : HttpStatusCodes.SERVICE_UNAVAILABLE,
       );
     },
   );

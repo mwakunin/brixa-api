@@ -27,9 +27,10 @@ const InvitationSchema = z.object({
   state: z.enum(["pending", "expired", "accepted", "revoked"]),
   /**
    * Whether the email went out. `failed` means the outbox gave up: revoke and
-   * invite again once the address is fixed.
+   * invite again once the address is fixed. `not_sent` means it was revoked,
+   * expired or its facility suspended before the email was due.
    */
-  delivery: z.enum(["queued", "sent", "failed"]),
+  delivery: z.enum(["queued", "sent", "not_sent", "failed"]),
   expiresAt: z.string(),
   createdAt: z.string(),
 });

@@ -305,7 +305,7 @@ export const outbox = pgTable("outbox", {
   facilityId: uuid().notNull().references(() => facilities.id),
   operation: text().$type<"invitation.send">().notNull(),
   subjectId: uuid().notNull(),
-  status: text().$type<"pending" | "done" | "failed">().default("pending").notNull(),
+  status: text().$type<"pending" | "done" | "skipped" | "failed">().default("pending").notNull(),
   attempts: integer().default(0).notNull(),
   /** Not before this instant: the retry backoff, and a claimed job's lease. */
   availableAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
@@ -317,7 +317,7 @@ export const outbox = pgTable("outbox", {
   index("outbox_pending_index").on(t.availableAt).where(sql`${t.status} = 'pending'`),
   index().on(t.facilityId, t.operation, t.subjectId),
   oneOf("outbox_operation_known", t.operation, ["invitation.send"]),
-  oneOf("outbox_status_known", t.status, ["pending", "done", "failed"]),
+  oneOf("outbox_status_known", t.status, ["pending", "done", "skipped", "failed"]),
   check("outbox_attempts_nonnegative", sql`${t.attempts} >= 0`),
 ]);
 

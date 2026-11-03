@@ -16,10 +16,24 @@ export const PASSWORD_MAX_LENGTH = 128;
 /** A person set up by an administrator: "admin" is Better Auth's name for it. */
 const PROVISIONED = { method: "admin" } as const;
 
+/** An address that already has a usable account: creating another would collide. */
+export class AccountExistsError extends Error {
+  constructor() {
+    super("An account with that email already exists");
+    this.name = "AccountExistsError";
+  }
+}
+
 /**
  * Creates an account with a password, its address already proven: the
  * superadmin script and the test harness call this directly, and accepting an
  * invitation (which proves the address) calls it through `claimAccount`.
+ *
+ * The password is hashed before anything is written, and the user row and
+ * its credential are two writes Better Auth's adapter cannot join in one
+ * transaction. If the second fails, the user is left with no password; a
+ * rerun finds that user and finishes it rather than tripping over the unique
+ * email, so the superadmin script can simply be run again.
  */
 export async function createAccount(input: {
   email: string;
@@ -28,24 +42,36 @@ export async function createAccount(input: {
   role?: "user" | "superadmin";
 }) {
   const context = await auth.$context;
-  const created = await context.internalAdapter.createUser(
-    {
-      email: input.email.toLowerCase(),
-      name: input.name,
-      emailVerified: true,
-      role: input.role ?? "user",
-    },
+  const email = input.email.toLowerCase();
+  const hash = await context.password.hash(input.password);
+
+  const found = await context.internalAdapter.findUserByEmail(email, { includeAccounts: true });
+  if (found && found.accounts.some(a => a.providerId === "credential" && a.password))
+    throw new AccountExistsError();
+
+  const user = found?.user ?? await context.internalAdapter.createUser(
+    { email, name: input.name, emailVerified: true, role: input.role ?? "user" },
     PROVISIONED,
   );
 
   await context.internalAdapter.linkAccount({
-    userId: created.id,
+    userId: user.id,
     providerId: "credential",
-    accountId: created.id,
-    password: await context.password.hash(input.password),
+    accountId: user.id,
+    password: hash,
   });
 
-  return created;
+  return user;
+}
+
+/**
+ * Removes an account an unfinished invitation acceptance created, with its
+ * credential and sessions (both cascade). Only ever for an account made
+ * moments ago by the same request: nothing else references it yet.
+ */
+export async function discardAccount(userId: string): Promise<void> {
+  const context = await auth.$context;
+  await context.internalAdapter.deleteUser(userId);
 }
 
 /**

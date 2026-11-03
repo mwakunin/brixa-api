@@ -6,7 +6,7 @@ import db, { pool } from "@/db";
 import { auditLog, invitations, memberships, numberSeries, outbox } from "@/db/schema";
 import { drainOutbox } from "@/jobs/outbox-worker";
 import { sentEmails } from "@/lib/email";
-import { hashToken } from "@/lib/invitations";
+import { hashToken, invitationToken } from "@/lib/invitations";
 import {
   addMembership,
   facilityHeaders,
@@ -85,7 +85,8 @@ describe("onboarding a facility", () => {
       email: body.admin.email,
       roles: ["facility_admin"],
       status: "pending",
-      tokenHash: null,
+      // Set at creation from the derived token, so every send links the same.
+      tokenHash: hashToken(invitationToken(created.adminInvitationId)),
     });
 
     const jobs = await db.select().from(outbox).where(eq(outbox.facilityId, created.id));
@@ -204,7 +205,7 @@ describe("the invitation, from email to first sign-in", () => {
     expect((await accept({ token, password: NEW_PASSWORD })).status).toBe(404);
   });
 
-  it("survives redelivery: a second send replaces the link, and only the newer one works", async () => {
+  it("survives redelivery: a second send carries the same link, which still works", async () => {
     const { adminEmail } = await onboarded();
     const firstToken = tokenFor(adminEmail);
 
@@ -212,12 +213,38 @@ describe("the invitation, from email to first sign-in", () => {
     await pool.query("UPDATE outbox SET status = 'pending', available_at = now()");
     await drainOutbox();
 
-    const secondToken = tokenFor(adminEmail);
     expect(sentEmails).toHaveLength(2);
-    expect(secondToken).not.toBe(firstToken);
-    expect((await accept({ token: firstToken, password: NEW_PASSWORD })).status).toBe(404);
-    expect((await accept({ token: secondToken, password: NEW_PASSWORD })).status).toBe(200);
+    expect(tokenFor(adminEmail)).toBe(firstToken);
+    expect((await accept({ token: firstToken, password: NEW_PASSWORD })).status).toBe(200);
     expect(await db.select().from(memberships)).toHaveLength(1);
+  });
+
+  it("removes the account a failed acceptance created, so a retry starts clean", async () => {
+    const { adminEmail } = await onboarded();
+    const token = tokenFor(adminEmail);
+
+    // Make the tenant half fail after the account has been written.
+    await pool.query(`
+      CREATE FUNCTION fail_membership() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'simulated failure'; END; $$;
+      CREATE TRIGGER fail_membership BEFORE INSERT ON memberships
+        FOR EACH ROW EXECUTE FUNCTION fail_membership();
+    `);
+    try {
+      expect((await accept({ token, password: "the-first-password" })).status).toBe(500);
+    }
+    finally {
+      await pool.query("DROP TRIGGER fail_membership ON memberships; DROP FUNCTION fail_membership();");
+    }
+
+    const { rows } = await pool.query("SELECT id FROM \"user\" WHERE email = $1", [adminEmail]);
+    expect(rows).toEqual([]);
+
+    // The retry's password is the one that counts.
+    const retry = await accept({ token, password: NEW_PASSWORD });
+    expect(retry.status).toBe(200);
+    expect((await retry.json()).accountCreated).toBe(true);
+    await expect(signIn(adminEmail, NEW_PASSWORD)).resolves.toBeDefined();
   });
 
   it("sends nothing for an invitation revoked before the outbox ran", async () => {
@@ -228,7 +255,7 @@ describe("the invitation, from email to first sign-in", () => {
 
     const tally = await drainOutbox();
 
-    expect(tally.done).toBe(1);
+    expect(tally).toMatchObject({ done: 0, skipped: 1 });
     expect(sentEmails).toEqual([]);
   });
 
@@ -312,6 +339,24 @@ describe("a facility admin inviting staff", () => {
     const delivery = Object.fromEntries(listed.invitations.map((i: { email: string; delivery: string }) => [i.email, i.delivery]));
 
     expect(delivery).toEqual({ [sent]: "sent", [bounced]: "failed", [queued]: "queued" });
+  });
+
+  it("always lists every pending invitation, however much history there is", async () => {
+    const facility = await makeFacility();
+    const admin = await signedInUserAt(facility.id, ["facility_admin"]);
+    const open = await (await invite(facility.id, admin, { email: nextEmail(), name: "Still Waiting", roles: ["nurse"] })).json();
+    await pool.query("UPDATE invitations SET created_at = now() - interval '1 day'");
+    // Over two hundred newer, closed invitations.
+    await pool.query(`
+      INSERT INTO invitations (facility_id, email, name, roles, invited_by, status, expires_at)
+      SELECT $1, 'old' || n || '@example.test', 'Old Invitee', ARRAY['nurse'], $2, 'revoked', now()
+      FROM generate_series(1, 205) AS n
+    `, [facility.id, admin.id]);
+
+    const listed = await (await app.request("/staff/invitations", { headers: facilityHeaders(facility.id, admin) })).json();
+
+    expect(listed.invitations.map((i: { id: string }) => i.id)).toContain(open.id);
+    expect(listed.invitations).toHaveLength(201);
   });
 
   it("is for the facility admin only", async () => {

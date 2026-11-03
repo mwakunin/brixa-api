@@ -167,11 +167,14 @@ jobs:
             -e BETTER_AUTH_URL=https://example.test \
             -e RESEND_API_KEY=x -e RESEND_FROM_EMAIL=noreply@example.test \
             hospital-api:ci
+          # Without a database the roles cannot be verified, so the instance
+          # must answer, but stay unready: /health reports the database down
+          # and everything else is a 503 (src/lib/startup-gate.ts).
           for i in $(seq 1 20); do
-            if curl -fsS http://localhost:9999/ >/dev/null 2>&1; then
-              echo "container serving requests"
-              # /health must report the database as down, not pretend it is up.
-              curl -s http://localhost:9999/health | tee /dev/stderr | grep -q '"database":"down"'
+            if health=$(curl -s http://localhost:9999/health) && [ -n "$health" ]; then
+              echo "container answering: $health"
+              echo "$health" | grep -q '"database":"down"'
+              test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:9999/)" = "503"
               docker rm -f api-smoke >/dev/null
               exit 0
             fi

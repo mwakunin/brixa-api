@@ -4,30 +4,33 @@ import { serve } from "@hono/node-server";
 import app from "./app";
 import { assertConnectionsAreRestricted, PrivilegedRoleError } from "./db";
 import env from "./env";
+import { createStartupGate } from "./lib/startup-gate";
 
 /*
- * Checked before serving, so a privileged app or auth role never answers a
- * single request: its limits would be inert. The process exits.
+ * No request is served until the app and auth roles are proven unable to
+ * bypass row-level security (lib/startup-gate.ts).
  *
- * An unreachable database does not stop the process: it still serves, and
- * /health reports the database as down, which is what a readiness probe needs
- * to see. The wait is bounded by the pool's connection timeout.
+ * A privileged role stops the process: retrying cannot fix it. An unreachable
+ * database does not: the check retries in the background, every request but
+ * /health is answered 503 meanwhile, and /health shows which connection is
+ * down, which is what a readiness probe needs to see.
  */
-try {
-  await assertConnectionsAreRestricted();
-}
-catch (err) {
-  if (err instanceof PrivilegedRoleError) {
-    console.error(err.message);
+const gate = createStartupGate({
+  verify: assertConnectionsAreRestricted,
+  isFatal: err => err instanceof PrivilegedRoleError,
+  onFatal: (err) => {
+    console.error((err as Error).message);
     process.exit(1);
-  }
-  console.warn("Could not verify the database roles at boot (database unreachable?):", (err as Error).message);
-}
+  },
+  onRetry: err => console.warn("Database roles not verified yet; retrying:", (err as Error).message),
+});
+
+await gate.start();
 
 const port = env.PORT;
 console.log(`Server is running on http://localhost:${port}`);
 
 serve({
-  fetch: app.fetch,
+  fetch: gate.wrap(app.fetch),
   port,
 });

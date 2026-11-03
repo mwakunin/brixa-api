@@ -1,5 +1,5 @@
 import { and, eq, sql } from "drizzle-orm";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 
 import type { AppDb } from "@/db";
 import type { MembershipRole } from "@/db/schema";
@@ -9,7 +9,7 @@ import { facilities, invitations, memberships, user } from "@/db/schema";
 import { runAsFacility } from "@/db/tenant-transaction";
 import env from "@/env";
 
-import { claimAccount } from "./accounts";
+import { claimAccount, discardAccount } from "./accounts";
 import { recordAudit } from "./audit";
 import { sendEmail } from "./email";
 import { enqueue } from "./outbox";
@@ -18,7 +18,7 @@ import { enqueue } from "./outbox";
  * Invitations: how every staff account comes to exist (SPEC.md §2).
  *
  *   create   in the inviter's transaction: the row, its outbox job, an audit
- *   send     the outbox handler: issue a token, then email the link
+ *   send     the outbox handler: email the link
  *   accept   from the link: account, membership, audit, in one tenant
  *            transaction for the facility the invitation belongs to
  */
@@ -46,6 +46,19 @@ export class InvitationError extends Error {
 /** Only the hash is stored, so a database reader cannot accept an invitation. */
 export function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
+}
+
+/**
+ * The secret in an invitation link, derived rather than stored.
+ *
+ * An HMAC of the invitation id under the server secret: unguessable without
+ * that secret, though the id itself is not secret. Because it is derived, a
+ * resend (an outbox redelivery, at least once) carries the same link as the
+ * first email, so an earlier link never stops working while the invitation
+ * is open. Rotating the secret invalidates every open link; invite again.
+ */
+export function invitationToken(invitationId: string) {
+  return createHmac("sha256", env.BETTER_AUTH_SECRET).update(`invitation-token:${invitationId}`).digest("base64url");
 }
 
 /**
@@ -110,9 +123,14 @@ export async function createInvitation(
     });
   }
 
+  // The id is chosen here so the token derived from it is stored, as its
+  // hash, in the same insert.
+  const id = randomUUID();
   const [invitation] = await tx
     .insert(invitations)
     .values({
+      id,
+      tokenHash: hashToken(invitationToken(id)),
       facilityId: input.facilityId,
       email,
       name: input.name.trim(),
@@ -139,13 +157,13 @@ export async function createInvitation(
 /**
  * The outbox handler for `invitation.send`.
  *
- * Re-reads the invitation rather than trusting the job, so one revoked or
- * accepted in the meantime is skipped. Each run issues a fresh token and
- * replaces the stored hash, then emails after the transaction commits (rule
- * 18). Running twice sends two emails and only the later link works, which is
- * the safe way for at-least-once delivery to go wrong.
+ * Re-reads the invitation rather than trusting the job, so one revoked,
+ * accepted or expired in the meantime, or at a suspended facility, is
+ * skipped and recorded as such. The email goes out after the read (rule 18),
+ * and its token is derived, not issued: running twice sends the same working
+ * link twice, which is the harmless way for at-least-once delivery to go wrong.
  */
-export async function sendInvitation(job: { facilityId: string; subjectId: string }): Promise<void> {
+export async function sendInvitation(job: { facilityId: string; subjectId: string }): Promise<"done" | "skipped"> {
   const message = await runAsFacility(job.facilityId, async (tx) => {
     const [row] = await tx
       .select({
@@ -160,25 +178,20 @@ export async function sendInvitation(job: { facilityId: string; subjectId: strin
       .from(invitations)
       .innerJoin(facilities, eq(facilities.id, invitations.facilityId))
       .where(eq(invitations.id, job.subjectId))
-      .for("update", { of: invitations })
       .limit(1);
 
     // A suspended facility sends nothing; its admin can invite again once
     // it is reinstated.
     if (!row || row.status !== "pending" || row.expiresAt <= new Date() || row.facilityStatus !== "active")
       return null;
-
-    const token = randomBytes(32).toString("base64url");
-    await tx.update(invitations).set({ tokenHash: hashToken(token) }).where(eq(invitations.id, row.id));
-
-    return { ...row, token };
+    return row;
   });
 
   if (!message)
-    return;
+    return "skipped";
 
   const link = new URL("/accept-invitation", env.APP_URL);
-  link.searchParams.set("token", message.token);
+  link.searchParams.set("token", invitationToken(message.id));
 
   await sendEmail({
     to: message.email,
@@ -188,6 +201,7 @@ export async function sendInvitation(job: { facilityId: string; subjectId: strin
       + `${link.toString()}\n\n`
       + `The link works until ${message.expiresAt.toUTCString()}. If you were not expecting this, you can ignore it.`,
   });
+  return "done";
 }
 
 /**
@@ -199,8 +213,7 @@ export async function sendInvitation(job: { facilityId: string; subjectId: strin
  * runs in that facility's tenant transaction, with the invitation locked so a
  * double click cannot grant two memberships.
  */
-export async function acceptInvitation(input: { token: string; password?: string; now?: Date }) {
-  const now = input.now ?? new Date();
+export async function acceptInvitation(input: { token: string; password?: string }) {
   const tokenHash = hashToken(input.token);
 
   const [found] = await db
@@ -211,75 +224,112 @@ export async function acceptInvitation(input: { token: string; password?: string
   if (!found)
     throw new InvitationError("not_found");
 
-  return runAsFacility(found.facilityId, async (tx) => {
-    const [invitation] = await tx
-      .select()
-      .from(invitations)
-      .where(eq(invitations.id, found.id))
-      .for("update")
-      .limit(1);
+  /*
+   * The account is written on Better Auth's own connection, so it commits on
+   * its own while the rest of this waits on the tenant transaction. If that
+   * transaction then fails, the account this attempt created is removed, so a
+   * retry starts clean and keeps the password typed then, rather than finding
+   * a half-finished account and ignoring the new password.
+   */
+  let createdUserId: string | null = null;
 
-    // A token replaced by a resend while this request waited is as dead as a
-    // revoked invitation.
-    if (!invitation || invitation.status === "revoked" || invitation.tokenHash !== tokenHash)
-      throw new InvitationError("not_found");
-    if (invitation.status === "accepted")
-      throw new InvitationError("already_accepted");
-    if (invitation.expiresAt <= now)
-      throw new InvitationError("expired");
+  try {
+    return await runAsFacility(found.facilityId, tx => acceptLocked(tx, found.id, tokenHash, input.password, (userId) => {
+      createdUserId = userId;
+    }));
+  }
+  catch (err) {
+    if (createdUserId) {
+      try {
+        await discardAccount(createdUserId);
+      }
+      catch (discardError) {
+        throw new AggregateError([err, discardError], "Accepting the invitation failed, and so did removing the account it created");
+      }
+    }
+    throw err;
+  }
+}
 
-    // The token holder already knows the facility exists, so saying why is
-    // safe. Nobody joins a suspended facility.
-    const [facility] = await tx.select({ id: facilities.id, name: facilities.name, status: facilities.status }).from(facilities);
-    if (facility.status !== "active")
-      throw new InvitationError("facility_suspended");
+/** The accept itself, in the facility's tenant transaction with the invitation locked. */
+async function acceptLocked(
+  tx: AppDb,
+  invitationId: string,
+  tokenHash: string,
+  password: string | undefined,
+  onAccountCreated: (userId: string) => void,
+) {
+  const [invitation] = await tx
+    .select()
+    .from(invitations)
+    .where(eq(invitations.id, invitationId))
+    .for("update")
+    .limit(1);
 
-    const account = await claimAccount({
-      email: invitation.email,
-      name: invitation.name,
-      password: input.password,
-    });
-    if (!account)
-      throw new InvitationError("password_required");
+  // Read the clock once the lock is held: a request that waited behind
+  // another must judge expiry by the time it actually proceeds.
+  const now = new Date();
 
-    // An active membership keeps its roles and gains these; a former one
-    // (inactive) comes back with exactly what this invitation offers.
-    const [membership] = await tx
-      .insert(memberships)
-      .values({ facilityId: invitation.facilityId, userId: account.userId, roles: invitation.roles })
-      .onConflictDoUpdate({
-        target: [memberships.userId, memberships.facilityId],
-        set: {
-          roles: sql`CASE WHEN ${memberships.isActive}
-            THEN ARRAY(SELECT DISTINCT r FROM unnest(${memberships.roles} || excluded.roles) AS r ORDER BY r)
-            ELSE excluded.roles END`,
-          isActive: true,
-          updatedAt: now,
-        },
-      })
-      .returning({ id: memberships.id, roles: memberships.roles });
+  if (!invitation || invitation.status === "revoked" || invitation.tokenHash !== tokenHash)
+    throw new InvitationError("not_found");
+  if (invitation.status === "accepted")
+    throw new InvitationError("already_accepted");
+  if (invitation.expiresAt <= now)
+    throw new InvitationError("expired");
 
-    await tx
-      .update(invitations)
-      .set({ status: "accepted", acceptedAt: now, acceptedUserId: account.userId })
-      .where(eq(invitations.id, invitation.id));
+  // The token holder already knows the facility exists, so saying why is
+  // safe. Nobody joins a suspended facility.
+  const [facility] = await tx.select({ id: facilities.id, name: facilities.name, status: facilities.status }).from(facilities);
+  if (facility.status !== "active")
+    throw new InvitationError("facility_suspended");
 
-    await recordAudit(tx, {
-      facilityId: invitation.facilityId,
-      actorId: account.userId,
-      action: "membership.granted",
-      entityType: "membership",
-      entityId: membership.id,
-      summary: `${invitation.email} accepted an invitation as ${invitation.roles.join(", ")}`,
-      detail: { invitationId: invitation.id, roles: membership.roles },
-    });
-
-    return {
-      facilityId: facility.id,
-      facilityName: facility.name,
-      accountCreated: account.created,
-    };
+  const account = await claimAccount({
+    email: invitation.email,
+    name: invitation.name,
+    password,
   });
+  if (!account)
+    throw new InvitationError("password_required");
+  if (account.created)
+    onAccountCreated(account.userId);
+
+  // An active membership keeps its roles and gains these; a former one
+  // (inactive) comes back with exactly what this invitation offers.
+  const [membership] = await tx
+    .insert(memberships)
+    .values({ facilityId: invitation.facilityId, userId: account.userId, roles: invitation.roles })
+    .onConflictDoUpdate({
+      target: [memberships.userId, memberships.facilityId],
+      set: {
+        roles: sql`CASE WHEN ${memberships.isActive}
+          THEN ARRAY(SELECT DISTINCT r FROM unnest(${memberships.roles} || excluded.roles) AS r ORDER BY r)
+          ELSE excluded.roles END`,
+        isActive: true,
+        updatedAt: now,
+      },
+    })
+    .returning({ id: memberships.id, roles: memberships.roles });
+
+  await tx
+    .update(invitations)
+    .set({ status: "accepted", acceptedAt: now, acceptedUserId: account.userId })
+    .where(eq(invitations.id, invitation.id));
+
+  await recordAudit(tx, {
+    facilityId: invitation.facilityId,
+    actorId: account.userId,
+    action: "membership.granted",
+    entityType: "membership",
+    entityId: membership.id,
+    summary: `${invitation.email} accepted an invitation as ${invitation.roles.join(", ")}`,
+    detail: { invitationId: invitation.id, roles: membership.roles },
+  });
+
+  return {
+    facilityId: facility.id,
+    facilityName: facility.name,
+    accountCreated: account.created,
+  };
 }
 
 /** Closes a pending invitation, so its link stops working. */

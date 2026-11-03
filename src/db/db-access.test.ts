@@ -27,7 +27,6 @@ const SRC = path.resolve(import.meta.dirname, "..");
  * `c.var.db` is for.
  */
 const OWNER_ALLOWLIST = new Map([
-  ["routes/health.route.ts", "liveness probe; reaches no tenant data"],
   [
     "routes/me/me.handlers.ts",
     "the facility picker runs before any facility is chosen; the query is "
@@ -112,7 +111,8 @@ async function sourceFiles(dir: string): Promise<string[]> {
  * Anchored, unlike the pattern this replaced: `@/db/schema` and `@/lib/db-errors`
  * are different modules and must not match.
  */
-const DB_MODULE = /^(?:@\/db|\.\.?\/(?:\.\.\/)*db|\.)(?:\/index)?$/;
+// `index.js` too: TypeScript resolves `../db/index.js` to `src/db/index.ts`.
+const DB_MODULE = /^(?:@\/db|\.\.?\/(?:\.\.\/)*db|\.)(?:\/index(?:\.js)?)?$/;
 // The bare `.` / `./index` alternative is how a file inside src/db reaches it.
 // Elsewhere it would mean some other directory's index.ts; none exists, and
 // matching one too is a false positive that costs an allowlist line, which is
@@ -488,6 +488,8 @@ describe("database access", () => {
     ["named default rename", `import { default as ownerDb } from "@/db";`],
     ["named default rename via /index", `import { default as x } from "@/db/index";`],
     ["relative /index", `import db from "../db/index";`],
+    ["relative /index.js", `import db from "../db/index.js";`],
+    ["alias /index.js", `import db from "@/db/index.js";`],
     ["no whitespace", `import{default as d}from"@/db";`],
   ])("sees through %s", (_case, source) => {
     expect(dbImportsIn(source)).toContain("default");

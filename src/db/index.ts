@@ -110,6 +110,40 @@ export async function assertRoleIsRestricted(target: Pool): Promise<void> {
     throw new PrivilegedRoleError(role?.rolname ?? "unknown");
 }
 
+/**
+ * Whether every connection can run a query: the readiness probe.
+ *
+ * All three, because each logs in as its own role: the owner can still be up
+ * while `hospital_app` or `hospital_auth` cannot sign in, and then nothing a
+ * user does would work. Each probe is bounded by Postgres itself
+ * (`statement_timeout`) as well as by the pool's connection timeout, so a
+ * probe cannot hang.
+ */
+export async function checkConnections(): Promise<{ owner: boolean; app: boolean; auth: boolean }> {
+  async function probe(target: Pool) {
+    const client = await target.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL statement_timeout = 2000");
+      await client.query("SELECT 1");
+      await client.query("COMMIT");
+      return true;
+    }
+    catch {
+      await client.query("ROLLBACK").catch(() => {});
+      return false;
+    }
+    finally {
+      client.release();
+    }
+  }
+
+  const [owner, app, auth] = await Promise.all(
+    [pool, appPool, authPool].map(target => probe(target).catch(() => false)),
+  );
+  return { owner, app, auth };
+}
+
 /** The boot check: both restricted connections really are restricted. */
 export async function assertConnectionsAreRestricted(): Promise<void> {
   await assertRoleIsRestricted(appPool);
