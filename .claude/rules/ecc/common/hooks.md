@@ -4,7 +4,7 @@
 
 - **PreToolUse**: Before tool execution (validation, parameter modification)
 - **PostToolUse**: After tool execution (auto-format, checks)
-- **Stop**: When session ends (final verification)
+- **Stop**: When the main agent finishes a response (skipped on user interrupt)
 
 ## Auto-Accept Permissions
 
