@@ -1,0 +1,7 @@
+# CodeRabbit review settings.
+reviews:
+  path_filters:
+    # Drizzle's generated migration snapshots and journal: machine-written
+    # JSON nobody reviews by hand. The .sql migrations beside them are still
+    # reviewed.
+    - "!src/db/migrations/meta/**"
