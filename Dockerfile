@@ -56,8 +56,11 @@ USER node
 
 EXPOSE 9999
 
-# /health checks the database too, so an unreachable DB fails the container
-# rather than serving traffic that cannot work.
+# For `docker run` and Compose only: Cloud Run ignores HEALTHCHECK. There, the
+# service needs an HTTP startup/readiness probe on /health, which answers 503
+# until every database connection works; otherwise the default TCP probe
+# passes as soon as the port opens, and requests meet the startup gate's 503
+# until the role check succeeds (src/lib/startup-gate.ts).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||9999)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 

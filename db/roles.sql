@@ -26,13 +26,15 @@
 --
 --   local dev   mounted into /docker-entrypoint-initdb.d (docker-compose.yml)
 --   CI          an explicit psql step (.github/workflows/ci.yml)
---   managed     psql "$ADMIN_URL" -v ON_ERROR_STOP=1 -f db/roles.sql \
+--   managed     psql "$ADMIN_URL" --single-transaction -v ON_ERROR_STOP=1 -f db/roles.sql \
 --                 -c "ALTER ROLE hospital_app PASSWORD '<from the secret manager>'" \
 --                 -c "ALTER ROLE hospital_auth PASSWORD '<from the secret manager>'"
 --
 -- The passwords below are local-development defaults that anyone can read
--- here, so a managed database must never be left with them: the recipe above
--- replaces them in the same psql run.
+-- here, so a managed database must never be left with them. The recipe
+-- replaces them in the same psql run, and `--single-transaction` makes the
+-- whole run one transaction: if it stops before the passwords are replaced,
+-- the roles are not created at all, rather than created with these.
 --
 -- IF NOT EXISTS skips a role that already exists without re-checking its
 -- attributes. The API checks both roles itself at boot

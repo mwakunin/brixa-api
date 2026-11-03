@@ -1,6 +1,7 @@
 import type { Schema } from "hono";
 
 import { OpenAPIHono } from "@hono/zod-openapi";
+import { cors } from "hono/cors";
 import { requestId } from "hono/request-id";
 import { notFound, serveEmojiFavicon } from "stoker/middlewares";
 import { defaultHook } from "stoker/openapi";
@@ -11,7 +12,8 @@ import { rateLimits } from "@/middlewares/rate-limit";
 
 import type { AppBindings, AppOpenAPI, TenantBindings } from "./types";
 
-import { auth } from "./auth";
+import { appOrigin, auth } from "./auth";
+import { FACILITY_HEADER } from "./constants";
 import { onError } from "./on-error";
 
 export function createRouter() {
@@ -36,9 +38,31 @@ export function createTenantRouter() {
   });
 }
 
+/**
+ * Cross-origin access for the staff app, and only for it.
+ *
+ * The app (APP_URL) calls this API from its own origin with the session
+ * cookie, so the browser needs credentialed CORS naming that exact origin. A
+ * request from any other origin gets no CORS headers, and its browser refuses
+ * to hand it the response. Registered first, so a preflight is answered before
+ * the rate limiter or `withFacility` sees it. If the API is later served from
+ * the app's own origin through a proxy, this simply never fires.
+ */
+function staffAppCors() {
+  return cors({
+    origin: origin => (origin === appOrigin ? origin : null),
+    credentials: true,
+    allowMethods: ["GET", "POST", "PATCH", "PUT", "DELETE"],
+    allowHeaders: ["content-type", FACILITY_HEADER],
+    exposeHeaders: ["retry-after"],
+    maxAge: 600,
+  });
+}
+
 export default function createApp() {
   const app = createRouter();
-  app.use(requestId())
+  app.use(staffAppCors())
+    .use(requestId())
     .use(serveEmojiFavicon("🏥"))
     .use(pinoLogger());
 

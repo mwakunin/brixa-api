@@ -7,6 +7,9 @@ import env from "@/env";
 
 import { emailEnabled, sendEmail } from "./email";
 
+/** The staff app's origin: scheme, host and port, whatever path APP_URL carries. */
+export const appOrigin = new URL(env.APP_URL).origin;
+
 /**
  * Email and password, for staff at a desk. Invite-only.
  *
@@ -28,6 +31,17 @@ import { emailEnabled, sendEmail } from "./email";
 export const auth = betterAuth({
   secret: env.BETTER_AUTH_SECRET,
   baseURL: env.BETTER_AUTH_URL,
+  /*
+   * The staff app runs at its own origin (APP_URL), not the API's. Better
+   * Auth refuses a cookie-bearing request from any origin it does not trust,
+   * which is its CSRF defence, so the app's origin is the one it adds.
+   */
+  trustedOrigins: [appOrigin],
+  advanced: {
+    // Better Auth turns the origin check off by default under NODE_ENV=test.
+    // Stated here so the suite tests the CSRF defence production runs.
+    disableOriginCheck: false,
+  },
 
   database: drizzleAdapter(authDb, {
     provider: "pg",

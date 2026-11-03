@@ -127,8 +127,10 @@ const DRIVER_MODULE = /^(?:pg|pg-pool|postgres|drizzle-orm\/node-postgres(?:\/.*
 const CONNECTION_STRINGS = new Set([
   "DATABASE_URL",
   "APP_DATABASE_URL",
+  "AUTH_DATABASE_URL",
   "TEST_DATABASE_URL",
   "TEST_APP_DATABASE_URL",
+  "TEST_AUTH_DATABASE_URL",
 ]);
 
 /** Driver imports and connection-string reads in one file, as descriptions. */
@@ -464,6 +466,8 @@ describe("database access", () => {
     expect(driverAccessIn(`import { drizzle } from "drizzle-orm/node-postgres";`)).not.toEqual([]);
     expect(driverAccessIn(`const m = await import("pg");`)).toEqual(["imports pg"]);
     expect(driverAccessIn(`new Pool({ connectionString: env.DATABASE_URL });`)).toEqual(["reads DATABASE_URL"]);
+    // The auth DSN is the one that reaches session tokens and password hashes.
+    expect(driverAccessIn(`new Pool({ connectionString: env.AUTH_DATABASE_URL });`)).toEqual(["reads AUTH_DATABASE_URL"]);
     expect(driverAccessIn(`import type { Pool } from "pg";`)).toEqual([]);
     expect(driverAccessIn(`import { sql } from "drizzle-orm";`)).toEqual([]);
   });
