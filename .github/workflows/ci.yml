@@ -85,9 +85,11 @@ jobs:
         run: pnpm typecheck
 
       # globalSetup migrates the database, so there is no separate migrate
-      # step. The suite takes its credentials from .env.test.
+      # step. The suite takes its credentials from .env.test. `run` reaches
+      # Vitest as its subcommand; `pnpm test -- --run` passed `--` through as
+      # well, so Vitest ignored the flag and ran once only because it saw CI.
       - name: Test
-        run: pnpm test -- --run
+        run: pnpm test run
 
   migrations:
     name: migrations apply to an empty database

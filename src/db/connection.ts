@@ -30,6 +30,13 @@ export function isLocalDatabase(connectionString: string): boolean {
   }
 }
 
+/**
+ * How long to wait for a connection before giving up. `pg` waits forever by
+ * default, which turns a database outage into hung requests (including
+ * `/health`), or a migration that never finishes, instead of failed ones.
+ */
+export const CONNECTION_TIMEOUT_MS = 5_000;
+
 /** TLS settings for a `pg` Pool built from this DSN. */
 export function sslConfigFor(connectionString: string) {
   return isLocalDatabase(connectionString)

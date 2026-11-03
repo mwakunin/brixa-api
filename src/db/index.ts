@@ -4,7 +4,7 @@ import { Pool } from "pg";
 import env from "@/env";
 
 import * as authSchema from "./auth-schema";
-import { sslConfigFor } from "./connection";
+import { CONNECTION_TIMEOUT_MS, sslConfigFor } from "./connection";
 // schema.ts re-exports the Better-Auth-owned tables, so this is the whole model.
 import * as schema from "./schema";
 
@@ -26,13 +26,6 @@ import * as schema from "./schema";
  * that can read sessions, password hashes and verification tokens, and one
  * that holds nothing on the tenant tables.
  */
-
-/**
- * How long to wait for a free connection before giving up. `pg` waits forever
- * by default, which turns a database outage into hung requests (including
- * `/health`) instead of failed ones.
- */
-const CONNECTION_TIMEOUT_MS = 5_000;
 
 /**
  * Keeps an idle-client failure from killing the process. An `error` event with

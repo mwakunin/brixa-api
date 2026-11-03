@@ -16,12 +16,13 @@ export default async function setup() {
     throw new Error("Test global-setup ran outside NODE_ENV=test");
 
   const { default: env } = await import("../env");
-  const { sslConfigFor } = await import("../db/connection");
+  const { CONNECTION_TIMEOUT_MS, sslConfigFor } = await import("../db/connection");
 
   const pool = new Pool({
     connectionString: env.DATABASE_URL,
     ssl: sslConfigFor(env.DATABASE_URL),
     max: 1,
+    connectionTimeoutMillis: CONNECTION_TIMEOUT_MS,
   });
 
   try {

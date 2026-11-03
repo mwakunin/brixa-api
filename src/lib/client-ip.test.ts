@@ -102,6 +102,23 @@ describe("resolveClientIp", () => {
       expect(seen).toEqual(new Set(["198.51.100.66"]));
     });
 
+    // A dual-stack listener reports an IPv4 peer in its IPv6-mapped form.
+    it("recognises the proxy in either IPv4 spelling", () => {
+      const viaMapped = { socketAddress: "::ffff:10.0.0.1", xForwardedFor: "203.0.113.9" };
+
+      expect(resolveClientIp(viaMapped, 1, allow)).toBe("203.0.113.9");
+      expect(resolveClientIp(viaMapped, 1, new Set(["::FFFF:10.0.0.1"]))).toBe("203.0.113.9");
+      expect(resolveClientIp({ socketAddress: "10.0.0.1", xForwardedFor: "203.0.113.9" }, 1, new Set(["::ffff:10.0.0.1"])))
+        .toBe("203.0.113.9");
+    });
+
+    it("does not mistake another mapped peer for the proxy", () => {
+      expect(resolveClientIp({
+        socketAddress: "::ffff:198.51.100.66",
+        xForwardedFor: "spoofed",
+      }, 1, allow)).toBe("::ffff:198.51.100.66");
+    });
+
     it("ignores the chain when there is no socket address to check", () => {
       expect(resolveClientIp({ xForwardedFor: "spoofed" }, 1, allow)).toBeUndefined();
     });

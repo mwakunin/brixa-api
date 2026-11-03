@@ -191,23 +191,35 @@ export async function backendPid(
 }
 
 /**
- * Waits until Postgres reports a backend blocked by `holderPid`. A fixed sleep
- * only guesses that contention happened; this asks the database.
+ * Waits until Postgres reports `count` backends queued behind `holderPid`. A
+ * fixed sleep only guesses that contention happened; this asks the database.
+ *
+ * Queued means blocked by the holder, or by another backend that is itself
+ * queued: of two backends waiting for one row lock, Postgres reports the
+ * second as blocked by the first, not by the holder.
  */
 export async function waitForBlockedBackend(
   holderPid: number,
   timeoutMs = 2500,
+  count = 1,
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
 
   while (Date.now() < deadline) {
     const { rows } = await pool.query<{ n: number }>(
-      `SELECT count(*)::int AS n FROM pg_stat_activity
-       WHERE wait_event_type = 'Lock' AND state = 'active'
-         AND $1 = ANY(pg_blocking_pids(pid))`,
+      `WITH RECURSIVE waiting AS (
+         SELECT pid FROM pg_stat_activity
+         WHERE wait_event_type = 'Lock' AND state = 'active'
+       ),
+       queued(pid) AS (
+         SELECT pid FROM waiting WHERE $1 = ANY(pg_blocking_pids(pid))
+         UNION
+         SELECT w.pid FROM waiting w JOIN queued q ON q.pid = ANY(pg_blocking_pids(w.pid))
+       )
+       SELECT count(*)::int AS n FROM queued`,
       [holderPid],
     );
-    if (rows[0].n > 0)
+    if (rows[0].n >= count)
       return true;
 
     await new Promise(resolve => setTimeout(resolve, 20));

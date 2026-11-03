@@ -31,9 +31,25 @@ export interface ClientIpSources {
  * believed when it demonstrably came through the expected edge.
  *
  * Empty means "no peer restriction", which is only safe when the network
- * makes direct access impossible.
+ * makes direct access impossible. An IPv4 proxy may be listed either as
+ * `10.0.0.1` or as `::ffff:10.0.0.1`: both match.
  */
 export type TrustedProxies = ReadonlySet<string>;
+
+/**
+ * One spelling per address, so two can be compared. A dual-stack listener
+ * reports an IPv4 peer as `::ffff:10.0.0.1`, which is the same peer as
+ * `10.0.0.1`.
+ */
+function canonicalAddress(address: string): string {
+  const lower = address.trim().toLowerCase();
+  return lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)?.[1] ?? lower;
+}
+
+function isTrustedProxy(socket: string, trustedProxies: TrustedProxies): boolean {
+  const peer = canonicalAddress(socket);
+  return [...trustedProxies].some(proxy => canonicalAddress(proxy) === peer);
+}
 
 /**
  * @param sources The socket address and any forwarding headers on the request.
@@ -58,7 +74,7 @@ export function resolveClientIp(
   // A chain is only as trustworthy as whoever handed it to us. When an
   // allowlist is configured, a request that did not arrive through it is
   // treated as if it carried no chain at all.
-  if (trustedProxies.size > 0 && (!socket || !trustedProxies.has(socket)))
+  if (trustedProxies.size > 0 && (!socket || !isTrustedProxy(socket, trustedProxies)))
     return socket;
 
   const chain = sources.xForwardedFor
@@ -93,11 +109,8 @@ export function resolveClientIp(
  * IPv4-mapped IPv6 address (`::ffff:1.2.3.4`) is its IPv4 address.
  */
 export function rateLimitBucket(ip: string): string {
-  const address = ip.trim().toLowerCase();
+  const address = canonicalAddress(ip);
 
-  const mapped = address.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-  if (mapped)
-    return mapped[1];
   if (!address.includes(":"))
     return address;
 

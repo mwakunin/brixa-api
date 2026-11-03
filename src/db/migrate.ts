@@ -5,7 +5,7 @@ import { Pool } from "pg";
 
 import env from "@/env";
 
-import { sslConfigFor } from "./connection";
+import { CONNECTION_TIMEOUT_MS, sslConfigFor } from "./connection";
 
 /**
  * Applies migrations at deploy time.
@@ -20,6 +20,7 @@ async function main() {
     connectionString: env.DATABASE_URL,
     ssl: sslConfigFor(env.DATABASE_URL),
     max: 1,
+    connectionTimeoutMillis: CONNECTION_TIMEOUT_MS,
   });
 
   try {

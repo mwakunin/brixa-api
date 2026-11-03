@@ -18,6 +18,7 @@ import {
   signedInUser,
   signedInUserAt,
   signIn,
+  waitForBlockedBackend,
 } from "@/test/helpers";
 
 const NEW_PASSWORD = "a-brand-new-password";
@@ -181,6 +182,43 @@ describe("the invitation, from email to first sign-in", () => {
     expect((await again.json()).code).toBe("already_accepted");
     // The first password still stands.
     await expect(signIn(adminEmail, NEW_PASSWORD)).resolves.toBeDefined();
+  });
+
+  // A double click: two requests both read the invitation as pending before
+  // either commits. Only the row lock stands between them and two accepts.
+  it("lets exactly one of two concurrent acceptances through", async () => {
+    const { adminEmail } = await onboarded();
+    const token = tokenFor(adminEmail);
+    const [invitation] = await db.select({ id: invitations.id }).from(invitations);
+
+    // Hold the invitation's row lock so both requests must queue behind it.
+    const holder = await pool.connect();
+    let both: Promise<Response[]> | undefined;
+    try {
+      await holder.query("BEGIN");
+      await holder.query("SELECT 1 FROM invitations WHERE id = $1 FOR UPDATE", [invitation.id]);
+      const holderPid = Number((await holder.query("SELECT pg_backend_pid() AS pid")).rows[0].pid);
+
+      both = Promise.all([
+        accept({ token, password: NEW_PASSWORD }),
+        accept({ token, password: "another-password-x" }),
+      ]);
+      expect(await waitForBlockedBackend(holderPid, 5000, 2)).toBe(true);
+      await holder.query("COMMIT");
+
+      const results = await both;
+      expect(results.map(r => r.status).sort()).toEqual([200, 409]);
+      const refused = results.find(r => r.status === 409)!;
+      expect((await refused.json()).code).toBe("already_accepted");
+    }
+    finally {
+      await holder.query("ROLLBACK").catch(() => {});
+      holder.release();
+      // On a failure above, let the requests finish before the next test resets the database.
+      await both?.catch(() => {});
+    }
+
+    expect(await db.select().from(memberships)).toHaveLength(1);
   });
 
   it("needs a password to create a new account", async () => {
