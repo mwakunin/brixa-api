@@ -1,0 +1,66 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: hospital-postgres-dev
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: hospital
+      POSTGRES_PASSWORD: hospital
+      POSTGRES_DB: hospital_dev
+    # Bound to 127.0.0.1, never 0.0.0.0: a bare "5438:5432" publishes on every
+    # interface, and Docker's own iptables rules bypass a host firewall.
+    # 5438/5439/6383 keep clear of the sibling projects (CLAUDE.md §8).
+    ports:
+      - "127.0.0.1:5438:5432"
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+      # Creates the unprivileged runtime role. Runs only when the data
+      # directory is empty, so on an existing volume run `docker compose down
+      # -v` first, or run the file by hand with psql.
+      - ./db/roles.sql:/docker-entrypoint-initdb.d/10-roles.sql:ro
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U hospital -d hospital_dev]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  postgres-test:
+    image: postgres:16-alpine
+    container_name: hospital-postgres-test
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: hospital
+      POSTGRES_PASSWORD: hospital
+      POSTGRES_DB: hospital_test
+    ports:
+      - "127.0.0.1:5439:5432"
+    # Disposable: no named volume, so the init script below runs on every
+    # container start and the app role is always present.
+    tmpfs:
+      - /var/lib/postgresql/data
+    volumes:
+      - ./db/roles.sql:/docker-entrypoint-initdb.d/10-roles.sql:ro
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U hospital -d hospital_test]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: hospital-redis-dev
+    restart: unless-stopped
+    # Loopback only: this Redis has no authentication at all.
+    ports:
+      - "127.0.0.1:6383:6379"
+    volumes:
+      - redis_dev_data:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_dev_data:
+  redis_dev_data:

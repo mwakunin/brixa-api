@@ -1,0 +1,183 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Read-only: nothing here publishes anything.
+permissions:
+  contents: read
+
+# A newer push to the same branch makes the older run irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Actions are pinned to commit SHAs, not tags: a tag is mutable and can be
+# repointed upstream. The trailing comment records which release each SHA was.
+# Same pins as school-saas-api.
+jobs:
+  test:
+    name: lint, typecheck, test
+    runs-on: ubuntu-latest
+
+    services:
+      # The suite talks to real Postgres: RLS, CHECKs, triggers and SQLSTATE
+      # mapping cannot be exercised against a mock. Mapped to 5439 so .env.test
+      # works unchanged.
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: hospital
+          POSTGRES_PASSWORD: hospital
+          POSTGRES_DB: hospital_test
+        ports:
+          - 5439:5432
+        options: >-
+          --health-cmd "pg_isready -U hospital -d hospital_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      # Rate limiting is tested against real Redis: the limiter runs a Lua
+      # script there that a fake would not exercise. Mapped to 6383 so
+      # .env.test works unchanged.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6383:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Nothing here talks to git over the network, and `pnpm install` runs
+          # lifecycle scripts, so the token has no business staying in
+          # .git/config.
+          persist-credentials: false
+
+      # Must come before setup-node: its pnpm cache needs pnpm on PATH.
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Service containers cannot mount an init script, so the runtime role is
+      # created here from the same db/roles.sql docker-compose mounts locally.
+      # A role that differed between CI and dev would make the RLS tests pass
+      # here and mean nothing.
+      - name: Create the unprivileged runtime roles
+        run: PGPASSWORD=hospital psql -h localhost -p 5439 -U hospital -d hospital_test -f db/roles.sql
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      # globalSetup migrates the database, so there is no separate migrate
+      # step. The suite takes its credentials from .env.test.
+      - name: Test
+        run: pnpm test -- --run
+
+  migrations:
+    name: migrations apply to an empty database
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: hospital
+          POSTGRES_PASSWORD: hospital
+          POSTGRES_DB: fresh
+        ports:
+          - 5439:5432
+        options: >-
+          --health-cmd "pg_isready -U hospital -d fresh"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # Separate from the suite on purpose: globalSetup migrates a database
+      # earlier runs may have touched, so it would not catch a migration that
+      # only fails from nothing.
+      - name: Create the unprivileged runtime roles
+        run: PGPASSWORD=hospital psql -h localhost -p 5439 -U hospital -d fresh -f db/roles.sql
+
+      - name: Apply every migration from scratch
+        run: pnpm exec tsx src/db/migrate.ts
+        env:
+          NODE_ENV: test
+          TEST_DATABASE_URL: postgresql://hospital:hospital@localhost:5439/fresh
+          TEST_APP_DATABASE_URL: postgresql://hospital_app:hospital_app@localhost:5439/fresh
+          TEST_AUTH_DATABASE_URL: postgresql://hospital_auth:hospital_auth@localhost:5439/fresh
+
+  docker:
+    name: docker image builds and starts
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: hospital-api:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # A built image that cannot start is not a passing build. Publishing
+      # waits for the Cloud Run deployment setup.
+      - name: Container starts and reports unhealthy without a database
+        run: |
+          docker run -d --name api-smoke -p 9999:9999 \
+            -e DATABASE_URL=postgresql://nobody:nobody@127.0.0.1:1/none \
+            -e APP_DATABASE_URL=postgresql://nobody_app:nobody@127.0.0.1:1/none \
+            -e AUTH_DATABASE_URL=postgresql://nobody_auth:nobody@127.0.0.1:1/none \
+            -e REDIS_URL=redis://127.0.0.1:6379 \
+            -e APP_URL=https://app.example.test \
+            -e TRUST_PROXY_HOPS=1 \
+            -e BETTER_AUTH_SECRET=ci-only-secret-that-is-long-enough-32 \
+            -e BETTER_AUTH_URL=https://example.test \
+            -e RESEND_API_KEY=x -e RESEND_FROM_EMAIL=noreply@example.test \
+            hospital-api:ci
+          for i in $(seq 1 20); do
+            if curl -fsS http://localhost:9999/ >/dev/null 2>&1; then
+              echo "container serving requests"
+              # /health must report the database as down, not pretend it is up.
+              curl -s http://localhost:9999/health | tee /dev/stderr | grep -q '"database":"down"'
+              docker rm -f api-smoke >/dev/null
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "container never served a request:" >&2
+          docker logs api-smoke >&2
+          docker rm -f api-smoke >/dev/null
+          exit 1
