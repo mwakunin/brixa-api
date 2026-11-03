@@ -174,7 +174,9 @@ The same counter issues every human-facing sequential number:
 | `lab_accession` | `L-20261103-017` | daily | no (a rejected specimen keeps its number) |
 | `grn`, `transfer` | `GRN-2026-0091` | yearly | yes |
 
-- `number_series` gains `reset_period` (`never` \| `yearly` \| `daily`) and the unique key becomes `(facility_id, kind, period_key)`, where `period_key` is `'all'`, `'2026'` or `'2026-11-03'`, computed in Africa/Nairobi (rule 26). The row for a new period is created on first use with `INSERT … ON CONFLICT DO NOTHING`, then locked as above.
+- **As built (P1), the configuration and the count are separate tables.** `number_series` holds one row per `(facility_id, kind)` with `prefix`, `padding` and `reset_period` (`never` \| `yearly` \| `daily`). `number_series_counters` holds one row per `(series_id, period_key)` with its `next_value`, where `period_key` is `'all'`, `'2026'` or `'2026-11-03'`, computed in Africa/Nairobi (rule 26). So a prefix change applies going forward without touching a count, and a new period needs no configuration copied. The counter for a new period is created on first use with `INSERT … ON CONFLICT DO NOTHING`, then locked as above (`src/lib/number-series.ts`). The §5 sketch keeps the single-table form for readability.
+- A number with a period carries it: prefix, period, `-`, padded value. So `ADM-` yearly gives `ADM-2026-0153`, and `L-` daily gives `L-20261103-017`.
+- Kinds are added to the `kind` CHECK as the modules that issue them land. P1 registers `outpatient` and `inpatient` at onboarding.
 - **Fiscal numbers are issued at finalisation**, in the same transaction that freezes the document, never at draft (rule 20). A draft invoice has no number. A voided document keeps its number, so the sequence has no gaps an auditor must explain.
 - The counter lock serializes finalisations per facility and kind. This is acceptable because finalisation is fast and does no external I/O (rule 18). A SHA call must never run while the lock is held.
 

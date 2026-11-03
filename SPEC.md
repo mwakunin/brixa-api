@@ -41,6 +41,9 @@ The earlier scoping (2026-09-21) targeted small outpatient clinics, with inpatie
 - **File storage:** Google Cloud Storage. Decided now because it affects code.
 - **Email and SMS:** Resend for email and Africa's Talking for SMS, both reusing the school SaaS's code, each behind a small interface so the provider can change in one file. Brevo (email, SMS and WhatsApp in one account) is the option to revisit if WhatsApp reminders are wanted. *(2026-11-03)*
 - **Patient numbers:** auto-generated and sequential per facility, with a facility-chosen prefix (e.g. `OP` for outpatient, `IP` for inpatient). The IP number is issued once per patient and linked to their OP number. See `SCHEMA.md` §5–§6.
+- **Backend stack:** Hono + `@hono/zod-openapi`, Drizzle ORM and Better Auth, with foundations ported from school-saas-api (`CLAUDE.md` §5). *(2026-11-03)*
+- **Tenant resolution:** one web address for every facility; the facility comes from the signed-in user, not the hostname. A user with one membership goes straight in; a user with several picks the facility to work in, and can switch without signing in again. Every request is checked against an active membership before the tenant transaction opens. Subdomains were rejected: only staff use v1 (no patient portal), staff who work at two facilities (locums, branches of one group) would need a login per facility, a PWA installed on one origin would need a separate install and offline store per facility, and Cloud Run would need a wildcard certificate behind a load balancer. This does not depend on data residency. *(2026-11-03)*
+- **Accounts are invite-only.** There is no public sign-up. A facility's first admin is invited when the facility is onboarded; that admin invites the rest of the staff. Login data (sessions, password hashes) sits behind its own database role, separate from the one tenant requests use. *(2026-11-03)*
 
 ---
 
@@ -48,10 +51,8 @@ The earlier scoping (2026-09-21) targeted small outpatient clinics, with inpatie
 
 | Area | Proposal |
 |---|---|
-| Backend | Hono + `@hono/zod-openapi`, Drizzle ORM, foundations ported from school-saas-api (`CLAUDE.md` §5) |
 | Database | PostgreSQL with tenant isolation via row-level security. Production host and region per question 4 |
 | Frontend | Next.js, built as a PWA for connectivity drops at service points |
-| Auth | Better Auth with facility memberships and role-based permissions (`CLAUDE.md` §4) |
 | Money model | Charge → invoice → claim → remittance, debtor accounts, allocations ported from school-saas (`SCHEMA.md` §7) |
 | Payer integration | `PayerGateway`: a `manual` channel (claim packs, remittance import) for private insurers in P7; an `afyaconnect` channel for SHA through DHA's integration platform, built against the sandbox and live only after certification |
 | External calls | Transactional outbox drained by Cloud Tasks workers |
@@ -120,6 +121,7 @@ All taken 2026-11-03. D1 and D8 were revised the same day, once it was clear tha
 ### 7.1 Multi-tenancy
 - `facility_id` on every tenant-owned row, enforced with row-level security (`CLAUDE.md` §4).
 - Users belong to a facility through memberships and hold one or more roles (`CLAUDE.md` §4).
+- The facility for a request comes from the signed-in user's chosen membership, not the hostname (§2, tenant resolution).
 
 ### 7.2 Data model
 - Encounter-centred: patient → encounter (OPD visit, admission, emergency) → observations, notes, diagnoses, orders, results, dispenses, charges.
