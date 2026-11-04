@@ -1,5 +1,7 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import * as HttpStatusCodes from "stoker/http-status-codes";
+import { jsonContent } from "stoker/openapi/helpers";
+import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
@@ -10,6 +12,8 @@ import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.rou
  * transaction.
  */
 const tags = ["Documents"];
+
+const DocumentParamsSchema = z.object({ id: z.uuid() });
 
 export const getDocumentPdf = createRoute({
   tags,
@@ -23,13 +27,14 @@ export const getDocumentPdf = createRoute({
     + "is recorded in the audit log.",
   request: {
     headers: facilityHeaders,
-    params: z.object({ id: z.uuid() }),
+    params: DocumentParamsSchema,
   },
   responses: {
     [HttpStatusCodes.OK]: {
       content: { "application/pdf": { schema: z.string().openapi({ format: "binary" }) } },
       description: "The PDF",
     },
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(DocumentParamsSchema), "Not a document id"),
     ...tenantResponses,
   },
 });

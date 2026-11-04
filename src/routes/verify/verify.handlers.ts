@@ -23,6 +23,5 @@ export const verifyDocument: AppRouteHandler<VerifyDocumentRoute> = async (c) =>
     verified: true as const,
     ...document,
     issuedAt: document.issuedAt.toISOString(),
-    withdrawnAt: document.withdrawnAt?.toISOString() ?? null,
   }, HttpStatusCodes.OK);
 };

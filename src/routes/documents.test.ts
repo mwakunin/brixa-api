@@ -109,7 +109,6 @@ describe("verifying a document", () => {
       issuedAt: document.issuedAt.toISOString(),
       issuer: { name: "Amani Hospital", kmhfrCode: facility.kmhfrCode },
       status: "valid",
-      withdrawnAt: null,
     });
     expect(JSON.stringify(body)).not.toMatch(/Wanjiru|OP0042|1,500/);
   });
@@ -124,7 +123,7 @@ describe("verifying a document", () => {
     expect(checks[0].actorId).toBeNull();
   });
 
-  it("answers withdrawn once the document is voided, without saying why", async () => {
+  it("answers withdrawn once the document is voided, without saying why or when", async () => {
     const { facility, document } = await receiptAt();
     await runAsFacility(facility.id, tx => voidDocument(tx, {
       facilityId: facility.id,
@@ -136,9 +135,15 @@ describe("verifying a document", () => {
     const res = await verify(document.verificationCode);
     const body = await res.json();
 
-    expect(body).toMatchObject({ verified: true, status: "withdrawn" });
-    expect(body.withdrawnAt).toEqual(expect.any(String));
-    expect(JSON.stringify(body)).not.toContain("reversed");
+    expect(body).toEqual({
+      verified: true,
+      kind: "receipt",
+      title: "Receipt",
+      number: document.number,
+      issuedAt: document.issuedAt.toISOString(),
+      issuer: { name: "Amani Hospital", kmhfrCode: facility.kmhfrCode },
+      status: "withdrawn",
+    });
   });
 
   it("knows no document by a code nobody was given", async () => {

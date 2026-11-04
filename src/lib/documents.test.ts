@@ -184,6 +184,20 @@ describe("voiding a document", () => {
     const issued = await issue(facility.id);
 
     expect(await sqlStateOf(voidIt(facility.id, issued.id, "   "))).toBe("23514");
+    // No reason at all, by the owner: a CHECK passes on NULL unless it says otherwise.
+    const silent = pool.query("UPDATE documents SET voided_at = now() WHERE id = $1", [issued.id]);
+    expect(await sqlStateOf(silent)).toBe("23514");
+  });
+
+  it("is a separate step: nothing can be issued already voided, even by the owner", async () => {
+    const facility = await facilityWithReceipts();
+
+    const born = pool.query(`
+      INSERT INTO documents (facility_id, kind, number, verification_code, content, voided_at, void_reason)
+      VALUES ($1, 'receipt', 'RCT-2026-0001', repeat('b', 27), '{}'::jsonb, now(), 'never stood')
+    `, [facility.id]);
+
+    expect(await sqlStateOf(born)).toBe("23001");
   });
 
   it("cannot reach another facility's document", async () => {

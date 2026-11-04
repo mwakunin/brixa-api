@@ -1,6 +1,6 @@
 {
-  "id": "bf228383-a1cf-4e9d-b8f1-07962aeaba6b",
-  "prevId": "6b9e0e2b-3c7d-44f6-a09e-5e00c3b0b3ee",
+  "id": "20dec5a7-603a-4d90-889d-f97be66f4095",
+  "prevId": "3003e9e6-ecd4-4c13-ae09-f1a6e97b9532",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -435,7 +435,7 @@
         },
         "documents_void_has_reason": {
           "name": "documents_void_has_reason",
-          "value": "(\"documents\".\"voided_at\" IS NULL AND \"documents\".\"void_reason\" IS NULL)\n      OR (\"documents\".\"voided_at\" IS NOT NULL AND length(btrim(\"documents\".\"void_reason\")) > 0)"
+          "value": "(\"documents\".\"voided_at\" IS NULL AND \"documents\".\"void_reason\" IS NULL)\n      OR (\"documents\".\"voided_at\" IS NOT NULL AND \"documents\".\"void_reason\" IS NOT NULL AND length(btrim(\"documents\".\"void_reason\")) > 0)"
         }
       },
       "isRLSEnabled": false

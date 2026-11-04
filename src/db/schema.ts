@@ -459,11 +459,13 @@ export const documents = pgTable("documents", {
   oneOf("documents_kind_known", t.kind, ["receipt"]),
   // 20 bytes of base64url: a shorter code typed in by hand would be guessable.
   check("documents_verification_code_shape", sql`${t.verificationCode} ~ '^[A-Za-z0-9_-]{27}$'`),
-  // Voided means at some time, for a stated reason; otherwise neither.
+  // Voided means at some time, for a stated reason; otherwise neither. The
+  // explicit IS NOT NULL matters: on a NULL reason `length(...) > 0` is NULL,
+  // and a CHECK passes on NULL.
   check(
     "documents_void_has_reason",
     sql`(${t.voidedAt} IS NULL AND ${t.voidReason} IS NULL)
-      OR (${t.voidedAt} IS NOT NULL AND length(btrim(${t.voidReason})) > 0)`,
+      OR (${t.voidedAt} IS NOT NULL AND ${t.voidReason} IS NOT NULL AND length(btrim(${t.voidReason})) > 0)`,
   ),
 ]);
 

@@ -15,7 +15,7 @@ CREATE TABLE "documents" (
 	CONSTRAINT "documents_kind_known" CHECK ("documents"."kind" IN ('receipt')),
 	CONSTRAINT "documents_verification_code_shape" CHECK ("documents"."verification_code" ~ '^[A-Za-z0-9_-]{27}$'),
 	CONSTRAINT "documents_void_has_reason" CHECK (("documents"."voided_at" IS NULL AND "documents"."void_reason" IS NULL)
-      OR ("documents"."voided_at" IS NOT NULL AND length(btrim("documents"."void_reason")) > 0))
+      OR ("documents"."voided_at" IS NOT NULL AND "documents"."void_reason" IS NOT NULL AND length(btrim("documents"."void_reason")) > 0))
 );
 --> statement-breakpoint
 ALTER TABLE "audit_log" DROP CONSTRAINT "audit_log_action_known";--> statement-breakpoint

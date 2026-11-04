@@ -18,14 +18,24 @@ GRANT UPDATE ("voided_at", "void_reason") ON "documents" TO hospital_app;
 --> statement-breakpoint
 
 -- And for every role, the owner included: an issued document is frozen. It
--- may be voided once, which sets the void columns and changes nothing else; a
--- voided document never changes again; and no document is ever deleted, so
--- its number stays accounted for. TRUNCATE (the test harness) fires no row
--- trigger. A correction is a new document, never an edit.
+-- is issued standing, never already voided, so voiding is always the
+-- separate, audited step; it may be voided once, which sets the void columns
+-- and changes nothing else; a voided document never changes again; and no
+-- document is ever deleted, so its number stays accounted for. TRUNCATE (the
+-- test harness) fires no row trigger. A correction is a new document, never
+-- an edit.
 CREATE FUNCTION documents_frozen() RETURNS trigger
   LANGUAGE plpgsql
   AS $$
 BEGIN
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.voided_at IS NOT NULL OR NEW.void_reason IS NOT NULL THEN
+      RAISE EXCEPTION 'a document is issued standing; void it afterwards'
+        USING ERRCODE = 'restrict_violation';
+    END IF;
+    RETURN NEW;
+  END IF;
+
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION 'an issued document is never deleted; void it instead'
       USING ERRCODE = 'restrict_violation';
@@ -55,5 +65,5 @@ $$;
 --> statement-breakpoint
 
 CREATE TRIGGER documents_frozen
-  BEFORE UPDATE OR DELETE ON "documents"
+  BEFORE INSERT OR UPDATE OR DELETE ON "documents"
   FOR EACH ROW EXECUTE FUNCTION documents_frozen();

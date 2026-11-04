@@ -11,8 +11,8 @@ import { recordAudit } from "./audit";
 /**
  * What the public verify page may say about a document: that this facility
  * issued this number on this date, and whether it still stands. Nothing about
- * the patient, and not why it was voided: a prescription's items alone can
- * reveal a condition, and the code may be read off a photo of the paper by
+ * the patient, and not why or when it was voided: a prescription's items alone
+ * can reveal a condition, and the code may be read off a photo of the paper by
  * someone it was never meant for.
  */
 export interface VerifiedDocument {
@@ -22,7 +22,6 @@ export interface VerifiedDocument {
   issuedAt: Date;
   issuer: { name: string; kmhfrCode: string };
   status: "valid" | "withdrawn";
-  withdrawnAt: Date | null;
 }
 
 /**
@@ -63,7 +62,6 @@ export async function verifyDocument(code: string): Promise<VerifiedDocument | n
       issuedAt: document.issuedAt,
       issuer: { name: document.content.issuer.name, kmhfrCode: document.content.issuer.kmhfrCode },
       status: document.voidedAt ? "withdrawn" : "valid",
-      withdrawnAt: document.voidedAt,
     };
   });
 }
