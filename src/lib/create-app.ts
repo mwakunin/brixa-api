@@ -68,7 +68,7 @@ function staffAppCors() {
  * read by the staff app's site, not only this origin, since the app opens a
  * document's PDF from its own pages.
  */
-function hardenedHeaders() {
+export function hardenedHeaders() {
   return secureHeaders({
     strictTransportSecurity: "max-age=31536000; includeSubDomains",
     crossOriginResourcePolicy: "same-site",

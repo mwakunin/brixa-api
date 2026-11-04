@@ -35,7 +35,7 @@ function storageWith(file: ReturnType<typeof fakeFile>) {
   return { gcs: gcsStorage(client, "hms-test-bucket"), bucket, client };
 }
 
-const KEY = newObjectKey(randomUUID(), "test");
+const KEY = newObjectKey(randomUUID(), "patients", randomUUID());
 
 describe("cloud storage", () => {
   it("writes only where nothing exists yet, and keeps the object out of caches", async () => {

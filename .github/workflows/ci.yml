@@ -180,6 +180,8 @@ jobs:
               echo "container answering: $health"
               echo "$health" | grep -q '"database":"down"'
               test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:9999/)" = "503"
+              # The gate answers before the app, and still sends HSTS.
+              curl -s -D - -o /dev/null http://localhost:9999/ | grep -qi '^strict-transport-security: max-age=31536000'
               docker rm -f api-smoke >/dev/null
               exit 0
             fi

@@ -46,29 +46,48 @@ export function signedUrlLifetime(requested?: number): number {
   return seconds;
 }
 
-const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
-const SEGMENT = /^[a-z0-9_-]{1,64}$/;
-const KEY = new RegExp(`^tenants/${UUID}(?:/[a-z0-9_-]{1,64})*/${UUID}$`);
-
 /**
- * A fresh key under a facility: `tenants/{facilityId}/{...segments}/{uuid}`,
- * e.g. `newObjectKey(facilityId, "patients", patientId)`.
- *
- * Segments are lowercase identifiers: a category, or an id. The shape is
- * enforced so a name cannot slip in by accident through a careless caller,
- * and so no key can climb out of its prefix (`..`, `/`, `\`).
+ * What a stored file belongs to: the folder under a facility. Added as the
+ * modules that store files land, like a number series kind.
  */
-export function newObjectKey(facilityId: string, ...segments: string[]): string {
-  for (const segment of segments) {
-    if (!SEGMENT.test(segment))
-      throw new Error(`Not a key segment: use lowercase ids and categories only`);
-  }
-  return assertObjectKey(["tenants", facilityId, ...segments, randomUUID()].join("/"));
+export const OBJECT_CATEGORIES = ["patients"] as const;
+export type ObjectCategory = (typeof OBJECT_CATEGORIES)[number];
+
+const IS_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+function isCategory(value: string | undefined): value is ObjectCategory {
+  return OBJECT_CATEGORIES.includes(value as ObjectCategory);
 }
 
-/** Refuses anything `newObjectKey` could not have made. */
+/**
+ * A fresh key under a facility: `tenants/{facilityId}/{category}/{...ids}/{uuid}`,
+ * e.g. `newObjectKey(facilityId, "patients", patientId)`.
+ *
+ * Every id must be a UUID and the category must be one of a fixed list, so
+ * nothing a person typed (a name, a phone number) can become part of a key
+ * (rule 10), and no key can climb out of its prefix.
+ */
+export function newObjectKey(facilityId: string, category: ObjectCategory, ...ids: string[]): string {
+  if (!isCategory(category))
+    throw new Error("Not an object category");
+  if (![facilityId, ...ids].every(id => IS_UUID.test(id)))
+    throw new Error("Object keys hold ids only, and every id is a UUID");
+  return assertObjectKey(["tenants", facilityId, category, ...ids, randomUUID()].join("/"));
+}
+
+/**
+ * Refuses anything `newObjectKey` could not have made: `tenants`, a facility
+ * id, a known category, then one or more ids, every id a UUID.
+ */
 export function assertObjectKey(key: string): string {
-  if (!KEY.test(key))
+  const [root, facilityId, category, ...ids] = key.split("/");
+  const issued = root === "tenants"
+    && IS_UUID.test(facilityId ?? "")
+    && isCategory(category)
+    && ids.length > 0
+    && ids.every(id => IS_UUID.test(id));
+
+  if (!issued)
     throw new Error("Not an object key this system issued");
   return key;
 }

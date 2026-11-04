@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import app from "@/app";
 
-import type { ObjectStorage } from "./storage";
+import type { ObjectCategory, ObjectStorage } from "./storage";
 
 import { storage } from "./object-storage";
 import { assertObjectKey, newObjectKey, ObjectExistsError } from "./storage";
@@ -14,6 +14,11 @@ import { localStorage } from "./storage-local";
 
 const FACILITY = randomUUID();
 const BYTES = new TextEncoder().encode("%PDF-1.7 synthetic");
+
+/** A fresh key for a synthetic patient's file. */
+function aKey() {
+  return newObjectKey(FACILITY, "patients", randomUUID());
+}
 
 describe("object keys", () => {
   it("are tenant-prefixed and random, naming ids only", () => {
@@ -27,15 +32,25 @@ describe("object keys", () => {
 
   it.each([
     ["a person's name", "Wanjiru Kamau"],
+    ["a lowercase name", "wanjiru"],
+    ["a phone number", "254712345678"],
     ["a path climbing out", ".."],
     ["a slash", "a/b"],
-    ["capitals", "Patients"],
-  ])("refuse a segment that is %s", (_label, segment) => {
-    expect(() => newObjectKey(FACILITY, segment)).toThrow();
+  ])("refuse an id that is %s", (_label, id) => {
+    expect(() => newObjectKey(FACILITY, "patients", id)).toThrow("every id is a UUID");
+  });
+
+  it("refuse a facility that is not an id", () => {
+    expect(() => newObjectKey("amani-hospital", "patients")).toThrow("every id is a UUID");
+  });
+
+  it("refuse a category outside the list", () => {
+    expect(() => newObjectKey(FACILITY, "wanjiru" as ObjectCategory)).toThrow("Not an object category");
   });
 
   it("refuse a key this system could not have made", () => {
     expect(() => assertObjectKey(`tenants/${FACILITY}/../../etc/${randomUUID()}`)).toThrow();
+    expect(() => assertObjectKey(`tenants/${FACILITY}/wanjiru/${randomUUID()}`)).toThrow();
     expect(() => assertObjectKey("tenants/not-a-facility/x")).toThrow();
   });
 });
@@ -54,7 +69,7 @@ describe("local storage", () => {
   });
 
   it("returns what was stored", async () => {
-    const key = newObjectKey(FACILITY, "test");
+    const key = aKey();
 
     await local.put(key, BYTES, { contentType: "application/pdf" });
 
@@ -62,7 +77,7 @@ describe("local storage", () => {
   });
 
   it("never overwrites an object", async () => {
-    const key = newObjectKey(FACILITY, "test");
+    const key = aKey();
     await local.put(key, BYTES, { contentType: "application/pdf" });
 
     await expect(local.put(key, new Uint8Array([1]), { contentType: "application/pdf" }))
@@ -72,7 +87,7 @@ describe("local storage", () => {
   });
 
   it("leaves nothing behind when a write fails, so a retry can succeed", async () => {
-    const key = newObjectKey(FACILITY, "test");
+    const key = aKey();
     // A directory where the content-type record goes makes that write fail.
     await mkdir(path.join(root, `${key}.content-type`), { recursive: true });
 
@@ -84,14 +99,14 @@ describe("local storage", () => {
   });
 
   it("answers null for a missing object, and deleting one is not an error", async () => {
-    const key = newObjectKey(FACILITY, "test");
+    const key = aKey();
 
     expect(await local.get(key)).toBeNull();
     await expect(local.delete(key)).resolves.toBeUndefined();
   });
 
   it.each([0, 901, 1.5])("refuses a signed URL lasting %s seconds", async (seconds) => {
-    await expect(local.createSignedUrl(newObjectKey(FACILITY, "test"), { expiresInSeconds: seconds }))
+    await expect(local.createSignedUrl(aKey(), { expiresInSeconds: seconds }))
       .rejects
       .toBeInstanceOf(RangeError);
   });
@@ -103,7 +118,7 @@ describe("a local signed URL", () => {
   });
 
   async function stored() {
-    const key = newObjectKey(FACILITY, "test");
+    const key = aKey();
     await storage.put(key, BYTES, { contentType: "application/pdf" });
     return key;
   }
