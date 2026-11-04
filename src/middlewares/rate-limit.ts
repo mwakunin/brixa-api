@@ -104,6 +104,16 @@ export const bySignInEmail: KeySource = async (c) => {
   }
 };
 
+/**
+ * The account a sign-in names, together with the address trying it. A
+ * caller's wrong guesses use up their own budget for that account, not the
+ * budget of its owner signing in from somewhere else.
+ */
+export const bySignInEmailFromAddress: KeySource = async (c) => {
+  const account = await bySignInEmail(c);
+  return account === null ? null : `${account}:${await byAddress(c)}`;
+};
+
 export function rateLimit(options: RateLimitOptions) {
   const limiter = new RateLimiterRedis({
     storeClient: options.client ?? redis,
@@ -159,8 +169,16 @@ export const rateLimits = {
   /** Better Auth's POSTs (sign-in, password flows), per address: brute force and enumeration. */
   auth: () => rateLimit({ points: 10, duration: 60, keyPrefix: "auth", key: byAddress }),
 
-  /** Sign-in attempts against one account, from anywhere. */
-  signInAccount: () => rateLimit({ points: 10, duration: 900, keyPrefix: "signin-account", key: bySignInEmail }),
+  /** Sign-in attempts on one account from one address: the tight limit. */
+  signInAccountFromAddress: () => rateLimit({ points: 10, duration: 900, keyPrefix: "signin-account-ip", key: bySignInEmailFromAddress }),
+
+  /**
+   * Sign-in attempts on one account from anywhere. Loose on purpose: it stops
+   * a guess spread across many addresses, but a limit this tight on its own
+   * would let anyone who knows a clinician's email keep them locked out from
+   * one laptop. Reaching this one takes ten addresses or more.
+   */
+  signInAccount: () => rateLimit({ points: 100, duration: 900, keyPrefix: "signin-account", key: bySignInEmail }),
 
   /** Better Auth's GETs: a staff app checks its session constantly, so this only stops a flood. */
   authRead: () => rateLimit({ points: 300, duration: 60, keyPrefix: "auth-read", key: byAddress }),

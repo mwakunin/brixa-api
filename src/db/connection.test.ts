@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isLocalDatabase, sslConfigFor } from "./connection";
+import { InsecureDatabaseUrlError, isLocalDatabase, sslConfigFor } from "./connection";
 
 /**
  * This logic was duplicated once and the copy kept an older, broken version
@@ -47,5 +47,36 @@ describe("sslConfigFor", () => {
     // The exact downgrade the substring version allowed.
     expect(sslConfigFor("postgresql://localhost:pw@prod.example.com/db"))
       .toEqual({ rejectUnauthorized: true });
+  });
+
+  // pg lets these replace the strict setting, so they must not get that far.
+  it.each([
+    ["sslmode=disable", "turn TLS off"],
+    ["ssl=0", "turn TLS off"],
+    ["uselibpqcompat=true&sslmode=disable", "turn TLS off"],
+    ["sslmode=no-verify", "turn off certificate verification"],
+    ["ssl=no-verify", "turn off certificate verification"],
+    ["uselibpqcompat=true&sslmode=require", "turn off certificate verification"],
+    ["uselibpqcompat=true&sslmode=prefer", "turn off certificate verification"],
+  ])("refuses a remote DSN with %s", (params, weakening) => {
+    expect(() => sslConfigFor(`postgresql://u:secret-pw@db.example.com/db?${params}`))
+      .toThrow(new InsecureDatabaseUrlError(weakening));
+  });
+
+  it("keeps the password out of the refusal", () => {
+    expect(() => sslConfigFor("postgresql://u:secret-pw@db.example.com/db?sslmode=disable"))
+      .toThrow(expect.objectContaining({ message: expect.not.stringContaining("secret-pw") }));
+  });
+
+  it.each(["sslmode=verify-full", "ssl=true", "uselibpqcompat=true&sslmode=verify-full"])(
+    "accepts a remote DSN with %s, which still verifies the certificate",
+    (params) => {
+      expect(sslConfigFor(`postgresql://u:p@db.example.com/db?${params}`))
+        .toEqual({ rejectUnauthorized: true });
+    },
+  );
+
+  it("leaves a local DSN's parameters alone", () => {
+    expect(sslConfigFor("postgresql://u:p@localhost:5432/db?sslmode=disable")).toBe(false);
   });
 });

@@ -69,10 +69,13 @@ export default function createApp() {
   // Better Auth owns everything under /api/auth. Mounted before withSession so
   // the handler manages its own cookies. The POSTs (sign-in, password flows)
   // are tightly limited by address: they are the brute-force and enumeration
-  // targets. Sign-in also counts per account named, so a guess spread across
-  // many addresses cannot multiply the attempts one account takes. The GETs
-  // only stop a flood: a staff app checks its session constantly.
-  app.post("/api/auth/sign-in/email", rateLimits.signInAccount());
+  // targets. Sign-in also counts per account named: tightly from each
+  // address, so an attacker's guesses cannot lock the owner out, and loosely
+  // from anywhere, so a guess spread across many addresses is still capped.
+  // The per-address limit runs first, so a refused attempt never counts
+  // against the account's shared budget. The GETs only stop a flood: a staff
+  // app checks its session constantly.
+  app.post("/api/auth/sign-in/email", rateLimits.signInAccountFromAddress(), rateLimits.signInAccount());
   app.post("/api/auth/*", rateLimits.auth(), c => auth.handler(c.req.raw));
   app.get("/api/auth/*", rateLimits.authRead(), c => auth.handler(c.req.raw));
 

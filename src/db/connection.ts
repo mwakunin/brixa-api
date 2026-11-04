@@ -7,6 +7,8 @@
  * previously duplicated, and the copy silently kept an older, broken version.
  */
 
+import { parse } from "pg-connection-string";
+
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
 /**
@@ -37,9 +39,46 @@ export function isLocalDatabase(connectionString: string): boolean {
  */
 export const CONNECTION_TIMEOUT_MS = 5_000;
 
-/** TLS settings for a `pg` Pool built from this DSN. */
+/** A remote connection string whose own SSL parameters would weaken TLS. */
+export class InsecureDatabaseUrlError extends Error {
+  constructor(weakening: string) {
+    // Never the connection string itself: it carries the password.
+    super(`A remote database connection string must not ${weakening}. Remove its SSL parameters, or use sslmode=verify-full.`);
+    this.name = "InsecureDatabaseUrlError";
+  }
+}
+
+/**
+ * How the DSN's own SSL parameters would weaken TLS, or null if they would not.
+ *
+ * `pg` lets SSL settings in the connection string replace the `ssl` option a
+ * Pool is given, so `?sslmode=disable` or `?sslmode=no-verify` would quietly
+ * undo the strict setting `sslConfigFor` returns. Read with pg's own parser,
+ * so this judges exactly what pg will do, `uselibpqcompat` included.
+ */
+function weakeningIn(connectionString: string): string | null {
+  const { ssl } = parse(connectionString);
+
+  if (ssl === false)
+    return "turn TLS off";
+  if (ssl === "no-verify" || (typeof ssl === "object" && ssl.rejectUnauthorized === false))
+    return "turn off certificate verification";
+  return null;
+}
+
+/**
+ * TLS settings for a `pg` Pool built from this DSN. Throws
+ * `InsecureDatabaseUrlError` for a remote DSN that asks for less than a
+ * verified certificate, so a misconfigured deployment fails at startup
+ * rather than sending health data in the clear.
+ */
 export function sslConfigFor(connectionString: string) {
-  return isLocalDatabase(connectionString)
-    ? false as const
-    : { rejectUnauthorized: true };
+  if (isLocalDatabase(connectionString))
+    return false as const;
+
+  const weakening = weakeningIn(connectionString);
+  if (weakening)
+    throw new InsecureDatabaseUrlError(weakening);
+
+  return { rejectUnauthorized: true };
 }

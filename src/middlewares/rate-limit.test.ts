@@ -4,7 +4,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import realApp from "@/app";
 import { createRouter, createTestApp } from "@/lib/create-app";
 import { redis } from "@/lib/redis";
-import { nextIp, resetDb } from "@/test/helpers";
+import { createTestAccount, nextEmail, nextIp, resetDb, TEST_PASSWORD } from "@/test/helpers";
 
 import { rateLimit } from "./rate-limit";
 
@@ -97,35 +97,66 @@ describe("rate limiting", () => {
     expect((await app.request("/limited-offline", from(ip))).status).toBe(429);
   });
 
-  it("limits sign-in attempts on one account even when they come from many addresses", async () => {
-    const email = `target-${nextIp()}@example.test`;
-    const statuses: number[] = [];
-    for (let i = 0; i < 11; i += 1) {
-      const res = await realApp.request("/api/auth/sign-in/email", {
+  describe("on sign-in", () => {
+    function signInFrom(ip: string, email: string, password = "wrong-password-1") {
+      return realApp.request("/api/auth/sign-in/email", {
         method: "POST",
-        headers: { "content-type": "application/json", "x-forwarded-for": nextIp() },
-        body: JSON.stringify({ email, password: "wrong-password-1" }),
+        headers: { "content-type": "application/json", "x-forwarded-for": ip },
+        body: JSON.stringify({ email, password }),
       });
-      statuses.push(res.status);
     }
 
-    expect(statuses.slice(0, 10).every(s => s === 401)).toBe(true);
-    expect(statuses[10]).toBe(429);
-  });
+    it("limits one address's attempts on one account for fifteen minutes", async () => {
+      const ip = nextIp();
+      const email = nextEmail();
+      const statuses: number[] = [];
+      for (let i = 0; i < 10; i += 1)
+        statuses.push((await signInFrom(ip, email)).status);
 
-  it("limits sign-in attempts", async () => {
-    const ip = nextIp();
-    const attempt = () => realApp.request("/api/auth/sign-in/email", {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-forwarded-for": ip },
-      body: JSON.stringify({ email: "nobody@example.test", password: "wrong-password-1" }),
+      const refused = await signInFrom(ip, email);
+
+      expect(statuses.every(s => s === 401)).toBe(true);
+      expect(refused.status).toBe(429);
+      // The account-and-address window, not the per-address minute.
+      expect(Number(refused.headers.get("retry-after"))).toBeGreaterThan(60);
     });
 
-    const statuses: number[] = [];
-    for (let i = 0; i < 11; i += 1)
-      statuses.push((await attempt()).status);
+    // The lockout a per-account limit alone allows: anyone who knows a
+    // clinician's email spends the account's budget, and the clinician is refused.
+    it("does not let someone else's failed attempts lock the owner out", async () => {
+      const email = nextEmail();
+      await createTestAccount(email);
+      const attacker = nextIp();
+      for (let i = 0; i < 10; i += 1)
+        await signInFrom(attacker, email);
+      expect((await signInFrom(attacker, email)).status).toBe(429);
 
-    expect(statuses.slice(0, 10).every(s => s === 401)).toBe(true);
-    expect(statuses[10]).toBe(429);
+      const owner = await signInFrom(nextIp(), email, TEST_PASSWORD);
+
+      expect(owner.status).toBe(200);
+    });
+
+    it("still limits one account when the attempts come from many addresses", async () => {
+      const email = nextEmail();
+
+      // In tens: a hundred at once would queue past the pool's connection timeout.
+      const spread: Response[] = [];
+      for (let batch = 0; batch < 10; batch += 1)
+        spread.push(...await Promise.all(Array.from({ length: 10 }, () => signInFrom(nextIp(), email))));
+      const next = await signInFrom(nextIp(), email);
+
+      expect(spread.every(r => r.status === 401)).toBe(true);
+      expect(next.status).toBe(429);
+    }, 60_000);
+
+    it("limits one address's attempts whatever account they name", async () => {
+      const ip = nextIp();
+      const statuses: number[] = [];
+      for (let i = 0; i < 11; i += 1)
+        statuses.push((await signInFrom(ip, nextEmail())).status);
+
+      expect(statuses.slice(0, 10).every(s => s === 401)).toBe(true);
+      expect(statuses[10]).toBe(429);
+    });
   });
 });
