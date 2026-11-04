@@ -13,7 +13,14 @@ const adminOnly = requireMembershipRole("facility_admin");
 const RefusalSchema = z.object({ message: z.string(), code: z.string() });
 
 const BedSchema = z.object({ id: z.uuid(), label: z.string(), isActive: z.boolean(), occupied: z.boolean() });
-const WardSchema = z.object({ id: z.uuid(), name: z.string(), isActive: z.boolean(), beds: z.array(BedSchema) });
+const WardSchema = z.object({
+  id: z.uuid(),
+  name: z.string(),
+  isActive: z.boolean(),
+  /** What a night here is charged as; null until the admin sets it. */
+  bedDayItemId: z.uuid().nullable(),
+  beds: z.array(BedSchema),
+});
 
 const WardBodySchema = z.object({ name: z.string().trim().min(1).max(80).regex(/^\P{C}+$/u, "One line") });
 const BedBodySchema = z.object({ label: z.string().trim().min(1).max(20).regex(/^[\w ./-]+$/, "Letters, digits, spaces and . / - only") });
@@ -62,6 +69,27 @@ export const addBed = createRoute({
   },
 });
 
+export const setBedDayItem = createRoute({
+  tags,
+  method: "patch",
+  path: "/wards/{id}",
+  summary: "Set what a night in the ward is charged as",
+  description: "A bed-day item from the catalogue. Its price comes from the price list on each night's date.",
+  middleware: [adminOnly] as const,
+  request: {
+    headers: facilityHeaders,
+    params: WardParamsSchema,
+    body: jsonContentRequired(z.object({ bedDayItemId: z.uuid() }), "The bed-day item"),
+  },
+  responses: {
+    [HttpStatusCodes.OK]: jsonContent(WardSchema.omit({ beds: true }), "Set"),
+    [HttpStatusCodes.CONFLICT]: jsonContent(RefusalSchema, "Not a bed-day item"),
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(WardParamsSchema), "Invalid request"),
+    ...tenantResponses,
+  },
+});
+
 export type ListWardsRoute = typeof listWards;
+export type SetBedDayItemRoute = typeof setBedDayItem;
 export type CreateWardRoute = typeof createWard;
 export type AddBedRoute = typeof addBed;

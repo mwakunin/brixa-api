@@ -3,6 +3,7 @@ import type { AppOpenAPI } from "@/lib/types";
 import env from "@/env";
 import configureOpenAPI from "@/lib/configure-open-api";
 import createApp from "@/lib/create-app";
+import charges from "@/routes/charges/charges.index";
 import documents from "@/routes/documents/documents.index";
 import encounters from "@/routes/encounters/encounters.index";
 import facility from "@/routes/facility/facility.index";
@@ -70,6 +71,7 @@ const tenantRoutes = [
   encounters,
   wards,
   prices,
+  charges,
 ] as unknown as readonly AppOpenAPI[];
 
 [...unscopedRoutes, ...developmentRoutes, ...tenantRoutes].forEach((route) => {

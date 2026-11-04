@@ -23,7 +23,7 @@ Status: proposed · Last updated: 2026-11-03
 - The zero-padded width is configurable per series, default 4 (`OP0001`).
 - A facility may change its prefix later. The change applies to newly issued numbers only.
 - ~~The `sex` option set needs confirming.~~ **Confirmed 2026-11-04:** `male`, `female`, `intersex`; blank only for an unidentified patient (§5.1).
-- The bed-day counting rule (midnight census, 24-hour blocks, or admission day counts) — a pilot question (`SPEC.md` §9).
+- ~~The bed-day counting rule.~~ **Decided 2026-11-04:** midnight census, minimum one day (§7.2). To confirm with the pilot.
 
 ---
 
@@ -286,6 +286,13 @@ Re-pricing an encounter (for example, coverage confirmed after the charges were 
 - **Applying a change** from day E: the price running into E ends on E; a price already approved to start on or after E ends on its own start, so it never applies; the new price runs from E. E must be today or later at request and at approval. The approval's audit entry records each item's old and new price.
 - **`resolvePrice(item, list, serviceDate)`** (`src/lib/prices.ts`) is the only lookup. In P2 the list is the cash list; P7 adds the scheme and payer lists in front of it, and keeps "not covered" as the answer when none has the item.
 - The facility admin and the finance manager keep the catalogue and request and approve changes; every member reads prices.
+
+**As built (P2, slice 3): charges and bed-days.**
+
+- `charges`: `encounter_id`, `billable_item_id`, `quantity` (numeric, 3 decimals), `unit_price_cents` and `amount_cents` copied at capture, `price_list_item_id`, `service_date`, one typed source (`bed_stay_id` so far) or a `manual_reason`, `captured_by` (null for a system capture), and cancellation columns (all-or-none, with a reason). `amount_cents` is a whole number of shillings (CHECK), computed once by `chargeAmountCents` (`src/lib/money.ts`, exact, half up). A trigger lets a charge change only by being cancelled, once. An encounter with live charges cannot be cancelled.
+- **Manual postings** need a reason, are priced from the cash list for the service date (which must fall within the encounter, not in the future), and are audited. Billing clerks, finance managers and the facility admin post and cancel.
+- **Bed-days, by the midnight rule (decided 2026-11-04):** one bed-day for each Nairobi midnight the patient is in a bed, at the rate of the bed-day item of the ward they are in at that midnight, with `service_date` the day the night began. A stay that ended before its first midnight is one day, dated the admission day. A unique index allows one bed-day per encounter per night, and inserts use `ON CONFLICT DO NOTHING`, so `accrueBedDays` is idempotent under repeats and concurrency. Discharge calls it, and so does the nightly run (`POST /internal/jobs/bed-days`, `src/jobs/bed-days.ts`).
+- `wards.bed_day_item_id` names the bed-day item a night in the ward is charged as; its price comes from the price list on each night's date. A night with no item or no price is not charged: it is recorded once in **`job_failures`** (`job`, `subject_id`, `error`, unique while unresolved) and charged by the next run once fixed.
 
 **Bed-days** are derived from `bed_stays` time ranges and turned into charges by one idempotent function. A partial unique index on `(encounter_id, charge_date)` for bed-day charges makes a second run a no-op. The nightly job, the running bill and discharge all call that function, so a missed night is caught up rather than lost.
 

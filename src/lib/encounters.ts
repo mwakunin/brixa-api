@@ -7,6 +7,7 @@ import { admissions, beds, bedStays, encounters, patientNumbers, patients, wards
 import type { PatientActor } from "./patients";
 
 import { recordAudit } from "./audit";
+import { accrueBedDays, liveChargeCount } from "./charges";
 import { isExclusionViolation, isUniqueViolation } from "./db-errors";
 import { issueNumber } from "./number-series";
 import { bedOccupied, bedWithWard } from "./wards";
@@ -38,7 +39,8 @@ export class EncounterError extends Error {
     | "bed_unavailable"
     | "bed_occupied"
     | "same_bed"
-    | "parent_mismatch") {
+    | "parent_mismatch"
+    | "has_charges") {
     super({
       patient_not_found: "No such patient",
       not_found: "No such encounter",
@@ -52,6 +54,7 @@ export class EncounterError extends Error {
       bed_occupied: "That bed is occupied",
       same_bed: "The patient is already in that bed",
       parent_mismatch: "That visit belongs to another patient",
+      has_charges: "This encounter has charges; cancel them first",
     }[code]);
     this.name = "EncounterError";
   }
@@ -170,11 +173,13 @@ export async function closeEncounter(tx: AppDb, facilityId: string, id: string, 
 
 /**
  * Cancels an encounter opened by mistake, for a stated reason. A cancelled
- * admission leaves its bed at once. (From slice 3, an encounter with live
- * charges cannot be cancelled.)
+ * admission leaves its bed at once. One with charges still standing cannot
+ * be cancelled: the charges are cancelled first, each for its own reason.
  */
 export async function cancelEncounter(tx: AppDb, facilityId: string, id: string, reason: string, actor: PatientActor, at = new Date()) {
   const encounter = await lockEncounter(tx, id);
+  if (await liveChargeCount(tx, id) > 0)
+    throw new EncounterError("has_charges");
 
   if (encounter.kind === "ipd") {
     const [admission] = await tx.select({ id: admissions.id }).from(admissions).where(eq(admissions.encounterId, id)).limit(1);
@@ -326,7 +331,10 @@ export async function transferPatient(
   });
 }
 
-/** Discharges an admitted patient: the stay ends, and so does the encounter. */
+/**
+ * Discharges an admitted patient: the stay ends, and so does the encounter,
+ * and every bed-day up to now is charged (a same-day stay, one day).
+ */
 export async function dischargePatient(
   tx: AppDb,
   facilityId: string,
@@ -345,6 +353,7 @@ export async function dischargePatient(
   await tx.update(encounters)
     .set({ status: "closed", endedAt: at, closedBy: actor.membershipId })
     .where(eq(encounters.id, encounterId));
+  await accrueBedDays(tx, facilityId, encounterId, at);
 
   await recordAudit(tx, {
     facilityId,

@@ -7,6 +7,7 @@ import {
   index,
   integer,
   jsonb,
+  numeric,
   pgTable,
   text,
   timestamp,
@@ -227,6 +228,10 @@ export const auditLog = pgTable("audit_log", {
     | "price_change.approved"
     | "price_change.rejected"
     | "price_change.withdrawn"
+    | "ward.bed_day_item_set"
+    | "charge.posted"
+    | "charge.accrued"
+    | "charge.cancelled"
   >().notNull(),
   /** What it happened to. Not a foreign key: the log outlives what it names. */
   entityType: text().notNull(),
@@ -268,6 +273,10 @@ export const auditLog = pgTable("audit_log", {
     "price_change.approved",
     "price_change.rejected",
     "price_change.withdrawn",
+    "ward.bed_day_item_set",
+    "charge.posted",
+    "charge.accrued",
+    "charge.cancelled",
   ]),
 ]);
 
@@ -641,6 +650,136 @@ export const patientIdentifiers = pgTable("patient_identifiers", {
 ]);
 
 // ---------------------------------------------------------------------------
+// Billable items and prices (SCHEMA.md §7.2)
+// ---------------------------------------------------------------------------
+
+/**
+ * What the facility charges for: a consultation, a bed-day, a test, a drug.
+ * The catalogue holds identity only; what it costs lives in price lists.
+ */
+export const billableItems = pgTable("billable_items", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  /** The facility's own code, printed on bills and used in claims (rule 8). */
+  code: text().notNull(),
+  name: text().notNull(),
+  category: text().$type<
+    "consultation" | "bed_day" | "lab" | "imaging" | "procedure" | "drug" | "consumable" | "service" | "other"
+  >().notNull(),
+  isActive: boolean().default(true).notNull(),
+  createdAt: createdAt(),
+}, t => [
+  unique("billable_items_facility_id_id_key").on(t.facilityId, t.id),
+  unique("billable_items_facility_id_code_key").on(t.facilityId, t.code),
+  oneOf("billable_items_category_known", t.category, [
+    "consultation",
+    "bed_day",
+    "lab",
+    "imaging",
+    "procedure",
+    "drug",
+    "consumable",
+    "service",
+    "other",
+  ]),
+  check("billable_items_code_shape", sql`${t.code} ~ '^[A-Z0-9][A-Z0-9./-]{0,23}$'`),
+  check("billable_items_name_present", sql`length(btrim(${t.name})) > 0`),
+]);
+
+/**
+ * A set of prices. Each facility has one cash list, which prices the patient
+ * account; payers' lists arrive in P7. An item absent from a list is not
+ * covered by it, never priced from another (rule 21).
+ */
+export const priceLists = pgTable("price_lists", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  name: text().notNull(),
+  kind: text().$type<"cash">().notNull(),
+  createdAt: createdAt(),
+}, t => [
+  unique("price_lists_facility_id_id_key").on(t.facilityId, t.id),
+  uniqueIndex("price_lists_one_cash_list").on(t.facilityId).where(sql`${t.kind} = 'cash'`),
+  oneOf("price_lists_kind_known", t.kind, ["cash"]),
+]);
+
+/**
+ * A request to change prices, approved by a second person before it applies
+ * (rule 24). One request may carry many lines, so loading a facility's
+ * whole tariff is one approval. `status` is its lifecycle.
+ */
+export const priceChanges = pgTable("price_changes", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  priceListId: uuid().notNull(),
+  status: text().$type<"pending" | "approved" | "rejected" | "withdrawn">().default("pending").notNull(),
+  /** The Kenyan day the new prices take effect. */
+  effectiveFrom: date({ mode: "string" }).notNull(),
+  reason: text().notNull(),
+  requestedBy: uuid().notNull(),
+  requestedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  decidedBy: uuid(),
+  decidedAt: timestamp({ withTimezone: true }),
+}, t => [
+  unique("price_changes_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({ name: "price_changes_price_list_fk", columns: [t.facilityId, t.priceListId], foreignColumns: [priceLists.facilityId, priceLists.id] }),
+  foreignKey({ name: "price_changes_requested_by_fk", columns: [t.facilityId, t.requestedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "price_changes_decided_by_fk", columns: [t.facilityId, t.decidedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  oneOf("price_changes_status_known", t.status, ["pending", "approved", "rejected", "withdrawn"]),
+  check("price_changes_reason_present", sql`length(btrim(${t.reason})) > 0`),
+  // Approved or rejected by someone else; withdrawn only by the requester.
+  check(
+    "price_changes_decision",
+    sql`(${t.status} = 'pending' AND ${t.decidedBy} IS NULL AND ${t.decidedAt} IS NULL)
+      OR (${t.status} IN ('approved', 'rejected') AND ${t.decidedBy} IS NOT NULL AND ${t.decidedAt} IS NOT NULL
+          AND ${t.decidedBy} <> ${t.requestedBy})
+      OR (${t.status} = 'withdrawn' AND ${t.decidedBy} = ${t.requestedBy} AND ${t.decidedAt} IS NOT NULL)`,
+  ),
+]);
+
+export const priceChangeLines = pgTable("price_change_lines", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  priceChangeId: uuid().notNull(),
+  billableItemId: uuid().notNull(),
+  /** Cents, which allows fractional shillings in a unit price (SPEC.md D2). */
+  unitPriceCents: integer().notNull(),
+}, t => [
+  unique("price_change_lines_change_item_key").on(t.priceChangeId, t.billableItemId),
+  foreignKey({ name: "price_change_lines_change_fk", columns: [t.facilityId, t.priceChangeId], foreignColumns: [priceChanges.facilityId, priceChanges.id] }),
+  foreignKey({ name: "price_change_lines_item_fk", columns: [t.facilityId, t.billableItemId], foreignColumns: [billableItems.facilityId, billableItems.id] }),
+  check("price_change_lines_price_nonnegative", sql`${t.unitPriceCents} >= 0`),
+]);
+
+/**
+ * One item's price on one list, from `valid_from` until `valid_to`
+ * (exclusive; open-ended when null). Written only by an approved price
+ * change. Migration 0012 adds the exclusion constraint that forbids two
+ * overlapping prices for one item on one list. A superseded price only has
+ * `valid_to` set; a price replaced before it took effect ends on its own
+ * start day, so it never applied.
+ */
+export const priceListItems = pgTable("price_list_items", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  priceListId: uuid().notNull(),
+  billableItemId: uuid().notNull(),
+  unitPriceCents: integer().notNull(),
+  validFrom: date({ mode: "string" }).notNull(),
+  validTo: date({ mode: "string" }),
+  /** The approved change that set this price. */
+  priceChangeId: uuid().notNull(),
+}, t => [
+  unique("price_list_items_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({ name: "price_list_items_list_fk", columns: [t.facilityId, t.priceListId], foreignColumns: [priceLists.facilityId, priceLists.id] }),
+  foreignKey({ name: "price_list_items_item_fk", columns: [t.facilityId, t.billableItemId], foreignColumns: [billableItems.facilityId, billableItems.id] }),
+  foreignKey({ name: "price_list_items_change_fk", columns: [t.facilityId, t.priceChangeId], foreignColumns: [priceChanges.facilityId, priceChanges.id] }),
+  index("price_list_items_lookup_index").on(t.priceListId, t.billableItemId, t.validFrom),
+  check("price_list_items_price_nonnegative", sql`${t.unitPriceCents} >= 0`),
+  check("price_list_items_valid_range", sql`${t.validTo} IS NULL OR ${t.validTo} >= ${t.validFrom}`),
+]);
+
+// ---------------------------------------------------------------------------
 // Encounters, wards and admissions (SCHEMA.md §8)
 // ---------------------------------------------------------------------------
 
@@ -649,11 +788,18 @@ export const wards = pgTable("wards", {
   id: uuid().primaryKey().defaultRandom(),
   facilityId: uuid().notNull().references(() => facilities.id),
   name: text().notNull(),
+  /** What a night in this ward is charged as; its price comes from the price list. */
+  bedDayItemId: uuid(),
   isActive: boolean().default(true).notNull(),
   createdAt: createdAt(),
 }, t => [
   unique("wards_facility_id_id_key").on(t.facilityId, t.id),
   unique("wards_facility_id_name_key").on(t.facilityId, t.name),
+  foreignKey({
+    name: "wards_bed_day_item_fk",
+    columns: [t.facilityId, t.bedDayItemId],
+    foreignColumns: [billableItems.facilityId, billableItems.id],
+  }),
   check("wards_name_present", sql`length(btrim(${t.name})) > 0`),
 ]);
 
@@ -784,133 +930,88 @@ export const bedStays = pgTable("bed_stays", {
 ]);
 
 // ---------------------------------------------------------------------------
-// Billable items and prices (SCHEMA.md §7.2)
+// Charges (SCHEMA.md §7.2)
 // ---------------------------------------------------------------------------
 
 /**
- * What the facility charges for: a consultation, a bed-day, a test, a drug.
- * The catalogue holds identity only; what it costs lives in price lists.
+ * What the hospital did for a patient, at what price: captured by the
+ * module that did the work (rule 16), never typed in at the cashier.
+ *
+ * The price is copied at capture (SPEC.md D3) and the amount rounded once to
+ * whole shillings (D2), so a later price change never alters a past charge.
+ * A charge has one typed source, or none and a reason (a manual posting);
+ * P2's sources are bed-days, and P3 and P4 add order items, procedures and
+ * dispenses. After capture only its cancellation columns change.
  */
-export const billableItems = pgTable("billable_items", {
+export const charges = pgTable("charges", {
   id: uuid().primaryKey().defaultRandom(),
   facilityId: uuid().notNull().references(() => facilities.id),
-  /** The facility's own code, printed on bills and used in claims (rule 8). */
-  code: text().notNull(),
-  name: text().notNull(),
-  category: text().$type<
-    "consultation" | "bed_day" | "lab" | "imaging" | "procedure" | "drug" | "consumable" | "service" | "other"
-  >().notNull(),
-  isActive: boolean().default(true).notNull(),
-  createdAt: createdAt(),
+  encounterId: uuid().notNull(),
+  billableItemId: uuid().notNull(),
+  quantity: numeric({ precision: 11, scale: 3, mode: "string" }).notNull(),
+  unitPriceCents: integer().notNull(),
+  amountCents: integer().notNull(),
+  /** The price used, for audit and re-pricing. */
+  priceListItemId: uuid().notNull(),
+  /** The Kenyan day the service was given; for a bed-day, the night it began. */
+  serviceDate: date({ mode: "string" }).notNull(),
+  bedStayId: uuid(),
+  /** Why it was posted by hand, when it has no source. */
+  manualReason: text(),
+  /** Who posted it; null when the system captured it (a bed-day). */
+  capturedBy: uuid(),
+  capturedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  cancelledAt: timestamp({ withTimezone: true }),
+  cancelledBy: uuid(),
+  cancellationReason: text(),
 }, t => [
-  unique("billable_items_facility_id_id_key").on(t.facilityId, t.id),
-  unique("billable_items_facility_id_code_key").on(t.facilityId, t.code),
-  oneOf("billable_items_category_known", t.category, [
-    "consultation",
-    "bed_day",
-    "lab",
-    "imaging",
-    "procedure",
-    "drug",
-    "consumable",
-    "service",
-    "other",
-  ]),
-  check("billable_items_code_shape", sql`${t.code} ~ '^[A-Z0-9][A-Z0-9./-]{0,23}$'`),
-  check("billable_items_name_present", sql`length(btrim(${t.name})) > 0`),
-]);
-
-/**
- * A set of prices. Each facility has one cash list, which prices the patient
- * account; payers' lists arrive in P7. An item absent from a list is not
- * covered by it, never priced from another (rule 21).
- */
-export const priceLists = pgTable("price_lists", {
-  id: uuid().primaryKey().defaultRandom(),
-  facilityId: uuid().notNull().references(() => facilities.id),
-  name: text().notNull(),
-  kind: text().$type<"cash">().notNull(),
-  createdAt: createdAt(),
-}, t => [
-  unique("price_lists_facility_id_id_key").on(t.facilityId, t.id),
-  uniqueIndex("price_lists_one_cash_list").on(t.facilityId).where(sql`${t.kind} = 'cash'`),
-  oneOf("price_lists_kind_known", t.kind, ["cash"]),
-]);
-
-/**
- * A request to change prices, approved by a second person before it applies
- * (rule 24). One request may carry many lines, so loading a facility's
- * whole tariff is one approval. `status` is its lifecycle.
- */
-export const priceChanges = pgTable("price_changes", {
-  id: uuid().primaryKey().defaultRandom(),
-  facilityId: uuid().notNull().references(() => facilities.id),
-  priceListId: uuid().notNull(),
-  status: text().$type<"pending" | "approved" | "rejected" | "withdrawn">().default("pending").notNull(),
-  /** The Kenyan day the new prices take effect. */
-  effectiveFrom: date({ mode: "string" }).notNull(),
-  reason: text().notNull(),
-  requestedBy: uuid().notNull(),
-  requestedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
-  decidedBy: uuid(),
-  decidedAt: timestamp({ withTimezone: true }),
-}, t => [
-  unique("price_changes_facility_id_id_key").on(t.facilityId, t.id),
-  foreignKey({ name: "price_changes_price_list_fk", columns: [t.facilityId, t.priceListId], foreignColumns: [priceLists.facilityId, priceLists.id] }),
-  foreignKey({ name: "price_changes_requested_by_fk", columns: [t.facilityId, t.requestedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
-  foreignKey({ name: "price_changes_decided_by_fk", columns: [t.facilityId, t.decidedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
-  oneOf("price_changes_status_known", t.status, ["pending", "approved", "rejected", "withdrawn"]),
-  check("price_changes_reason_present", sql`length(btrim(${t.reason})) > 0`),
-  // Approved or rejected by someone else; withdrawn only by the requester.
+  unique("charges_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({ name: "charges_encounter_fk", columns: [t.facilityId, t.encounterId], foreignColumns: [encounters.facilityId, encounters.id] }),
+  foreignKey({ name: "charges_item_fk", columns: [t.facilityId, t.billableItemId], foreignColumns: [billableItems.facilityId, billableItems.id] }),
+  foreignKey({ name: "charges_price_fk", columns: [t.facilityId, t.priceListItemId], foreignColumns: [priceListItems.facilityId, priceListItems.id] }),
+  foreignKey({ name: "charges_bed_stay_fk", columns: [t.facilityId, t.bedStayId], foreignColumns: [bedStays.facilityId, bedStays.id] }),
+  foreignKey({ name: "charges_captured_by_fk", columns: [t.facilityId, t.capturedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "charges_cancelled_by_fk", columns: [t.facilityId, t.cancelledBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  index("charges_encounter_index").on(t.facilityId, t.encounterId, t.serviceDate),
+  // One bed-day per admission per night, however often accrual runs.
+  uniqueIndex("charges_one_bed_day_per_night").on(t.encounterId, t.serviceDate).where(sql`${t.bedStayId} IS NOT NULL`),
+  check("charges_quantity_positive", sql`${t.quantity} > 0`),
+  check("charges_unit_price_nonnegative", sql`${t.unitPriceCents} >= 0`),
+  // Whole shillings: neither cash nor M-Pesa carries cents (SPEC.md D2).
+  check("charges_amount_whole_shillings", sql`${t.amountCents} >= 0 AND ${t.amountCents} % 100 = 0`),
+  // At most one source; none means a manual posting, which needs a reason and a person.
   check(
-    "price_changes_decision",
-    sql`(${t.status} = 'pending' AND ${t.decidedBy} IS NULL AND ${t.decidedAt} IS NULL)
-      OR (${t.status} IN ('approved', 'rejected') AND ${t.decidedBy} IS NOT NULL AND ${t.decidedAt} IS NOT NULL
-          AND ${t.decidedBy} <> ${t.requestedBy})
-      OR (${t.status} = 'withdrawn' AND ${t.decidedBy} = ${t.requestedBy} AND ${t.decidedAt} IS NOT NULL)`,
+    "charges_source_or_reason",
+    sql`num_nonnulls(${t.bedStayId}) <= 1
+      AND ((num_nonnulls(${t.bedStayId}) = 0) = (${t.manualReason} IS NOT NULL AND length(btrim(${t.manualReason})) > 0))`,
+  ),
+  check("charges_manual_has_person", sql`${t.manualReason} IS NULL OR ${t.capturedBy} IS NOT NULL`),
+  check(
+    "charges_cancellation_complete",
+    sql`(${t.cancelledAt} IS NULL AND ${t.cancelledBy} IS NULL AND ${t.cancellationReason} IS NULL)
+      OR (${t.cancelledAt} IS NOT NULL AND ${t.cancelledBy} IS NOT NULL AND length(btrim(${t.cancellationReason})) > 0)`,
   ),
 ]);
 
-export const priceChangeLines = pgTable("price_change_lines", {
-  id: uuid().primaryKey().defaultRandom(),
-  facilityId: uuid().notNull().references(() => facilities.id),
-  priceChangeId: uuid().notNull(),
-  billableItemId: uuid().notNull(),
-  /** Cents, which allows fractional shillings in a unit price (SPEC.md D2). */
-  unitPriceCents: integer().notNull(),
-}, t => [
-  unique("price_change_lines_change_item_key").on(t.priceChangeId, t.billableItemId),
-  foreignKey({ name: "price_change_lines_change_fk", columns: [t.facilityId, t.priceChangeId], foreignColumns: [priceChanges.facilityId, priceChanges.id] }),
-  foreignKey({ name: "price_change_lines_item_fk", columns: [t.facilityId, t.billableItemId], foreignColumns: [billableItems.facilityId, billableItems.id] }),
-  check("price_change_lines_price_nonnegative", sql`${t.unitPriceCents} >= 0`),
-]);
-
 /**
- * One item's price on one list, from `valid_from` until `valid_to`
- * (exclusive; open-ended when null). Written only by an approved price
- * change. Migration 0012 adds the exclusion constraint that forbids two
- * overlapping prices for one item on one list. A superseded price only has
- * `valid_to` set; a price replaced before it took effect ends on its own
- * start day, so it never applied.
+ * A background job that could not do part of its work, for a person to fix
+ * and the job to retry (CLAUDE.md §7). An unresolved failure is recorded
+ * once, however many runs meet it. Outbox jobs keep their own `failed`
+ * status instead.
  */
-export const priceListItems = pgTable("price_list_items", {
+export const jobFailures = pgTable("job_failures", {
   id: uuid().primaryKey().defaultRandom(),
   facilityId: uuid().notNull().references(() => facilities.id),
-  priceListId: uuid().notNull(),
-  billableItemId: uuid().notNull(),
-  unitPriceCents: integer().notNull(),
-  validFrom: date({ mode: "string" }).notNull(),
-  validTo: date({ mode: "string" }),
-  /** The approved change that set this price. */
-  priceChangeId: uuid().notNull(),
+  job: text().$type<"bed_day_accrual">().notNull(),
+  /** What it was working on, e.g. the encounter. Not a foreign key: the log outlives it. */
+  subjectId: uuid(),
+  /** What is wrong, for whoever fixes it. Ids and codes only (rule 10). */
+  error: text().notNull(),
+  failedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  resolvedAt: timestamp({ withTimezone: true }),
 }, t => [
-  unique("price_list_items_facility_id_id_key").on(t.facilityId, t.id),
-  foreignKey({ name: "price_list_items_list_fk", columns: [t.facilityId, t.priceListId], foreignColumns: [priceLists.facilityId, priceLists.id] }),
-  foreignKey({ name: "price_list_items_item_fk", columns: [t.facilityId, t.billableItemId], foreignColumns: [billableItems.facilityId, billableItems.id] }),
-  foreignKey({ name: "price_list_items_change_fk", columns: [t.facilityId, t.priceChangeId], foreignColumns: [priceChanges.facilityId, priceChanges.id] }),
-  index("price_list_items_lookup_index").on(t.priceListId, t.billableItemId, t.validFrom),
-  check("price_list_items_price_nonnegative", sql`${t.unitPriceCents} >= 0`),
-  check("price_list_items_valid_range", sql`${t.validTo} IS NULL OR ${t.validTo} >= ${t.validFrom}`),
+  uniqueIndex("job_failures_open_once").on(t.facilityId, t.job, t.subjectId, t.error).where(sql`${t.resolvedAt} IS NULL`),
+  oneOf("job_failures_job_known", t.job, ["bed_day_accrual"]),
 ]);
 
 /** What a membership may hold: taken from the column, never restated. */
@@ -944,4 +1045,6 @@ export const TENANT_TABLES = [
   "price_changes",
   "price_change_lines",
   "price_list_items",
+  "charges",
+  "job_failures",
 ] as const;

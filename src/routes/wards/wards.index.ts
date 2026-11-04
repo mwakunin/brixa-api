@@ -11,5 +11,6 @@ router.use(withFacility);
 router.openapi(routes.listWards, handlers.listWards);
 router.openapi(routes.createWard, handlers.createWard);
 router.openapi(routes.addBed, handlers.addBed);
+router.openapi(routes.setBedDayItem, handlers.setBedDayItem);
 
 export default router;

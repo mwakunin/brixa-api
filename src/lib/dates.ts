@@ -39,6 +39,21 @@ export function businessDate(at: Date = new Date()): string {
   return `${value("year")}-${value("month")}-${value("day")}`;
 }
 
+/** The Kenyan day `days` after (or before, if negative) `date`. */
+export function addDays(date: string, days: number): string {
+  const [y, m, d] = date.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
+}
+
+/**
+ * The instant a Kenyan day begins: its midnight in Nairobi. Kenya has kept
+ * UTC+3 without daylight saving since 1942, so the offset is fixed; the
+ * tests check this against the zone database through `businessDate`.
+ */
+export function startOfBusinessDay(date: string): Date {
+  return new Date(`${date}T00:00:00+03:00`);
+}
+
 /** Whole years from `dateOfBirth` (`YYYY-MM-DD`) to `today`, both Kenyan days. */
 export function ageInYears(dateOfBirth: string, today: string = businessDate()): number {
   const [by, bm, bd] = dateOfBirth.split("-").map(Number);

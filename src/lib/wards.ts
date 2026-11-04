@@ -2,7 +2,7 @@ import { and, asc, eq, isNull, sql } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 
-import { beds, bedStays, wards } from "@/db/schema";
+import { beds, bedStays, billableItems, wards } from "@/db/schema";
 
 import type { PatientActor } from "./patients";
 
@@ -15,14 +15,41 @@ import { isUniqueViolation } from "./db-errors";
  */
 
 export class WardError extends Error {
-  constructor(readonly code: "ward_not_found" | "name_taken" | "label_taken") {
+  constructor(readonly code: "ward_not_found" | "name_taken" | "label_taken" | "not_a_bed_day_item") {
     super({
       ward_not_found: "No such ward",
       name_taken: "A ward already has that name",
       label_taken: "That ward already has a bed with that label",
+      not_a_bed_day_item: "That item is not an active bed-day item",
     }[code]);
     this.name = "WardError";
   }
+}
+
+/**
+ * Sets what a night in the ward is charged as. Its price comes from the
+ * price list on each night's date, so a ward's rate changes by price change,
+ * not by editing the ward.
+ */
+export async function setBedDayItem(tx: AppDb, facilityId: string, wardId: string, itemId: string, actor: PatientActor) {
+  const [item] = await tx.select().from(billableItems).where(eq(billableItems.id, itemId)).limit(1);
+  if (!item || item.category !== "bed_day" || !item.isActive)
+    throw new WardError("not_a_bed_day_item");
+
+  const [ward] = await tx.update(wards).set({ bedDayItemId: itemId }).where(eq(wards.id, wardId)).returning();
+  if (!ward)
+    throw new WardError("ward_not_found");
+
+  await recordAudit(tx, {
+    facilityId,
+    actorId: actor.userId,
+    action: "ward.bed_day_item_set",
+    entityType: "ward",
+    entityId: wardId,
+    summary: `${ward.name} is now charged as ${item.code}`,
+    detail: { code: item.code },
+  });
+  return ward;
 }
 
 export async function createWard(tx: AppDb, facilityId: string, name: string, actor: PatientActor) {
@@ -76,6 +103,7 @@ export async function listWards(tx: AppDb) {
       wardId: wards.id,
       wardName: wards.name,
       wardActive: wards.isActive,
+      bedDayItemId: wards.bedDayItemId,
       bedId: beds.id,
       label: beds.label,
       bedActive: beds.isActive,
@@ -87,9 +115,16 @@ export async function listWards(tx: AppDb) {
     .leftJoin(beds, eq(beds.wardId, wards.id))
     .orderBy(asc(wards.name), asc(beds.label));
 
-  const byWard = new Map<string, { id: string; name: string; isActive: boolean; beds: { id: string; label: string; isActive: boolean; occupied: boolean }[] }>();
+  const byWard = new Map<string, {
+    id: string;
+    name: string;
+    isActive: boolean;
+    bedDayItemId: string | null;
+    beds: { id: string; label: string; isActive: boolean; occupied: boolean }[];
+  }>();
   for (const row of rows) {
-    const ward = byWard.get(row.wardId) ?? { id: row.wardId, name: row.wardName, isActive: row.wardActive, beds: [] };
+    const ward = byWard.get(row.wardId)
+      ?? { id: row.wardId, name: row.wardName, isActive: row.wardActive, bedDayItemId: row.bedDayItemId, beds: [] };
     if (row.bedId)
       ward.beds.push({ id: row.bedId, label: row.label!, isActive: row.bedActive!, occupied: row.occupied });
     byWard.set(row.wardId, ward);

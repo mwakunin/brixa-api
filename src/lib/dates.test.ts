@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { ageInYears, businessDate, dateOfBirthForAge, printedDateTime } from "./dates";
+import { addDays, ageInYears, businessDate, dateOfBirthForAge, printedDateTime, startOfBusinessDay } from "./dates";
 
 describe("businessDate", () => {
   it.each([
@@ -16,6 +16,20 @@ describe("businessDate", () => {
 
   it("always produces a zero-padded YYYY-MM-DD", () => {
     expect(businessDate(new Date("2026-02-03T12:00:00Z"))).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+});
+
+describe("business days in Kenya", () => {
+  it("move by whole days across months and years", () => {
+    expect(addDays("2026-12-31", 1)).toBe("2027-01-01");
+    expect(addDays("2026-03-01", -1)).toBe("2026-02-28");
+  });
+
+  it.each(["2026-01-01", "2026-06-30", "2026-11-04"])("begin at Nairobi's midnight: %s", (date) => {
+    const start = startOfBusinessDay(date);
+
+    expect(businessDate(start)).toBe(date);
+    expect(businessDate(new Date(start.getTime() - 1))).toBe(addDays(date, -1));
   });
 });
 

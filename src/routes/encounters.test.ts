@@ -4,24 +4,14 @@ import { beforeEach, describe, expect, it } from "vitest";
 import app from "@/app";
 import db, { pool } from "@/db";
 import { auditLog } from "@/db/schema";
-import { runAsFacility } from "@/db/tenant-transaction";
-import { registerSeries } from "@/lib/number-series";
-import { facilityHeaders, makeFacility, nextIp, resetDb, signedInUserAt } from "@/test/helpers";
+import { facilityHeaders, makeOnboardedFacility, nextIp, resetDb, signedInUserAt } from "@/test/helpers";
 
 type Person = Awaited<ReturnType<typeof signedInUserAt>>;
 
 const YEAR = new Date().getUTCFullYear();
 
-/** A facility with the series onboarding registers. */
-async function facilityReady() {
-  const facility = await makeFacility();
-  await runAsFacility(facility.id, async (tx) => {
-    await registerSeries(tx, { facilityId: facility.id, kind: "outpatient", prefix: "OP", resetPeriod: "never" });
-    await registerSeries(tx, { facilityId: facility.id, kind: "inpatient", prefix: "IP", resetPeriod: "never" });
-    await registerSeries(tx, { facilityId: facility.id, kind: "admission", prefix: "ADM-", resetPeriod: "yearly" });
-  });
-  return facility;
-}
+/** A facility as onboarding leaves it. */
+const facilityReady = makeOnboardedFacility;
 
 function call(method: string, path: string, facilityId: string, person: Person, body?: unknown) {
   return app.request(path, {
@@ -69,7 +59,13 @@ describe("wards and beds", () => {
     const res = await call("GET", "/wards", facility.id, nurse);
 
     expect(await res.json()).toEqual({
-      wards: [{ id: ward.id, name: "Female Medical", isActive: true, beds: [expect.objectContaining({ label: "B1", occupied: false })] }],
+      wards: [{
+        id: ward.id,
+        name: "Female Medical",
+        isActive: true,
+        bedDayItemId: null,
+        beds: [expect.objectContaining({ label: "B1", occupied: false })],
+      }],
     });
   });
 
