@@ -1,4 +1,4 @@
-import { and, asc, count, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, asc, count, eq, isNotNull, isNull, notInArray, sql } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 
@@ -33,17 +33,19 @@ export class ChargeError extends Error {
     | "service_date_invalid"
     | "charge_not_found"
     | "already_cancelled"
-    | "on_invoice") {
+    | "on_invoice"
+    | "amount_too_large") {
     super({
       encounter_not_found: "No such encounter",
       encounter_cancelled: "Charges cannot be posted to a cancelled encounter",
       item_not_found: "No such item",
       item_inactive: "That item is retired",
       not_covered: "That item has no cash price for the service date",
-      service_date_invalid: "The service date must fall within the encounter and not be in the future",
+      service_date_invalid: "The service date must fall within the encounter, and not after it ended or in the future",
       charge_not_found: "No such charge",
       already_cancelled: "This charge is already cancelled",
       on_invoice: "This charge is on an invoice; void the invoice first",
+      amount_too_large: "A single charge cannot exceed KES 20 million",
     }[code]);
     this.name = "ChargeError";
   }
@@ -70,8 +72,9 @@ export async function postManualCharge(
     throw new ChargeError("encounter_cancelled");
 
   const today = businessDate();
-  const serviceDate = input.serviceDate ?? today;
-  if (serviceDate < businessDate(encounter.startedAt) || serviceDate > today)
+  const serviceDate = input.serviceDate ?? (encounter.endedAt ? businessDate(encounter.endedAt) : today);
+  const lastDay = encounter.endedAt ? businessDate(encounter.endedAt) : today;
+  if (serviceDate < businessDate(encounter.startedAt) || serviceDate > lastDay)
     throw new ChargeError("service_date_invalid");
 
   const [item] = await tx.select().from(billableItems).where(eq(billableItems.id, input.billableItemId)).limit(1);
@@ -84,13 +87,23 @@ export async function postManualCharge(
   if (!price)
     throw new ChargeError("not_covered");
 
+  let amountCents: number;
+  try {
+    amountCents = chargeAmountCents(input.quantity, price.unitPriceCents);
+  }
+  catch (err) {
+    if (err instanceof RangeError)
+      throw new ChargeError("amount_too_large");
+    throw err;
+  }
+
   const [charge] = await tx.insert(charges).values({
     facilityId,
     encounterId: encounter.id,
     billableItemId: item.id,
     quantity: input.quantity,
     unitPriceCents: price.unitPriceCents,
-    amountCents: chargeAmountCents(input.quantity, price.unitPriceCents),
+    amountCents,
     priceListItemId: price.priceListItemId,
     serviceDate,
     manualReason: input.reason,
@@ -107,6 +120,18 @@ export async function postManualCharge(
     detail: { encounterId: encounter.id, code: item.code, amountCents: charge.amountCents, reason: input.reason },
   });
   return charge;
+}
+
+/** Marks an encounter's bed-day failures resolved, except those still missing. */
+async function resolveFailures(tx: AppDb, encounterId: string, stillMissing: string[]) {
+  await tx.update(jobFailures)
+    .set({ resolvedAt: new Date() })
+    .where(and(
+      eq(jobFailures.job, "bed_day_accrual"),
+      eq(jobFailures.subjectId, encounterId),
+      isNull(jobFailures.resolvedAt),
+      stillMissing.length > 0 ? notInArray(jobFailures.error, stillMissing) : undefined,
+    ));
 }
 
 /**
@@ -220,8 +245,9 @@ function nightsOf(
  * night, so a second run, or two at once, adds nothing (SCHEMA.md §7.2).
  *
  * A night whose ward has no bed-day item, or whose item has no price that
- * day, is not charged; it is recorded in `job_failures` for someone to fix,
- * and the next run charges it.
+ * day, is not charged; it is recorded in `job_failures` for someone to fix.
+ * The nightly run retries every encounter with an unresolved failure, open
+ * or not, and a failure is marked resolved once nothing it named is missing.
  */
 export async function accrueBedDays(
   tx: AppDb,
@@ -233,11 +259,14 @@ export async function accrueBedDays(
   // The encounter's lock first, like every charge write (M8). A bill being
   // finalised holds it, so its nights are charged after it, never under it.
   const [encounter] = await tx.select().from(encounters).where(eq(encounters.id, encounterId)).for("update").limit(1);
-  if (!encounter || encounter.kind !== "ipd" || encounter.status === "cancelled")
+  if (!encounter)
     return none;
   const [admission] = await tx.select().from(admissions).where(eq(admissions.encounterId, encounterId)).limit(1);
-  if (!admission)
+  // Nothing to charge: whatever was missing no longer matters.
+  if (encounter.kind !== "ipd" || encounter.status === "cancelled" || !admission) {
+    await resolveFailures(tx, encounterId, []);
     return none;
+  }
 
   const stays = await tx
     .select({ id: bedStays.id, startedAt: bedStays.startedAt, endedAt: bedStays.endedAt, wardName: wards.name, bedDayItemId: wards.bedDayItemId })
@@ -300,6 +329,8 @@ export async function accrueBedDays(
       where: sql`${jobFailures.resolvedAt} IS NULL`,
     });
   }
+
+  await resolveFailures(tx, encounterId, missing.map(m => m.error));
 
   if (created.length > 0) {
     await recordAudit(tx, {

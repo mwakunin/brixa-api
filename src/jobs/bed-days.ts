@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNotNull, isNull } from "drizzle-orm";
 
 import db from "@/db";
 import { encounters, facilities, jobFailures } from "@/db/schema";
@@ -9,7 +9,8 @@ import { logger } from "@/lib/logger";
 
 /**
  * The nightly bed-day run (CLAUDE.md §7): charges every open admission's
- * nights so far, facility by facility, each in its own tenant transaction.
+ * nights so far, and retries any admission, discharged or not, with a night
+ * it could not price, facility by facility, each in its own tenant transaction.
  * Cloud Scheduler calls it through `POST /internal/jobs/bed-days` shortly
  * after midnight in Nairobi; discharge also charges its own nights.
  *
@@ -25,17 +26,27 @@ export async function accrueAllBedDays(now = new Date()) {
   for (const facility of all) {
     tally.facilities += 1;
     try {
-      await runAsFacility(facility.id, async (tx) => {
+      // Counted only once the facility's transaction commits.
+      const counts = await runAsFacility(facility.id, async (tx) => {
         const open = await tx
           .select({ id: encounters.id })
           .from(encounters)
           .where(and(eq(encounters.kind, "ipd"), eq(encounters.status, "open")));
-        for (const encounter of open) {
-          const result = await accrueBedDays(tx, facility.id, encounter.id, now);
-          tally.charged += result.created.length;
-          tally.missing += result.missing.length;
+        const unpriced = await tx
+          .selectDistinct({ id: jobFailures.subjectId })
+          .from(jobFailures)
+          .where(and(eq(jobFailures.job, "bed_day_accrual"), isNull(jobFailures.resolvedAt), isNotNull(jobFailures.subjectId)));
+
+        const local = { charged: 0, missing: 0 };
+        for (const id of new Set([...open.map(e => e.id), ...unpriced.map(f => f.id!)])) {
+          const result = await accrueBedDays(tx, facility.id, id, now);
+          local.charged += result.created.length;
+          local.missing += result.missing.length;
         }
+        return local;
       });
+      tally.charged += counts.charged;
+      tally.missing += counts.missing;
     }
     catch (err) {
       tally.failed += 1;

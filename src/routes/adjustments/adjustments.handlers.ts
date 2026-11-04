@@ -7,6 +7,7 @@ import type { PatientActor } from "@/lib/patients";
 import type { TenantBindings, TenantRouteHandler } from "@/lib/types";
 
 import * as adjustments from "@/lib/adjustments";
+import { recordAudit } from "@/lib/audit";
 
 import type {
   ApproveAdjustmentRoute,
@@ -54,6 +55,15 @@ export const requestAdjustment: TenantRouteHandler<RequestAdjustmentRoute> = asy
 export const listAdjustments: TenantRouteHandler<ListAdjustmentsRoute> = async (c) => {
   const { status } = c.req.valid("query");
   const rows = await adjustments.listAdjustments(c.var.db, { status });
+  // Amounts and reasons on patients' bills: a read worth recording (rule 9).
+  await recordAudit(c.var.db, {
+    facilityId: c.var.facility.id,
+    actorId: c.var.user!.id,
+    action: "adjustment.listed",
+    entityType: "invoice_adjustment",
+    summary: `Listed adjustments (${rows.length})`,
+    detail: { status: status ?? null, ids: rows.map(r => r.id) },
+  });
   return c.json({ adjustments: rows.map(adjustmentJson) }, HttpStatusCodes.OK);
 };
 

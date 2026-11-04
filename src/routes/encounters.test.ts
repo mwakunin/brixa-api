@@ -4,11 +4,13 @@ import { beforeEach, describe, expect, it } from "vitest";
 import app from "@/app";
 import db, { pool } from "@/db";
 import { auditLog } from "@/db/schema";
+import { businessDate } from "@/lib/dates";
 import { facilityHeaders, makeOnboardedFacility, nextIp, resetDb, signedInUserAt } from "@/test/helpers";
 
 type Person = Awaited<ReturnType<typeof signedInUserAt>>;
 
-const YEAR = new Date().getUTCFullYear();
+// The Kenyan year, as admission numbers use it (rule 26).
+const YEAR = businessDate().slice(0, 4);
 
 /** A facility as onboarding leaves it. */
 const facilityReady = makeOnboardedFacility;
@@ -135,6 +137,18 @@ describe("visits", () => {
 
     expect((await list.json()).encounters.map((e: { id: string }) => e.id)).toEqual([visit.id]);
     expect(await auditOf("encounter.viewed")).toHaveLength(2);
+  });
+
+  it("are listed a page at a time", async () => {
+    const first = await (await open()).json();
+    await call("POST", `/encounters/${first.id}/close`, facility.id, clerk);
+    const second = await (await open()).json();
+
+    const page = async (offset: number) =>
+      (await (await call("GET", `/encounters?patientId=${patientId}&offset=${offset}`, facility.id, clerk)).json()).encounters.map((e: { id: string }) => e.id);
+
+    expect(await page(0)).toEqual([second.id, first.id]);
+    expect(await page(1)).toEqual([first.id]);
   });
 
   it("stay within their facility", async () => {

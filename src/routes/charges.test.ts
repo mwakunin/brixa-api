@@ -85,6 +85,36 @@ describe("charges posted by hand", () => {
     await call("POST", `/charges/${charge.id}/cancel`, h.facility.id, h.clerk, { reason: "Posted twice" });
     await expect(pool.query("UPDATE charges SET cancellation_reason = 'x' WHERE id = $1", [charge.id])).rejects.toMatchObject({ code: "23001" });
   });
+
+  it("are cancelled in the database only with a reason", async () => {
+    const charge = await (await post({ billableItemId: h.items.consultation, quantity: "1" })).json();
+
+    await expect(pool.query("UPDATE charges SET cancelled_at = now(), cancelled_by = captured_by WHERE id = $1", [charge.id]))
+      .rejects
+      .toMatchObject({ code: "23514" });
+  });
+
+  it("refuse a charge over KES 20 million as a conflict", async () => {
+    // 50,000 consultations at KES 500.
+    const res = await post({ billableItemId: h.items.consultation, quantity: "50000" });
+
+    expect([res.status, (await res.json()).code]).toEqual([409, "amount_too_large"]);
+  });
+
+  it("are not dated after the visit ended", async () => {
+    const patientId = await h.patient();
+    const { encounterId: stay } = await runAsFacility(h.facility.id, t =>
+      admitPatient(t, h.facility.id, { patientId, bedId: h.beds.general }, h.nurse.actor, at(-2, 10)));
+    await runAsFacility(h.facility.id, t => dischargePatient(t, h.facility.id, stay, "home", h.nurse.actor, at(-1, 9)));
+
+    const res = await call("POST", `/encounters/${stay}/charges`, h.facility.id, h.clerk, {
+      billableItemId: h.items.consultation,
+      quantity: "1",
+      reason: "Late entry",
+      serviceDate: TODAY,
+    });
+    expect([res.status, (await res.json()).code]).toEqual([409, "service_date_invalid"]);
+  });
 });
 
 describe("bed-days", () => {
@@ -166,6 +196,22 @@ describe("bed-days", () => {
     await call("PATCH", `/wards/${unrated.id}`, h.facility.id, h.admin, { bedDayItemId: h.items.generalNight });
     await tx(t => accrueBedDays(t, h.facility.id, encounterId, at(1, 2)));
     expect(await nights(encounterId)).toEqual([[TODAY, 250_000]]);
+  });
+
+  it("are retried after discharge until the night is charged, and the failure resolved", async () => {
+    const encounterId = await admitted(h.beds.unrated);
+    await tx(t => dischargePatient(t, h.facility.id, encounterId, "home", h.nurse.actor, at(1, 9)));
+    expect(await db.select().from(jobFailures)).toMatchObject([{ subjectId: encounterId, resolvedAt: null }]);
+
+    const { wards } = await (await call("GET", "/wards", h.facility.id, h.admin)).json();
+    const unrated = wards.find((w: { name: string }) => w.name === "Unrated");
+    await call("PATCH", `/wards/${unrated.id}`, h.facility.id, h.admin, { bedDayItemId: h.items.generalNight });
+    const tally = await accrueAllBedDays(at(2, 1));
+
+    expect(tally).toMatchObject({ charged: 1, missing: 0, failed: 0 });
+    expect(await nights(encounterId)).toEqual([[TODAY, 250_000]]);
+    const [failure] = await db.select().from(jobFailures);
+    expect(failure.resolvedAt).not.toBeNull();
   });
 
   it("are charged for every open admission by the nightly run", async () => {

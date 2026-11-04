@@ -59,6 +59,12 @@ function refusal(c: Context<TenantBindings>, err: unknown) {
   if (err instanceof patients.PatientError) {
     if (err.code === "not_found")
       return c.json({ message: HttpStatusPhrases.NOT_FOUND }, HttpStatusCodes.NOT_FOUND);
+    if (err.code === "id_required") {
+      return c.json({
+        success: false as const,
+        error: { name: "ValidationError", issues: [{ code: "custom" as const, path: ["noIdReason"], message: err.message }] },
+      }, HttpStatusCodes.UNPROCESSABLE_ENTITY);
+    }
     return c.json({
       code: "possible_duplicate" as const,
       message: err.message,

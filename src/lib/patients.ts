@@ -45,10 +45,14 @@ export interface PatientSummary {
 
 export class PatientError extends Error {
   constructor(
-    readonly code: "not_found" | "possible_duplicate",
+    readonly code: "not_found" | "possible_duplicate" | "id_required",
     readonly candidates: (PatientSummary & { reasons: DuplicateReason[] })[] = [],
   ) {
-    super(code === "not_found" ? "No such patient" : "This looks like a patient already on file");
+    super({
+      not_found: "No such patient",
+      possible_duplicate: "This looks like a patient already on file",
+      id_required: "Add an identity document, or give the reason there is none",
+    }[code]);
     this.name = "PatientError";
   }
 }
@@ -255,6 +259,7 @@ export async function searchPatients(
   if (phone)
     matches.push(eq(patients.phone, phone));
 
+  // Four words bound the query's cost; more could only narrow the matches.
   const words = q.toLowerCase().split(/\s+/).filter(Boolean).slice(0, 4);
   if (words.length > 0) {
     matches.push(and(...words.map(word => or(
@@ -360,6 +365,9 @@ export async function updatePatient(
   const next = { ...changes };
   if (next.phone)
     next.noPhoneReason = null;
+  // Clearing the reason there is no ID needs an ID on file (as at registration).
+  if (next.noIdReason === null && current.noIdReason !== null && !await holdsIdentityDocument(tx, id))
+    throw new PatientError("id_required");
 
   const changed = Object.fromEntries(
     Object.entries(next).filter(([field, value]) => current[field as keyof PatientRow] !== value),
@@ -382,6 +390,15 @@ export async function updatePatient(
   }
 
   return (await load(tx, id))!;
+}
+
+async function holdsIdentityDocument(tx: AppDb, patientId: string): Promise<boolean> {
+  const [held] = await tx
+    .select({ id: patientIdentifiers.id })
+    .from(patientIdentifiers)
+    .where(and(eq(patientIdentifiers.patientId, patientId), inArray(patientIdentifiers.type, [...IDENTITY_DOCUMENTS])))
+    .limit(1);
+  return held !== undefined;
 }
 
 /**
@@ -412,9 +429,13 @@ export async function addIdentifier(
     }
   }
 
-  await tx.insert(patientIdentifiers)
+  const added = await tx.insert(patientIdentifiers)
     .values({ facilityId, patientId: id, type: input.type, value, addedBy: actor.membershipId })
-    .onConflictDoNothing();
+    .onConflictDoNothing()
+    .returning({ id: patientIdentifiers.id });
+  // Already on file: nothing changed, so nothing to audit.
+  if (added.length === 0)
+    return (await load(tx, id))!;
 
   if (current.noIdReason && (IDENTITY_DOCUMENTS as readonly string[]).includes(input.type))
     await tx.update(patients).set({ noIdReason: null }).where(eq(patients.id, id));

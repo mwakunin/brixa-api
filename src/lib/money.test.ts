@@ -13,6 +13,8 @@ describe("a charge's amount", () => {
     ["1", 250, 300],
     ["1", 0, 0],
     ["0.001", 1, 0],
+    // Floating point says 10000: 1.005 is just under itself in binary.
+    ["1.005", 10_000, 10_100],
   ])("is %s × %i cents, rounded half up to whole shillings: %i", (quantity, unit, amount) => {
     expect(chargeAmountCents(quantity, unit)).toBe(amount);
   });

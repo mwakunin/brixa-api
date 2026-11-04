@@ -240,6 +240,7 @@ export const auditLog = pgTable("audit_log", {
     | "adjustment.approved"
     | "adjustment.rejected"
     | "adjustment.withdrawn"
+    | "adjustment.listed"
   >().notNull(),
   /** What it happened to. Not a foreign key: the log outlives what it names. */
   entityType: text().notNull(),
@@ -293,6 +294,7 @@ export const auditLog = pgTable("audit_log", {
     "adjustment.approved",
     "adjustment.rejected",
     "adjustment.withdrawn",
+    "adjustment.listed",
   ]),
 ]);
 
@@ -1005,7 +1007,8 @@ export const charges = pgTable("charges", {
   check(
     "charges_cancellation_complete",
     sql`(${t.cancelledAt} IS NULL AND ${t.cancelledBy} IS NULL AND ${t.cancellationReason} IS NULL)
-      OR (${t.cancelledAt} IS NOT NULL AND ${t.cancelledBy} IS NOT NULL AND length(btrim(${t.cancellationReason})) > 0)`,
+      OR (${t.cancelledAt} IS NOT NULL AND ${t.cancelledBy} IS NOT NULL
+          AND ${t.cancellationReason} IS NOT NULL AND length(btrim(${t.cancellationReason})) > 0)`,
   ),
 ]);
 
@@ -1124,7 +1127,7 @@ export const invoices = pgTable("invoices", {
           AND ${t.finalisedAt} IS NOT NULL AND ${t.finalisedBy} IS NOT NULL
           AND ${t.voidedAt} IS NULL AND ${t.voidedBy} IS NULL AND ${t.voidReason} IS NULL)
       OR (${t.status} = 'void' AND ${t.voidedAt} IS NOT NULL AND ${t.voidedBy} IS NOT NULL
-          AND length(btrim(${t.voidReason})) > 0)`,
+          AND ${t.voidReason} IS NOT NULL AND length(btrim(${t.voidReason})) > 0)`,
   ),
   check("invoices_total_whole_shillings", sql`${t.totalCents} IS NULL OR (${t.totalCents} >= 0 AND ${t.totalCents} % 100 = 0)`),
 ]);

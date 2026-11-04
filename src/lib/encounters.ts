@@ -435,10 +435,16 @@ export async function encounterDetail(tx: AppDb, id: string): Promise<EncounterD
   return detail(tx, encounter);
 }
 
-/** A patient's encounters, newest first, with an audit entry. */
-export async function listEncounters(tx: AppDb, facilityId: string, patientId: string, actor: PatientActor) {
+/** A patient's encounters, newest first, a page of 100 at a time, with an audit entry. */
+export async function listEncounters(tx: AppDb, facilityId: string, patientId: string, actor: PatientActor, offset = 0) {
   await patientExists(tx, patientId);
-  const rows = await tx.select().from(encounters).where(eq(encounters.patientId, patientId)).orderBy(desc(encounters.startedAt)).limit(100);
+  const rows = await tx
+    .select()
+    .from(encounters)
+    .where(eq(encounters.patientId, patientId))
+    .orderBy(desc(encounters.startedAt), desc(encounters.id))
+    .limit(100)
+    .offset(offset);
 
   await recordAudit(tx, {
     facilityId,

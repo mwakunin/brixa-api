@@ -309,6 +309,25 @@ describe("correcting a patient's details", () => {
     ))).toHaveLength(1);
   });
 
+  it("adds an ID number already on file without a second audit entry", async () => {
+    const patient = await registered(wanjiru({ identifiers: [], noIdReason: "not_carried" }));
+    const add = () => call("POST", `/patients/${patient.id}/identifiers`, facility.id, clerk, { type: "national_id", value: "87654321" });
+
+    await add();
+    expect((await add()).status).toBe(200);
+
+    expect(await auditOf("patient.identifier_added")).toHaveLength(1);
+  });
+
+  it("keeps the reason there is no ID until an ID is on file", async () => {
+    const patient = await registered(wanjiru({ identifiers: [], noIdReason: "not_carried" }));
+
+    const res = await patch(patient.id, { noIdReason: null });
+
+    expect(res.status).toBe(422);
+    expect(JSON.stringify(await res.json())).toContain("identity document");
+  });
+
   it("warns before adding an ID number another patient already has", async () => {
     const holder = await registered(wanjiru());
     const other = await registered(wanjiru({

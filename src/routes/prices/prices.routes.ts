@@ -95,6 +95,7 @@ export const listChanges = createRoute({
   method: "get",
   path: "/price-changes",
   summary: "Price change requests, newest first",
+  description: "At most 100. Pending requests are few in practice; approve or reject them from here.",
   middleware: [keepersOnly] as const,
   request: { headers: facilityHeaders, query: z.object({ status: z.enum(STATUSES).optional() }) },
   responses: {

@@ -139,6 +139,8 @@ describe("adjustments", () => {
     const queue = await (await call("GET", "/adjustments?status=pending", h.facility.id, h.finance)).json();
     expect(queue.adjustments).toMatchObject([{ id, invoiceNumber: `INV-${YEAR}-000001`, status: "pending", amountCents: 800 }]);
     expect((await call("GET", "/adjustments", h.facility.id, h.nurse)).status).toBe(403);
+    const [listed] = await db.select().from(auditLog).where(eq(auditLog.action, "adjustment.listed"));
+    expect(listed).toMatchObject({ actorId: h.finance.id, detail: { status: "pending", ids: [id] } });
   });
 
   it("are audited when asked for and when decided", async () => {

@@ -79,9 +79,9 @@ export const openEncounter: TenantRouteHandler<OpenEncounterRoute> = async (c) =
 };
 
 export const listEncounters: TenantRouteHandler<ListEncountersRoute> = async (c) => {
-  const { patientId } = c.req.valid("query");
+  const { patientId, offset } = c.req.valid("query");
   try {
-    const found = await encounters.listEncounters(c.var.db, c.var.facility.id, patientId, actorOf(c));
+    const found = await encounters.listEncounters(c.var.db, c.var.facility.id, patientId, actorOf(c), offset);
     return c.json({ encounters: found.map(encounterJson) }, HttpStatusCodes.OK);
   }
   catch (err) {

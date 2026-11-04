@@ -57,6 +57,7 @@ export class BillingError extends Error {
     | "not_draft"
     | "already_void"
     | "charges_unbilled"
+    | "other_patient"
     | "void_needs_finance"
     | "has_adjustments") {
     super({
@@ -70,6 +71,7 @@ export class BillingError extends Error {
       not_draft: "Only a draft invoice can be finalised",
       already_void: "This invoice is already voided",
       charges_unbilled: "Some charges are not on any bill yet; void this draft and draft it again",
+      other_patient: "That is another patient's account",
       void_needs_finance: "Only a finance manager or the facility admin voids a finalised invoice",
       has_adjustments: "This invoice has approved adjustments; it stands as adjusted",
     }[code]);
@@ -224,6 +226,9 @@ export async function draftInvoice(
   if (encounter.status === "cancelled")
     throw new BillingError("encounter_cancelled");
 
+  // A patient pays for their own encounter; any other patient is the wrong account.
+  if (input.owner && "patientId" in input.owner && input.owner.patientId !== encounter.patientId)
+    throw new BillingError("other_patient");
   const accountId = await ensureAccount(tx, facilityId, input.owner ?? { patientId: encounter.patientId });
   await checkKind(tx, encounter.id, accountId, input.kind);
 

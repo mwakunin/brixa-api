@@ -58,7 +58,11 @@ const AdmitBodySchema = z.object({
 });
 const TransferBodySchema = z.object({ bedId: z.uuid() });
 const DischargeBodySchema = z.object({ disposition: z.enum(DISPOSITIONS) });
-const ListQuerySchema = z.object({ patientId: z.uuid() });
+const ListQuerySchema = z.object({
+  patientId: z.uuid(),
+  /** Skip this many, for the next page. */
+  offset: z.coerce.number().int().min(0).max(100_000).default(0),
+});
 
 const refusals = {
   [HttpStatusCodes.CONFLICT]: jsonContent(RefusalSchema, "Not possible in the encounter's current state"),
@@ -101,7 +105,7 @@ export const listEncounters = createRoute({
   method: "get",
   path: "/encounters",
   summary: "A patient's encounters",
-  description: "Newest first, at most 100. Audited as a read of the patient's record.",
+  description: "Newest first, 100 at a time: pass `offset` for the next page. Audited as a read of the patient's record.",
   request: { headers: facilityHeaders, query: ListQuerySchema },
   responses: {
     [HttpStatusCodes.OK]: jsonContent(z.object({ encounters: z.array(EncounterSchema) }), "Encounters"),

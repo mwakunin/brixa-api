@@ -74,6 +74,14 @@ describe("a payer split", () => {
     ]);
   });
 
+  it("bills a patient only for their own encounter", async () => {
+    const stranger = await h.patient();
+
+    await expect(tx(t => draftInvoice(t, h.facility.id, { encounterId, kind: "final", owner: { patientId: stranger } }, h.cashier.actor)))
+      .rejects
+      .toMatchObject({ code: "other_patient" });
+  });
+
   it.each([
     ["more than is left of a charge", 50_100],
     ["part of a shilling", 40_050],
@@ -114,6 +122,39 @@ describe("the database", () => {
     await tx(t => finaliseInvoice(t, h.facility.id, id, h.cashier.actor));
     return id;
   }
+
+  it("finalises only what its lines and charges agree on", async () => {
+    const id = await tx(t => draftInvoice(t, h.facility.id, { encounterId, kind: "interim" }, h.cashier.actor));
+    const [line] = (await pool.query("SELECT account_id FROM invoice_lines WHERE invoice_id = $1 LIMIT 1", [id])).rows;
+    // A line that no charge backs.
+    await pool.query(
+      `INSERT INTO invoice_lines (facility_id, invoice_id, account_id, kind, code, description, quantity, unit_price_cents, amount_cents, service_date)
+       VALUES ($1, $2, $3, 'itemised', 'CONS', 'x', 1, 100, 100, current_date)`,
+      [h.facility.id, id, line.account_id],
+    );
+
+    await expect(tx(t => finaliseInvoice(t, h.facility.id, id, h.cashier.actor))).rejects.toMatchObject({ cause: { code: "23514" } });
+  });
+
+  it("finalises only a total that is the sum of the lines", async () => {
+    const issued = await finalised();
+    const [{ document_id: documentId, finalised_by: by }] = (await pool.query("SELECT document_id, finalised_by FROM invoices WHERE id = $1", [issued])).rows;
+    await call("POST", `/encounters/${encounterId}/charges`, h.facility.id, h.clerk, { billableItemId: h.items.tablet, quantity: "2", reason: "Before P3" });
+    const draft = await tx(t => draftInvoice(t, h.facility.id, { encounterId, kind: "supplementary" }, h.cashier.actor));
+
+    await expect(pool.query(
+      "UPDATE invoices SET status = 'finalised', total_cents = 100, document_id = $2, finalised_at = now(), finalised_by = $3 WHERE id = $1",
+      [draft, documentId, by],
+    )).rejects.toMatchObject({ code: "23514" });
+  });
+
+  it("voids in the database only with a reason", async () => {
+    const id = await tx(t => draftInvoice(t, h.facility.id, { encounterId, kind: "interim" }, h.cashier.actor));
+
+    await expect(pool.query("UPDATE invoices SET status = 'void', voided_at = now(), voided_by = created_by WHERE id = $1", [id]))
+      .rejects
+      .toMatchObject({ code: "23514" });
+  });
 
   it("freezes a finalised invoice for every role, the owner included", async () => {
     const id = await finalised();
