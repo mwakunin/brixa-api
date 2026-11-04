@@ -22,7 +22,7 @@ Status: proposed · Last updated: 2026-11-03
 - The OP number is issued at registration. The IP number is issued at the patient's first admission.
 - The zero-padded width is configurable per series, default 4 (`OP0001`).
 - A facility may change its prefix later. The change applies to newly issued numbers only.
-- The `sex` option set (currently `male` / `female`) needs confirming.
+- ~~The `sex` option set needs confirming.~~ **Confirmed 2026-11-04:** `male`, `female`, `intersex`; blank only for an unidentified patient (§5.1).
 - The bed-day counting rule (midnight census, 24-hour blocks, or admission day counts) — a pilot question (`SPEC.md` §9).
 
 ---
@@ -119,6 +119,22 @@ export const patientIdentifiers = pgTable('patient_identifiers', {
 ```
 
 `client_registry_id` is the national Client Registry identifier. Its name and format are to be verified with DHA (`SPEC.md` §10).
+
+### 5.1 As built (P2, slice 1)
+
+Decided 2026-11-04 with the product owner:
+
+- **Required at registration:** given and family names, sex, a date of birth or an estimated age, a phone number, and an identity document (`national_id`, `passport`, `birth_certificate`, `alien_id` or `refugee_id`; an SHA number alone does not count).
+  - A phone or a document may be missing only with a stated reason: `no_phone_reason` (`no_phone` | `unidentified`), `no_id_reason` (`none_held` | `not_carried` | `unidentified`). The database enforces "a phone or a reason, never neither, never both". Records with a reason are the follow-up list.
+  - An **unidentified** emergency patient (`unidentified = true`) carries placeholder names and may have no sex recorded until identified. `unidentified` reasons are allowed only on such a patient, and identifying them requires the reasons to be replaced in the same edit.
+- **Sex** is `male` | `female` | `intersex`.
+- **An estimated age** is stored as the date of birth it implies (today's Kenyan date, that many years earlier), with `dob_is_estimated`.
+- **Identifier types** add `alien_id` and `refugee_id` to the sketch above. Values are stored uppercase without spaces or dots. Identifiers are insert-only for the runtime role; marking one entered in error is a follow-up.
+- **Duplicates warn, never block.** Registration (and adding an ID) answers 409 with the likely matches: the same identity number, the same family name and phone, or the same names and date of birth. The clerk opens the existing record or confirms it is someone else (`confirmNotDuplicate`, recorded in the audit entry). Merging is a later slice.
+- **Search** matches an OP or IP number (exact, any case), a phone in any format, an ID number, or names (each word typed matches the start of one of the patient's names). It returns at most 20 matches and is rate limited per person. Looking up a number without its prefix is still the open question in §11.
+- **Reads are audited** (rule 9): every search (with its query) and every opening of a record. Corrections record each changed field's old and new value.
+- **Roles:** `records_clerk`, `nurse` and `facility_admin` register and correct; every member may search and open a record.
+- The runtime role holds `SELECT`, `INSERT` and a column-level `UPDATE` on demographics only; `patient_numbers` and `patient_identifiers` are insert-only.
 
 ---
 

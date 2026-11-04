@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import {
   boolean,
   check,
+  date,
   foreignKey,
   index,
   integer,
@@ -207,6 +208,11 @@ export const auditLog = pgTable("audit_log", {
     | "document.voided"
     | "document.viewed"
     | "document.verified"
+    | "patient.registered"
+    | "patient.updated"
+    | "patient.identifier_added"
+    | "patient.viewed"
+    | "patient.searched"
   >().notNull(),
   /** What it happened to. Not a foreign key: the log outlives what it names. */
   entityType: text().notNull(),
@@ -229,6 +235,11 @@ export const auditLog = pgTable("audit_log", {
     "document.voided",
     "document.viewed",
     "document.verified",
+    "patient.registered",
+    "patient.updated",
+    "patient.identifier_added",
+    "patient.viewed",
+    "patient.searched",
   ]),
 ]);
 
@@ -469,6 +480,138 @@ export const documents = pgTable("documents", {
   ),
 ]);
 
+// ---------------------------------------------------------------------------
+// Patients (SCHEMA.md §5)
+// ---------------------------------------------------------------------------
+
+/**
+ * A person this facility treats. One register per facility (SPEC.md D6).
+ *
+ * Registration asks for names, sex, a date of birth (or an age, stored as an
+ * estimated date), a phone number and an identity document. A phone or a
+ * document may be missing only with a stated reason, so an unconscious
+ * patient can still be registered and treated, and the record shows what is
+ * still to be collected. An unidentified patient carries placeholder names
+ * and may have no recorded sex until identified.
+ */
+export const patients = pgTable("patients", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  // Kenyan names do not split reliably into a fixed given/surname order.
+  givenName: text().notNull(),
+  middleNames: text(),
+  familyName: text().notNull(),
+  dateOfBirth: date({ mode: "string" }).notNull(),
+  /** True when the date was worked out from a stated age. */
+  dobIsEstimated: boolean().default(false).notNull(),
+  sex: text().$type<"male" | "female" | "intersex">(),
+  /** E.164 (rule 13). */
+  phone: text(),
+  noPhoneReason: text().$type<"no_phone" | "unidentified">(),
+  noIdReason: text().$type<"none_held" | "not_carried" | "unidentified">(),
+  /** Brought in unable to say who they are; names are placeholders until identified. */
+  unidentified: boolean().default(false).notNull(),
+  registeredAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  /** The membership that registered them. */
+  registeredBy: uuid().notNull(),
+  updatedAt: updatedAt(),
+}, t => [
+  unique("patients_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({
+    name: "patients_registered_by_fk",
+    columns: [t.facilityId, t.registeredBy],
+    foreignColumns: [memberships.facilityId, memberships.id],
+  }),
+  index("patients_family_name_index").on(t.facilityId, sql`lower(${t.familyName})`),
+  index("patients_phone_index").on(t.facilityId, t.phone),
+  oneOf("patients_sex_known", t.sex, ["male", "female", "intersex"]),
+  oneOf("patients_no_phone_reason_known", t.noPhoneReason, ["no_phone", "unidentified"]),
+  oneOf("patients_no_id_reason_known", t.noIdReason, ["none_held", "not_carried", "unidentified"]),
+  check("patients_names_present", sql`length(btrim(${t.givenName})) > 0 AND length(btrim(${t.familyName})) > 0`),
+  check("patients_phone_e164", sql`${t.phone} IS NULL OR ${t.phone} ~ '^\\+[1-9][0-9]{7,14}$'`),
+  // A phone, or the reason there is none: never neither, never both.
+  check("patients_phone_or_reason", sql`(${t.phone} IS NULL) = (${t.noPhoneReason} IS NOT NULL)`),
+  check("patients_sex_unless_unidentified", sql`${t.sex} IS NOT NULL OR ${t.unidentified}`),
+  check(
+    "patients_unidentified_reasons",
+    sql`(${t.noPhoneReason} IS DISTINCT FROM 'unidentified' AND ${t.noIdReason} IS DISTINCT FROM 'unidentified') OR ${t.unidentified}`,
+  ),
+]);
+
+/**
+ * The numbers a patient is known by here: the OP number from registration,
+ * the IP number from their first admission (P2, encounters). Frozen text,
+ * never rebuilt from the current prefix (SCHEMA.md §6).
+ */
+export const patientNumbers = pgTable("patient_numbers", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  patientId: uuid().notNull(),
+  kind: text().$type<"outpatient" | "inpatient">().notNull(),
+  number: text().notNull(),
+  issuedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+}, t => [
+  unique("patient_numbers_facility_id_number_key").on(t.facilityId, t.number),
+  // At most one OP and one IP number per patient.
+  unique("patient_numbers_patient_id_kind_key").on(t.patientId, t.kind),
+  index("patient_numbers_number_search_index").on(t.facilityId, sql`upper(${t.number})`),
+  foreignKey({
+    name: "patient_numbers_patient_fk",
+    columns: [t.facilityId, t.patientId],
+    foreignColumns: [patients.facilityId, patients.id],
+  }),
+  oneOf("patient_numbers_kind_known", t.kind, ["outpatient", "inpatient"]),
+]);
+
+/**
+ * Identity documents and registry numbers. Stored uppercase without spaces,
+ * so a search matches however the number was typed. Not unique across
+ * patients: a mistyped number must not block the person it really belongs
+ * to, so a match is a warning at registration instead.
+ */
+export const patientIdentifiers = pgTable("patient_identifiers", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  patientId: uuid().notNull(),
+  type: text().$type<
+    | "national_id"
+    | "passport"
+    | "birth_certificate"
+    | "alien_id"
+    | "refugee_id"
+    | "sha_number"
+    | "client_registry_id"
+    | "other"
+  >().notNull(),
+  value: text().notNull(),
+  addedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  addedBy: uuid().notNull(),
+}, t => [
+  index("patient_identifiers_lookup_index").on(t.facilityId, t.value),
+  unique("patient_identifiers_patient_id_type_value_key").on(t.patientId, t.type, t.value),
+  foreignKey({
+    name: "patient_identifiers_patient_fk",
+    columns: [t.facilityId, t.patientId],
+    foreignColumns: [patients.facilityId, patients.id],
+  }),
+  foreignKey({
+    name: "patient_identifiers_added_by_fk",
+    columns: [t.facilityId, t.addedBy],
+    foreignColumns: [memberships.facilityId, memberships.id],
+  }),
+  oneOf("patient_identifiers_type_known", t.type, [
+    "national_id",
+    "passport",
+    "birth_certificate",
+    "alien_id",
+    "refugee_id",
+    "sha_number",
+    "client_registry_id",
+    "other",
+  ]),
+  check("patient_identifiers_value_shape", sql`${t.value} ~ '^[A-Z0-9/-]{1,40}$'`),
+]);
+
 /** What a membership may hold: taken from the column, never restated. */
 export type MembershipRole = (typeof memberships.$inferSelect)["roles"][number];
 
@@ -487,4 +630,7 @@ export const TENANT_TABLES = [
   "outbox",
   "invitations",
   "documents",
+  "patients",
+  "patient_numbers",
+  "patient_identifiers",
 ] as const;

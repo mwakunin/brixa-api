@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { businessDate, printedDateTime } from "./dates";
+import { ageInYears, businessDate, dateOfBirthForAge, printedDateTime } from "./dates";
 
 describe("businessDate", () => {
   it.each([
@@ -16,6 +16,29 @@ describe("businessDate", () => {
 
   it("always produces a zero-padded YYYY-MM-DD", () => {
     expect(businessDate(new Date("2026-02-03T12:00:00Z"))).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+});
+
+describe("ages", () => {
+  it.each([
+    ["2000-11-04", "2026-11-04", 26],
+    ["2000-11-05", "2026-11-04", 25],
+    ["2026-01-01", "2026-11-04", 0],
+    ["2008-02-29", "2026-02-28", 17],
+    ["2008-02-29", "2026-03-01", 18],
+  ])("someone born %s is, on %s, %i", (dob, today, age) => {
+    expect(ageInYears(dob, today)).toBe(age);
+  });
+
+  it("turns a stated age into the date of birth it implies", () => {
+    expect(dateOfBirthForAge(30, "2026-11-04")).toBe("1996-11-04");
+    expect(dateOfBirthForAge(0, "2026-11-04")).toBe("2026-11-04");
+    // No 29 February in 2025.
+    expect(dateOfBirthForAge(3, "2028-02-29")).toBe("2025-02-28");
+  });
+
+  it("round-trips: the implied date gives back the stated age", () => {
+    expect(ageInYears(dateOfBirthForAge(42, "2026-11-04"), "2026-11-04")).toBe(42);
   });
 });
 

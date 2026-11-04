@@ -11,6 +11,7 @@ import internal from "@/routes/internal.route";
 import invitations from "@/routes/invitations/invitations.index";
 import localFiles from "@/routes/local-files.route";
 import me from "@/routes/me/me.index";
+import patients from "@/routes/patients/patients.index";
 import staff from "@/routes/staff/staff.index";
 import superadmin from "@/routes/superadmin/superadmin.index";
 import verify from "@/routes/verify/verify.index";
@@ -62,6 +63,7 @@ const tenantRoutes = [
   facility,
   staff,
   documents,
+  patients,
 ] as unknown as readonly AppOpenAPI[];
 
 [...unscopedRoutes, ...developmentRoutes, ...tenantRoutes].forEach((route) => {

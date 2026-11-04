@@ -197,6 +197,13 @@ export const rateLimits = {
   verify: () => rateLimit({ points: 30, duration: 60, keyPrefix: "verify", key: byAddress }),
 
   /**
+   * Patient search, per signed-in person (CLAUDE.md §7): a desk finds a few
+   * patients a minute; a script trying names to copy out the register finds
+   * many more, and stops here.
+   */
+  patientSearch: () => rateLimit({ points: 60, duration: 60, keyPrefix: "patient-search", key: byUserOrAddress }),
+
+  /**
    * Invitations sent, per facility admin. Each one is an email from our
    * domain, so this caps mail-bombing through a compromised admin account.
    */
