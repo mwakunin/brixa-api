@@ -1,0 +1,2 @@
+ALTER TABLE "outbox" DROP CONSTRAINT "outbox_status_known";--> statement-breakpoint
+ALTER TABLE "outbox" ADD CONSTRAINT "outbox_status_known" CHECK ("outbox"."status" IN ('pending', 'done', 'skipped', 'failed'));

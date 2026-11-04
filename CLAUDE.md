@@ -38,11 +38,12 @@ A multi-tenant hospital management SaaS for Kenya, designed first for **Level 4 
 | Database | PostgreSQL. Production and staging on the same host, chosen by the residency answer: Cloud SQL in Johannesburg (`africa-south1`) if hosting outside Kenya is allowed, a Kenyan host if not | Postgres confirmed; host open |
 | Local dev/test | Docker Postgres (separate dev and test databases) + Docker Redis | Confirmed (same pattern as the school SaaS) |
 | Redis in production | Upstash Redis | Confirmed |
-| Rate limiting | Redis-backed `rate-limiter-flexible`, with an in-memory first layer and fallback | Library to be confirmed |
+| Rate limiting | Redis-backed `rate-limiter-flexible`, with an in-memory first layer and fallback | In use on sign-in and invitation acceptance (P1) |
 | File storage | Google Cloud Storage | Confirmed |
-| Backend | Hono + `@hono/zod-openapi`, Drizzle ORM | Proposed |
+| Backend | Hono + `@hono/zod-openapi`, Drizzle ORM | Confirmed |
 | Frontend | Next.js, built as a PWA | Proposed |
-| Auth | Better Auth | Proposed |
+| Auth | Better Auth, email and password, invite-only (no public sign-up) | Confirmed |
+| Tenant resolution | One address for all facilities; the facility comes from the signed-in user's membership, never the hostname (section 4) | Confirmed |
 | Payments | Safaricom Daraja: C2B paybill per facility, plus STK push | Proposed |
 | Payer integration | `PayerGateway`: `manual` for private insurers; `afyaconnect` for SHA through DHA's integration platform, live only after certification | Proposed |
 | External calls | Transactional outbox, drained by Cloud Tasks workers | Proposed |
@@ -51,7 +52,7 @@ A multi-tenant hospital management SaaS for Kenya, designed first for **Level 4 
 | SMS | Africa's Talking, behind a small `sendSms` interface. Brevo is the option to revisit for WhatsApp reminders | Confirmed |
 | Background jobs | Cloud Tasks + Cloud Scheduler | Proposed |
 
-Not yet decided: tenant resolution (subdomain vs other), production database host and region, storage bucket location. All three depend on the data residency question in `SPEC.md`.
+Not yet decided: production database host and region, and storage bucket location. Both depend on the data residency question in `SPEC.md`.
 
 ---
 
@@ -93,12 +94,14 @@ These are load-bearing. Do not deviate without discussion.
 
 Shared schema, shared database, `facility_id` discriminator. Isolation lives in Postgres, not in application discipline. Same four layers as the school SaaS:
 
-1. **Two database connections.** The owner connection is for migrations, the test harness, tenant bootstrap, and the superadmin plane. The app connects as an unprivileged role (created with `NOBYPASSRLS`). The table owner is exempt from RLS, so an app connected as the owner has policies that exist and do nothing. Verify this on whichever host runs production by running the RLS tests against it before real data goes in. Managed hosts restrict superuser rights differently, so the role setup in `db/roles.sql` may need adjusting per host.
+1. **Three database connections.** The owner connection is for migrations, the test harness, tenant bootstrap, and the superadmin plane. The app connects as an unprivileged role (created with `NOBYPASSRLS`). The table owner is exempt from RLS, so an app connected as the owner has policies that exist and do nothing. Better Auth connects as a third unprivileged role, the only one that can read sessions, password hashes and verification tokens; it holds nothing on tenant tables, and the app role sees only `user (id, name, email)`. The API refuses to start if either unprivileged role is a superuser or holds `BYPASSRLS`. Verify this on whichever host runs production by running the RLS tests against it before real data goes in. Managed hosts restrict superuser rights differently, so the role setup in `db/roles.sql` may need adjusting per host.
 2. **A transaction per tenant request.** Set the tenant with `set_config('app.facility_id', ..., true)` (transaction-scoped) so it cannot leak to the next borrower of a pooled connection.
 3. **Policies on every tenant table**, `USING` and `WITH CHECK`, with `ENABLE` and `FORCE ROW LEVEL SECURITY`. No tenant set means zero rows.
 4. **Composite foreign keys** `(facility_id, id)` on tenant-to-tenant references, since RLS does not constrain foreign keys.
 
-Roles come from memberships, not the global user. A membership holds a set of roles:
+**Choosing the facility.** The hostname never selects a tenant (`SPEC.md` §2). Every tenant request carries an `X-Facility-Id` header. `withFacility` sets it with `set_config`, then loads the facility and the caller's active membership on the tenant transaction, so RLS itself limits what it can see. No such membership is a 404, so a stranger cannot tell whether a facility exists; a suspended facility is a 403. `GET /me/facilities` lists the caller's own memberships for the facility picker. A header, not a session field, so a request queued offline still names the facility it was made in.
+
+Roles come from memberships, not the global user. One membership per person per facility holds a set of roles:
 
 | Area | Roles |
 |---|---|
@@ -119,7 +122,7 @@ Most of the foundation already exists in school-saas-api (`../school-saas-api`).
 
 | Need | Source in school-saas-api |
 |---|---|
-| Tenant transaction middleware | `src/middlewares/tenant.ts` (`withTenant`, `withMembership`) |
+| Tenant transaction middleware | `src/middlewares/tenant.ts` (`withTenant`, `withMembership`), resolving from the membership instead of the subdomain (`subdomain.ts` is not ported) |
 | Owner vs app connection | `src/db/index.ts`, `db/roles.sql` |
 | RLS migration pattern | `src/db/migrations/0002_tenant_rls.sql` |
 | Guard tests | `src/db/db-access.test.ts`, `src/db/rls.test.ts`, `src/db/enum-checks.test.ts` |
@@ -209,7 +212,6 @@ See `SPEC.md` sections 4 and 5. Do not resolve these in code without asking:
 - Pilot hospital
 - Medical-records retention requirements
 - PPB dispensing record obligations
-- Tenant resolution (subdomain vs other)
 - ICD-10 vs ICD-11 for diagnoses and claims
 - What DHA certification requires of this product (classification, whether clinical modules are judged, cost, re-certification)
 - eTIMS (D7 is decided as "follow the tax adviser"; the answer is not in yet)

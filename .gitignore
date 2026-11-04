@@ -13,3 +13,6 @@ coverage/
 # editors
 .idea/
 .DS_Store
+
+# logs
+*.log
