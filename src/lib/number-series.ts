@@ -21,6 +21,16 @@ type Series = typeof numberSeries.$inferSelect;
 export type SeriesKind = Series["kind"];
 export type ResetPeriod = Series["resetPeriod"];
 
+/**
+ * The fiscal document series every facility gets at onboarding, yearly and
+ * six digits wide (`INV-2026-000123`). Migration 0016 backfills the same.
+ */
+export const FISCAL_SERIES = [
+  ["receipt", "RCT-"],
+  ["invoice", "INV-"],
+  ["credit_note", "CN-"],
+] as const satisfies readonly (readonly [SeriesKind, string])[];
+
 /** A series kind this facility has not registered: a setup error, not a user one. */
 export class SeriesNotRegisteredError extends Error {
   constructor(kind: SeriesKind) {

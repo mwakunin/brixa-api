@@ -69,20 +69,26 @@ describe("onboarding a facility", () => {
     expect(created).toMatchObject({ name: "Amani Hospital", kmhfrCode: "12345", status: "active" });
 
     const series = await db.select().from(numberSeries).where(eq(numberSeries.facilityId, created.id));
-    expect(series.map(s => [s.kind, s.prefix, s.resetPeriod]).sort()).toEqual([
-      ["admission", "ADM-", "yearly"],
-      ["inpatient", "IP", "never"],
-      ["outpatient", "OPD", "never"],
+    expect(series.map(s => [s.kind, s.prefix, s.resetPeriod, s.padding]).sort()).toEqual([
+      ["admission", "ADM-", "yearly", 4],
+      ["credit_note", "CN-", "yearly", 6],
+      ["inpatient", "IP", "never", 4],
+      ["invoice", "INV-", "yearly", 6],
+      ["outpatient", "OPD", "never", 4],
+      ["receipt", "RCT-", "yearly", 6],
     ]);
     const { rows: counters } = await pool.query<{ kind: string; next_value: number }>(`
       SELECT s.kind, c.next_value FROM number_series_counters c
       JOIN number_series s ON s.id = c.series_id WHERE c.facility_id = $1 ORDER BY s.kind
     `, [created.id]);
-    // Continues from the paper register for OP; IP and admissions start at 1.
+    // Continues from the paper register for OP; everything else starts at 1.
     expect(counters).toEqual([
       { kind: "admission", next_value: 1 },
+      { kind: "credit_note", next_value: 1 },
       { kind: "inpatient", next_value: 1 },
+      { kind: "invoice", next_value: 1 },
       { kind: "outpatient", next_value: 1201 },
+      { kind: "receipt", next_value: 1 },
     ]);
 
     const [invitation] = await db.select().from(invitations).where(eq(invitations.facilityId, created.id));

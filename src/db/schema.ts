@@ -232,6 +232,10 @@ export const auditLog = pgTable("audit_log", {
     | "charge.posted"
     | "charge.accrued"
     | "charge.cancelled"
+    | "invoice.drafted"
+    | "invoice.finalised"
+    | "invoice.voided"
+    | "invoice.viewed"
   >().notNull(),
   /** What it happened to. Not a foreign key: the log outlives what it names. */
   entityType: text().notNull(),
@@ -277,6 +281,10 @@ export const auditLog = pgTable("audit_log", {
     "charge.posted",
     "charge.accrued",
     "charge.cancelled",
+    "invoice.drafted",
+    "invoice.finalised",
+    "invoice.voided",
+    "invoice.viewed",
   ]),
 ]);
 
@@ -297,7 +305,7 @@ export const auditLog = pgTable("audit_log", {
 export const numberSeries = pgTable("number_series", {
   id: uuid().primaryKey().defaultRandom(),
   facilityId: uuid().notNull().references(() => facilities.id),
-  kind: text().$type<"outpatient" | "inpatient" | "admission" | "receipt">().notNull(),
+  kind: text().$type<"outpatient" | "inpatient" | "admission" | "receipt" | "invoice" | "credit_note">().notNull(),
   /** Facility-chosen, e.g. `OP`. Applies to numbers issued from now on. */
   prefix: text().notNull(),
   /** Zero-padded width: 4 gives OP0001. A number grows past it, never truncates. */
@@ -308,7 +316,7 @@ export const numberSeries = pgTable("number_series", {
 }, t => [
   unique("number_series_facility_id_kind_key").on(t.facilityId, t.kind),
   unique("number_series_facility_id_id_key").on(t.facilityId, t.id),
-  oneOf("number_series_kind_known", t.kind, ["outpatient", "inpatient", "admission", "receipt"]),
+  oneOf("number_series_kind_known", t.kind, ["outpatient", "inpatient", "admission", "receipt", "invoice", "credit_note"]),
   oneOf("number_series_reset_period_known", t.resetPeriod, ["never", "yearly", "daily"]),
   check("number_series_prefix_shape", sql`${t.prefix} ~ '^[A-Za-z0-9/-]{1,12}$'`),
   check("number_series_padding_range", sql`${t.padding} BETWEEN 1 AND 12`),
@@ -480,7 +488,7 @@ export const invitations = pgTable("invitations", {
 export const documents = pgTable("documents", {
   id: uuid().primaryKey().defaultRandom(),
   facilityId: uuid().notNull().references(() => facilities.id),
-  kind: text().$type<"receipt">().notNull(),
+  kind: text().$type<"receipt" | "invoice" | "credit_note">().notNull(),
   /** From this facility's number series of the same kind. */
   number: text().notNull(),
   /**
@@ -504,7 +512,7 @@ export const documents = pgTable("documents", {
     columns: [t.facilityId, t.issuedBy],
     foreignColumns: [memberships.facilityId, memberships.id],
   }),
-  oneOf("documents_kind_known", t.kind, ["receipt"]),
+  oneOf("documents_kind_known", t.kind, ["receipt", "invoice", "credit_note"]),
   // 20 bytes of base64url: a shorter code typed in by hand would be guessable.
   check("documents_verification_code_shape", sql`${t.verificationCode} ~ '^[A-Za-z0-9_-]{27}$'`),
   // Voided means at some time, for a stated reason; otherwise neither. The
@@ -1014,6 +1022,161 @@ export const jobFailures = pgTable("job_failures", {
   oneOf("job_failures_job_known", t.job, ["bed_day_accrual"]),
 ]);
 
+// ---------------------------------------------------------------------------
+// Accounts and invoices (SCHEMA.md §7.1, §7.3)
+// ---------------------------------------------------------------------------
+
+/**
+ * A payer the facility bills: an insurer, or (P7) SHA. A thin P2 record, so
+ * the money model can carry a payer split before payers are built out
+ * (ROADMAP P2); the registry link, contract and schemes arrive in P7.
+ */
+export const payers = pgTable("payers", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  name: text().notNull(),
+  isActive: boolean().default(true).notNull(),
+  createdAt: createdAt(),
+}, t => [
+  unique("payers_facility_id_id_key").on(t.facilityId, t.id),
+  unique("payers_facility_id_name_key").on(t.facilityId, t.name),
+  check("payers_name_present", sql`length(btrim(${t.name})) > 0`),
+]);
+
+/**
+ * A debtor: one per patient, one per payer. Every invoice, line, assignment,
+ * payment, allocation, adjustment and refund belongs to exactly one, and the
+ * references between them carry it (`facility_id, id, account_id`), so one
+ * account's money can never settle another's bill (invariant M1).
+ */
+export const accounts = pgTable("accounts", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  kind: text().$type<"patient" | "payer">().notNull(),
+  patientId: uuid(),
+  payerId: uuid(),
+  createdAt: createdAt(),
+}, t => [
+  unique("accounts_facility_id_id_key").on(t.facilityId, t.id),
+  unique("accounts_facility_id_patient_id_key").on(t.facilityId, t.patientId),
+  unique("accounts_facility_id_payer_id_key").on(t.facilityId, t.payerId),
+  foreignKey({ name: "accounts_patient_fk", columns: [t.facilityId, t.patientId], foreignColumns: [patients.facilityId, patients.id] }),
+  foreignKey({ name: "accounts_payer_fk", columns: [t.facilityId, t.payerId], foreignColumns: [payers.facilityId, payers.id] }),
+  oneOf("accounts_kind_known", t.kind, ["patient", "payer"]),
+  check("accounts_one_owner", sql`num_nonnulls(${t.patientId}, ${t.payerId}) = 1`),
+  check("accounts_kind_matches", sql`(${t.kind} = 'patient') = (${t.patientId} IS NOT NULL)`),
+]);
+
+/**
+ * Who is asked to pay which part of an encounter. A draft is built from the
+ * encounter's charges; finalising it freezes its total and issues its
+ * number and printed document (§6.2, rule 20). `status` is lifecycle only
+ * (rule 17): an invoice's balance and whether it is paid are derived.
+ */
+export const invoices = pgTable("invoices", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  accountId: uuid().notNull(),
+  encounterId: uuid().notNull(),
+  kind: text().$type<"interim" | "final" | "supplementary">().notNull(),
+  status: text().$type<"draft" | "finalised" | "void">().default("draft").notNull(),
+  /** Frozen from the lines at finalisation. */
+  totalCents: integer(),
+  /** The printed invoice, carrying its number and QR code. */
+  documentId: uuid(),
+  createdBy: uuid().notNull(),
+  createdAt: createdAt(),
+  finalisedAt: timestamp({ withTimezone: true }),
+  finalisedBy: uuid(),
+  voidedAt: timestamp({ withTimezone: true }),
+  voidedBy: uuid(),
+  voidReason: text(),
+}, t => [
+  unique("invoices_facility_id_id_key").on(t.facilityId, t.id),
+  // M1: what refers to an invoice names its account too.
+  unique("invoices_facility_id_id_account_id_key").on(t.facilityId, t.id, t.accountId),
+  foreignKey({ name: "invoices_account_fk", columns: [t.facilityId, t.accountId], foreignColumns: [accounts.facilityId, accounts.id] }),
+  foreignKey({ name: "invoices_encounter_fk", columns: [t.facilityId, t.encounterId], foreignColumns: [encounters.facilityId, encounters.id] }),
+  foreignKey({ name: "invoices_document_fk", columns: [t.facilityId, t.documentId], foreignColumns: [documents.facilityId, documents.id] }),
+  foreignKey({ name: "invoices_created_by_fk", columns: [t.facilityId, t.createdBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "invoices_finalised_by_fk", columns: [t.facilityId, t.finalisedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "invoices_voided_by_fk", columns: [t.facilityId, t.voidedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  // One live final invoice per encounter per account.
+  uniqueIndex("invoices_one_live_final")
+    .on(t.encounterId, t.accountId)
+    .where(sql`${t.kind} = 'final' AND ${t.status} <> 'void'`),
+  index("invoices_encounter_index").on(t.facilityId, t.encounterId),
+  oneOf("invoices_kind_known", t.kind, ["interim", "final", "supplementary"]),
+  oneOf("invoices_status_known", t.status, ["draft", "finalised", "void"]),
+  check(
+    "invoices_lifecycle",
+    sql`(${t.status} = 'draft' AND ${t.totalCents} IS NULL AND ${t.documentId} IS NULL AND ${t.finalisedAt} IS NULL
+          AND ${t.finalisedBy} IS NULL AND ${t.voidedAt} IS NULL AND ${t.voidedBy} IS NULL AND ${t.voidReason} IS NULL)
+      OR (${t.status} = 'finalised' AND ${t.totalCents} IS NOT NULL AND ${t.documentId} IS NOT NULL
+          AND ${t.finalisedAt} IS NOT NULL AND ${t.finalisedBy} IS NOT NULL
+          AND ${t.voidedAt} IS NULL AND ${t.voidedBy} IS NULL AND ${t.voidReason} IS NULL)
+      OR (${t.status} = 'void' AND ${t.voidedAt} IS NOT NULL AND ${t.voidedBy} IS NOT NULL
+          AND length(btrim(${t.voidReason})) > 0)`,
+  ),
+  check("invoices_total_whole_shillings", sql`${t.totalCents} IS NULL OR (${t.totalCents} >= 0 AND ${t.totalCents} % 100 = 0)`),
+]);
+
+/**
+ * One line of an invoice, its description and code snapshotted (rule 7).
+ * P2 lines are itemised, one per charge assignment; P7 adds package lines
+ * (absorbing many charges) and rebill lines (from a disallowance).
+ */
+export const invoiceLines = pgTable("invoice_lines", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  invoiceId: uuid().notNull(),
+  accountId: uuid().notNull(),
+  kind: text().$type<"itemised">().notNull(),
+  code: text().notNull(),
+  description: text().notNull(),
+  quantity: numeric({ precision: 11, scale: 3, mode: "string" }).notNull(),
+  unitPriceCents: integer().notNull(),
+  amountCents: integer().notNull(),
+  serviceDate: date({ mode: "string" }).notNull(),
+}, t => [
+  unique("invoice_lines_facility_id_id_account_id_key").on(t.facilityId, t.id, t.accountId),
+  foreignKey({
+    name: "invoice_lines_invoice_fk",
+    columns: [t.facilityId, t.invoiceId, t.accountId],
+    foreignColumns: [invoices.facilityId, invoices.id, invoices.accountId],
+  }),
+  index("invoice_lines_invoice_index").on(t.invoiceId),
+  oneOf("invoice_lines_kind_known", t.kind, ["itemised"]),
+  check("invoice_lines_amount_whole_shillings", sql`${t.amountCents} > 0 AND ${t.amountCents} % 100 = 0`),
+]);
+
+/**
+ * How much of a charge an invoice line asks one account to pay. Splitting a
+ * charge (an insurer's 80%, the patient's 20%) is two assignments. Live
+ * while its invoice is not void; Σ live assignments of a charge never
+ * exceed its amount (M4).
+ */
+export const chargeAssignments = pgTable("charge_assignments", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  chargeId: uuid().notNull(),
+  invoiceLineId: uuid().notNull(),
+  accountId: uuid().notNull(),
+  amountCents: integer().notNull(),
+  mode: text().$type<"itemised" | "absorbed">().notNull(),
+}, t => [
+  foreignKey({ name: "charge_assignments_charge_fk", columns: [t.facilityId, t.chargeId], foreignColumns: [charges.facilityId, charges.id] }),
+  foreignKey({
+    name: "charge_assignments_line_fk",
+    columns: [t.facilityId, t.invoiceLineId, t.accountId],
+    foreignColumns: [invoiceLines.facilityId, invoiceLines.id, invoiceLines.accountId],
+  }),
+  index("charge_assignments_charge_index").on(t.chargeId),
+  index("charge_assignments_line_index").on(t.invoiceLineId),
+  oneOf("charge_assignments_mode_known", t.mode, ["itemised", "absorbed"]),
+  check("charge_assignments_amount_whole_shillings", sql`${t.amountCents} > 0 AND ${t.amountCents} % 100 = 0`),
+]);
+
 /** What a membership may hold: taken from the column, never restated. */
 export type MembershipRole = (typeof memberships.$inferSelect)["roles"][number];
 
@@ -1047,4 +1210,9 @@ export const TENANT_TABLES = [
   "price_list_items",
   "charges",
   "job_failures",
+  "payers",
+  "accounts",
+  "invoices",
+  "invoice_lines",
+  "charge_assignments",
 ] as const;

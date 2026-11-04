@@ -22,6 +22,20 @@ function thousandths(quantity: string): bigint {
   return BigInt(whole) * 1000n + BigInt(fraction.padEnd(3, "0"));
 }
 
+/** A quantity as printed: `1.500` → `1.5`, `2.000` → `2`. */
+export function printedQuantity(quantity: string): string {
+  return quantity.includes(".") ? quantity.replace(/\.?0+$/, "") : quantity;
+}
+
+/** Cents as printed on a document: 150000 → `KES 1,500.00`. */
+export function formatKes(cents: number): string {
+  if (!Number.isSafeInteger(cents))
+    throw new RangeError(`Not an amount in cents: ${cents}`);
+  const sign = cents < 0 ? "-" : "";
+  const whole = String(Math.floor(Math.abs(cents) / 100)).replace(/\B(?=(?:\d{3})+$)/g, ",");
+  return `${sign}KES ${whole}.${String(Math.abs(cents) % 100).padStart(2, "0")}`;
+}
+
 /**
  * quantity × unit price, rounded half up to whole shillings, in cents:
  * 3 × KES 2.50 = KES 7.50 → KES 8 (800 cents).

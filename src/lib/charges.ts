@@ -7,6 +7,7 @@ import { admissions, beds, bedStays, billableItems, charges, encounters, jobFail
 import type { PatientActor } from "./patients";
 
 import { recordAudit } from "./audit";
+import { assignedByCharge } from "./billing";
 import { addDays, businessDate, startOfBusinessDay } from "./dates";
 import { chargeAmountCents } from "./money";
 import { cashPriceList, resolvePrice } from "./prices";
@@ -31,7 +32,8 @@ export class ChargeError extends Error {
     | "not_covered"
     | "service_date_invalid"
     | "charge_not_found"
-    | "already_cancelled") {
+    | "already_cancelled"
+    | "on_invoice") {
     super({
       encounter_not_found: "No such encounter",
       encounter_cancelled: "Charges cannot be posted to a cancelled encounter",
@@ -41,6 +43,7 @@ export class ChargeError extends Error {
       service_date_invalid: "The service date must fall within the encounter and not be in the future",
       charge_not_found: "No such charge",
       already_cancelled: "This charge is already cancelled",
+      on_invoice: "This charge is on an invoice; void the invoice first",
     }[code]);
     this.name = "ChargeError";
   }
@@ -106,13 +109,21 @@ export async function postManualCharge(
   return charge;
 }
 
-/** Cancels a charge, for a stated reason. (From slice 4, only while it is on no bill.) */
+/**
+ * Cancels a charge, for a stated reason, while no live invoice asks for it
+ * (M4). One on a bill is released by voiding that bill first.
+ */
 export async function cancelCharge(tx: AppDb, facilityId: string, chargeId: string, reason: string, actor: PatientActor) {
-  const [charge] = await tx.select().from(charges).where(eq(charges.id, chargeId)).for("update").limit(1);
-  if (!charge)
+  const [found] = await tx.select({ encounterId: charges.encounterId }).from(charges).where(eq(charges.id, chargeId)).limit(1);
+  if (!found)
     throw new ChargeError("charge_not_found");
+  // Lock order M8: the encounter, then the charge.
+  await tx.select({ id: encounters.id }).from(encounters).where(eq(encounters.id, found.encounterId)).for("update");
+  const [charge] = await tx.select().from(charges).where(eq(charges.id, chargeId)).for("update").limit(1);
   if (charge.cancelledAt)
     throw new ChargeError("already_cancelled");
+  if ((await assignedByCharge(tx, [chargeId])).has(chargeId))
+    throw new ChargeError("on_invoice");
 
   const [cancelled] = await tx.update(charges)
     .set({ cancelledAt: new Date(), cancelledBy: actor.membershipId, cancellationReason: reason })
@@ -219,7 +230,9 @@ export async function accrueBedDays(
   now = new Date(),
 ): Promise<{ created: string[]; missing: { serviceDate: string; error: string }[] }> {
   const none = { created: [], missing: [] };
-  const [encounter] = await tx.select().from(encounters).where(eq(encounters.id, encounterId)).limit(1);
+  // The encounter's lock first, like every charge write (M8). A bill being
+  // finalised holds it, so its nights are charged after it, never under it.
+  const [encounter] = await tx.select().from(encounters).where(eq(encounters.id, encounterId)).for("update").limit(1);
   if (!encounter || encounter.kind !== "ipd" || encounter.status === "cancelled")
     return none;
   const [admission] = await tx.select().from(admissions).where(eq(admissions.encounterId, encounterId)).limit(1);

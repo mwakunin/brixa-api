@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { chargeAmountCents } from "./money";
+import { chargeAmountCents, formatKes, printedQuantity } from "./money";
 
 describe("a charge's amount", () => {
   it.each([
@@ -27,5 +27,21 @@ describe("a charge's amount", () => {
 
   it.each(["", "-1", "1.2345", "01", "1e3", "abc"])("refuses the quantity %j", (quantity) => {
     expect(() => chargeAmountCents(quantity, 100)).toThrow(RangeError);
+  });
+});
+
+describe("printed money", () => {
+  it.each([
+    [0, "KES 0.00"],
+    [250, "KES 2.50"],
+    [50_000, "KES 500.00"],
+    [150_000_000, "KES 1,500,000.00"],
+    [-12_345_600, "-KES 123,456.00"],
+  ])("prints %i cents as %s", (cents, expected) => {
+    expect(formatKes(cents)).toBe(expected);
+  });
+
+  it.each([["1.000", "1"], ["1.500", "1.5"], ["0.250", "0.25"], ["10", "10"], ["100.000", "100"]])("prints the quantity %s as %s", (quantity, expected) => {
+    expect(printedQuantity(quantity)).toBe(expected);
   });
 });

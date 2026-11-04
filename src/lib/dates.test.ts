@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { addDays, ageInYears, businessDate, dateOfBirthForAge, printedDateTime, startOfBusinessDay } from "./dates";
+import { addDays, ageInYears, businessDate, dateOfBirthForAge, printedDate, printedDateTime, startOfBusinessDay } from "./dates";
 
 describe("businessDate", () => {
   it.each([
@@ -65,5 +65,11 @@ describe("printedDateTime", () => {
     ["2026-11-04T21:00:00Z", "5 Nov 2026, 00:00"],
   ])("prints %s as %s", (instant, expected) => {
     expect(printedDateTime(new Date(instant))).toBe(expected);
+  });
+});
+
+describe("printedDate", () => {
+  it.each([["2026-11-04", "4 Nov 2026"], ["2027-01-01", "1 Jan 2027"], ["2026-12-31", "31 Dec 2026"]])("prints %s as %s", (date, expected) => {
+    expect(printedDate(date)).toBe(expected);
   });
 });

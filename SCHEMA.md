@@ -308,6 +308,19 @@ Re-pricing an encounter (for example, coverage confirmed after the charges were 
 - **Package lines absorb charges.** A SHA package line (for example per-diem × days) is linked to the charges it covers through `absorbed` assignments. The contractual allowance (absorbed charges minus the package amount) is **derived, never stored**. Whether the remainder may be billed to a secondary payer or the patient depends on SHA's top-up rules (verify, `SPEC.md` §10).
 - An encounter cannot be final-billed while any live charge is not fully assigned (M4).
 
+**As built (P2, slice 4a): accounts and invoices.**
+
+- `payers` is a thin P2 table (name, active), so a payer split can be stored and tested; the app role only reads it until P7 builds payers out. `accounts` is created on first billing (`ensureAccount`, `src/lib/billing.ts`).
+- `invoices` carries no `number` column: the number lives on its printed document (`document_id`, §6.2), issued at finalisation from the `invoice` series (`INV-2026-000123`, yearly, six digits). `receipt` (`RCT-`) and `credit_note` (`CN-`) series are registered with it, at onboarding and by backfill.
+- `invoice_lines` (`itemised` only in P2) and `charge_assignments` (`itemised` mode) are insert-only. An assignment is **live** while its invoice is not void.
+- **Drafting** (`draftInvoice`) locks the encounter, then its standing charges by id, and puts on one draft every charge's unbilled remainder, or the given `portions` (charge id → whole shillings) for a split. A draft has no number. One live `final` per encounter and account; `interim` is refused once a final exists; `supplementary` needs a finalised final.
+- **Finalising** (`finaliseInvoice`) freezes `total_cents` from the lines and issues the invoice document in the same transaction. A `final` invoice is refused while any standing charge of the encounter has an unbilled remainder. The printed invoice names who is billed, the patient and OP number, the visit or admission, and each line.
+- **Voiding** releases the invoice's charges to be billed again. A draft is discarded by any biller; a finalised invoice is voided only by the finance manager or the facility admin, keeps its number, and voids its document. Slice 5 refuses it while money is allocated to it.
+- **Who:** cashiers, billing clerks, the finance manager and the facility admin draft and finalise; those plus claims officers and auditors read. Opening an invoice writes `invoice.viewed`; listing an encounter's invoices writes `encounter.viewed`.
+- **Triggers** (every role, the owner included): `invoices_lifecycle` allows draft → finalised, draft → void and finalised → void only, and freezes everything else; `invoice_lines_draft_only` adds lines to drafts only and never changes or removes one; `charge_assignments_within_charge` assigns on drafts only, never a cancelled charge, and never beyond the charge's amount (M4).
+- A charge on a live invoice cannot be cancelled; void the invoice first.
+- **Payer invoices are not offered over the API in P2.** The cash list prices every charge, and rule 21 forbids billing a payer at cash prices; P7 adds payers' lists. The split is proven by a library test (`src/lib/billing.test.ts`), the dummy-insurer check of `ROADMAP.md` P2.
+
 ### 7.4 Payments, allocations, deposits and refunds
 
 | Table | Key columns and rules |
@@ -352,7 +365,7 @@ The cross-row invariants live in `lib/billing.ts` and `lib/allocations.ts`, the 
 | **M1** | Every money row belongs to one account, and rows that reference each other share it | Three-column composite FKs |
 | **M2** | Σ live allocations + Σ live refunds ≤ the payment's amount | Service, payment locked |
 | **M3** | Σ live allocations + Σ live adjustments ≤ the invoice's total | Service, invoices locked |
-| **M4** | Σ live assignments ≤ the charge's amount; no final bill while a live charge is not fully assigned | Service, charges locked |
+| **M4** | Σ live assignments ≤ the charge's amount; no final bill while a live charge is not fully assigned | Service, charges locked; a trigger re-checks the first half on every assignment |
 | **M5** | Σ rebilled from a disallowance ≤ the disallowance, and zero if its disposition is `absorb`; a disallowance with live rebill lines cannot be reversed | Service |
 | **M6** | A remittance is one payment on the payer's account; its lines become allocations plus disallowance adjustments in one transaction; an unexplained shortfall stays open | Service, one transaction |
 | **M7** | Σ charges = Σ invoiced + derived allowances + waivers; Σ payments = Σ allocations + Σ refunds + unallocated credit | Reconciliation tests and a daily check |
