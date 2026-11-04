@@ -277,6 +277,16 @@ Captured at source by the module that did the work, never typed in at the cashie
 
 Re-pricing an encounter (for example, coverage confirmed after the charges were captured) is an explicit, audited act. It applies only to unassigned charges.
 
+**As built (P2, slice 3): the catalogue and prices.**
+
+- `billable_items`: the facility's own `code` (uppercase, never changes, printed on bills), `name`, `category` (consultation \| bed_day \| lab \| imaging \| procedure \| drug \| consumable \| service \| other). Identity only.
+- `price_lists`: one `cash` list per facility (created at onboarding, backfilled for existing facilities). Payers' lists join it in P7.
+- `price_list_items`: one item's price on one list from `valid_from` until `valid_to` (exclusive, open when null). An exclusion constraint forbids two overlapping prices for one item on one list. A trigger lets `valid_to` only move earlier and never reopens it, and no other column changes.
+- **Price changes need a second person (rule 24).** `price_changes` (pending \| approved \| rejected \| withdrawn) carry `price_change_lines`; a CHECK requires the approver or rejecter to differ from the requester, and only the requester may withdraw. A decided change is frozen by a trigger. One request may carry a whole tariff, so a facility's first prices are one approval.
+- **Applying a change** from day E: the price running into E ends on E; a price already approved to start on or after E ends on its own start, so it never applies; the new price runs from E. E must be today or later at request and at approval. The approval's audit entry records each item's old and new price.
+- **`resolvePrice(item, list, serviceDate)`** (`src/lib/prices.ts`) is the only lookup. In P2 the list is the cash list; P7 adds the scheme and payer lists in front of it, and keeps "not covered" as the answer when none has the item.
+- The facility admin and the finance manager keep the catalogue and request and approve changes; every member reads prices.
+
 **Bed-days** are derived from `bed_stays` time ranges and turned into charges by one idempotent function. A partial unique index on `(encounter_id, charge_date)` for bed-day charges makes a second run a no-op. The nightly job, the running bill and discharge all call that function, so a missed night is caught up rather than lost.
 
 ### 7.3 Invoices: who is asked to pay

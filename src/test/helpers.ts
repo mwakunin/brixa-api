@@ -6,9 +6,10 @@ import type { MembershipRole, UserRole } from "@/lib/types";
 
 import app from "@/app";
 import db, { pool } from "@/db";
-import { facilities, memberships } from "@/db/schema";
+import { facilities, memberships, numberSeries, numberSeriesCounters, priceLists } from "@/db/schema";
 import { createAccount } from "@/lib/accounts";
 import { FACILITY_HEADER } from "@/lib/constants";
+import { businessDate } from "@/lib/dates";
 import { sentEmails } from "@/lib/email";
 import { redis } from "@/lib/redis";
 
@@ -137,6 +138,29 @@ export async function makeFacility(overrides: {
       status: overrides.status ?? "active",
     })
     .returning();
+
+  return facility;
+}
+
+/**
+ * A facility as onboarding leaves it: the OP, IP and admission series
+ * (`OP0001`, `IP0001`, `ADM-2026-0001`) and a cash price list.
+ */
+export async function makeOnboardedFacility(overrides: { name?: string } = {}) {
+  const facility = await makeFacility(overrides);
+  const series = [
+    { kind: "outpatient", prefix: "OP", resetPeriod: "never" },
+    { kind: "inpatient", prefix: "IP", resetPeriod: "never" },
+    { kind: "admission", prefix: "ADM-", resetPeriod: "yearly" },
+  ] as const;
+
+  await db.transaction(async (tx) => {
+    for (const s of series) {
+      const [row] = await tx.insert(numberSeries).values({ facilityId: facility.id, ...s }).returning({ id: numberSeries.id });
+      await tx.insert(numberSeriesCounters).values({ facilityId: facility.id, seriesId: row.id, periodKey: s.resetPeriod === "yearly" ? businessDate().slice(0, 4) : "all" });
+    }
+    await tx.insert(priceLists).values({ facilityId: facility.id, name: "Cash", kind: "cash" });
+  });
 
   return facility;
 }

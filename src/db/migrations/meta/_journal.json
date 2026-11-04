@@ -78,6 +78,20 @@
       "when": 1793816358346,
       "tag": "0010_encounters_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1793817960804,
+      "tag": "0011_prices",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1793817963585,
+      "tag": "0012_prices_rls",
+      "breakpoints": true
     }
   ]
 }

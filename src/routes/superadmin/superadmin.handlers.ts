@@ -4,7 +4,7 @@ import * as HttpStatusCodes from "stoker/http-status-codes";
 import type { AppRouteHandler } from "@/lib/types";
 
 import db from "@/db";
-import { facilities } from "@/db/schema";
+import { facilities, priceLists } from "@/db/schema";
 import { recordAudit } from "@/lib/audit";
 import { isUniqueViolation, pgConstraintName } from "@/lib/db-errors";
 import { createInvitation } from "@/lib/invitations";
@@ -59,6 +59,8 @@ export const createFacility: AppRouteHandler<CreateFacilityRoute> = async (c) =>
         prefix: "ADM-",
         resetPeriod: "yearly",
       });
+      // The list that prices the patient account; payers' lists come later.
+      await tx.insert(priceLists).values({ facilityId: facility.id, name: "Cash", kind: "cash" });
 
       await recordAudit(tx, {
         facilityId: facility.id,
