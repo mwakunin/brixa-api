@@ -3,6 +3,7 @@ import type { Schema } from "hono";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { cors } from "hono/cors";
 import { requestId } from "hono/request-id";
+import { secureHeaders } from "hono/secure-headers";
 import { notFound, serveEmojiFavicon } from "stoker/middlewares";
 import { defaultHook } from "stoker/openapi";
 
@@ -44,11 +45,12 @@ export function createTenantRouter() {
  * The app (APP_URL) calls this API from its own origin with the session
  * cookie, so the browser needs credentialed CORS naming that exact origin. A
  * request from any other origin gets no CORS headers, and its browser refuses
- * to hand it the response. Registered first, so a preflight is answered before
- * the rate limiter or `withFacility` sees it. If the API is later served from
+ * to hand it the response. Registered ahead of everything but the hardened
+ * headers, so a preflight is answered before the rate limiter or
+ * `withFacility` sees it. If the API is later served from
  * the app's own origin through a proxy, this simply never fires.
  */
-function staffAppCors() {
+export function staffAppCors() {
   return cors({
     origin: origin => (origin === appOrigin ? origin : null),
     credentials: true,
@@ -59,9 +61,26 @@ function staffAppCors() {
   });
 }
 
+/**
+ * Response headers that harden every answer. HSTS is the one encryption in
+ * transit rests on (docs/certification/encryption.md): once a browser has
+ * seen it, it will not speak plain HTTP to this API again. Resources may be
+ * read by the staff app's site, not only this origin, since the app opens a
+ * document's PDF from its own pages.
+ */
+export function hardenedHeaders() {
+  return secureHeaders({
+    strictTransportSecurity: "max-age=31536000; includeSubDomains",
+    crossOriginResourcePolicy: "same-site",
+  });
+}
+
 export default function createApp() {
   const app = createRouter();
-  app.use(staffAppCors())
+  // Headers first: a CORS preflight is answered by `staffAppCors` without
+  // reaching anything registered after it, and it must carry them too.
+  app.use(hardenedHeaders())
+    .use(staffAppCors())
     .use(requestId())
     .use(serveEmojiFavicon("🏥"))
     .use(pinoLogger());

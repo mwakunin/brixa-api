@@ -4,6 +4,7 @@ import { serve } from "@hono/node-server";
 import app from "./app";
 import { assertConnectionsAreRestricted, PrivilegedRoleError } from "./db";
 import env from "./env";
+import { startingUpResponse } from "./lib/starting-up";
 import { createStartupGate } from "./lib/startup-gate";
 
 /*
@@ -23,6 +24,7 @@ const gate = createStartupGate({
     process.exit(1);
   },
   onRetry: err => console.warn("Database roles not verified yet; retrying:", (err as Error).message),
+  refuse: startingUpResponse,
 });
 
 await gate.start();

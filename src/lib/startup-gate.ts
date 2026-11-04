@@ -21,13 +21,31 @@ export interface StartupGateOptions {
   /** Told about each failure that will be retried. */
   onRetry?: (err: unknown) => void;
   retryMs?: number;
+  /**
+   * The answer while shut. The server passes one that carries the app's
+   * hardened headers (lib/starting-up.ts), since this answers before the app.
+   */
+  refuse?: (request: Request) => Response | Promise<Response>;
 }
 
 /** Paths answered while the gate is shut. */
 const ALWAYS_OPEN = new Set(["/health"]);
 
+export const STARTING_UP_MESSAGE = "Starting up: the database is not verified yet. Try again shortly.";
+
+/** Seconds a client should wait before trying again. */
+export const STARTING_UP_RETRY_AFTER = "5";
+
+function plainRefusal(): Response {
+  return Response.json(
+    { message: STARTING_UP_MESSAGE },
+    { status: 503, headers: { "Retry-After": STARTING_UP_RETRY_AFTER } },
+  );
+}
+
 export function createStartupGate(options: StartupGateOptions) {
   const retryMs = options.retryMs ?? 2000;
+  const refuse = options.refuse ?? plainRefusal;
   let ready = false;
 
   async function attempt(): Promise<void> {
@@ -54,10 +72,7 @@ export function createStartupGate(options: StartupGateOptions) {
         if (ready || ALWAYS_OPEN.has(new URL(request.url).pathname))
           return fetch(request, ...rest);
 
-        return Response.json(
-          { message: "Starting up: the database is not verified yet. Try again shortly." },
-          { status: 503, headers: { "Retry-After": "5" } },
-        );
+        return refuse(request);
       };
     },
   };

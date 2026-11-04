@@ -9,6 +9,7 @@ import { recordAudit } from "@/lib/audit";
 import { isUniqueViolation, pgConstraintName } from "@/lib/db-errors";
 import { createInvitation } from "@/lib/invitations";
 import { registerSeries } from "@/lib/number-series";
+import { nudgingAfterCommit } from "@/lib/outbox-nudge";
 
 import type { CreateFacilityRoute, ListFacilitiesRoute } from "./superadmin.routes";
 
@@ -24,7 +25,8 @@ export const createFacility: AppRouteHandler<CreateFacilityRoute> = async (c) =>
   const superadmin = c.var.user!;
 
   try {
-    const created = await db.transaction(async (tx) => {
+    // The first admin's invitation email is nudged out once this commits.
+    const created = await nudgingAfterCommit(() => db.transaction(async (tx) => {
       const [facility] = await tx
         .insert(facilities)
         .values({
@@ -69,7 +71,7 @@ export const createFacility: AppRouteHandler<CreateFacilityRoute> = async (c) =>
       });
 
       return { facility, invitationId: invitation.id };
-    });
+    }));
 
     const { facility } = created;
     return c.json({

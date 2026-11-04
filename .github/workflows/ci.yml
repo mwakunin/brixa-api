@@ -162,12 +162,15 @@ jobs:
             -e DATABASE_URL=postgresql://nobody:nobody@127.0.0.1:1/none \
             -e APP_DATABASE_URL=postgresql://nobody_app:nobody@127.0.0.1:1/none \
             -e AUTH_DATABASE_URL=postgresql://nobody_auth:nobody@127.0.0.1:1/none \
-            -e REDIS_URL=redis://127.0.0.1:6379 \
+            -e REDIS_URL=rediss://127.0.0.1:6379 \
             -e APP_URL=https://app.example.test \
             -e TRUST_PROXY_HOPS=1 \
             -e BETTER_AUTH_SECRET=ci-only-secret-that-is-long-enough-32 \
             -e BETTER_AUTH_URL=https://example.test \
             -e RESEND_API_KEY=x -e RESEND_FROM_EMAIL=noreply@example.test \
+            -e STORAGE_DRIVER=gcs -e STORAGE_BUCKET=hms-ci \
+            -e TASKS_QUEUE=projects/hms-ci/locations/africa-south1/queues/outbox \
+            -e TASKS_INVOKER_EMAIL=tasks-invoker@hms-ci.iam.gserviceaccount.com \
             hospital-api:ci
           # Without a database the roles cannot be verified, so the instance
           # must answer, but stay unready: /health reports the database down
@@ -177,6 +180,8 @@ jobs:
               echo "container answering: $health"
               echo "$health" | grep -q '"database":"down"'
               test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:9999/)" = "503"
+              # The gate answers before the app, and still sends HSTS.
+              curl -s -D - -o /dev/null http://localhost:9999/ | grep -qi '^strict-transport-security: max-age=31536000'
               docker rm -f api-smoke >/dev/null
               exit 0
             fi

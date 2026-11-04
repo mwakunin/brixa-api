@@ -16,3 +16,6 @@ coverage/
 
 # logs
 *.log
+
+# local storage driver (STORAGE_DRIVER=local)
+.storage/

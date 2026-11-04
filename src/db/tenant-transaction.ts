@@ -1,5 +1,7 @@
 import { sql } from "drizzle-orm";
 
+import { nudgingAfterCommit } from "@/lib/outbox-nudge";
+
 import type { AppDb } from ".";
 
 import { appDb } from ".";
@@ -15,10 +17,12 @@ import { appDb } from ".";
  * `set_config(..., true)` scopes the setting to the transaction, so it is
  * discarded at COMMIT or ROLLBACK and cannot reach the next borrower of the
  * pooled connection. The value is a bind parameter, never interpolated.
+ *
+ * Outbox jobs queued inside are nudged to the worker once it commits.
  */
 export function runAsFacility<T>(facilityId: string, fn: (tx: AppDb) => Promise<T>): Promise<T> {
-  return appDb.transaction(async (tx) => {
+  return nudgingAfterCommit(() => appDb.transaction(async (tx) => {
     await tx.execute(sql`SELECT set_config('app.facility_id', ${facilityId}, true)`);
     return fn(tx);
-  });
+  }));
 }

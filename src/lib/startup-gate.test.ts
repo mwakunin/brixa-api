@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createStartupGate } from "./startup-gate";
+import { appOrigin } from "./auth";
+import { startingUpResponse } from "./starting-up";
+import { createStartupGate, STARTING_UP_MESSAGE } from "./startup-gate";
 
 class Fatal extends Error {}
 
@@ -65,5 +67,34 @@ describe("the startup gate", () => {
     expect(onFatal).toHaveBeenCalledTimes(1);
     expect(gate.isReady()).toBe(false);
     expect((await gate.wrap(inner)(request("/"))).status).toBe(503);
+  });
+
+  // The server's refusal (src/index.ts): the gate answers before the app does.
+  it("refuses with the app's hardened headers, as every response carries them", async () => {
+    const gate = createStartupGate({
+      verify: async () => {
+        throw new Fatal("never verified");
+      },
+      isFatal: () => true,
+      onFatal: () => {},
+      refuse: startingUpResponse,
+    });
+    await gate.start();
+
+    const res = await gate.wrap(inner)(request("/facility"));
+
+    expect(res.status).toBe(503);
+    expect(res.headers.get("retry-after")).toBe("5");
+    expect(res.headers.get("strict-transport-security")).toBe("max-age=31536000; includeSubDomains");
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(await res.json()).toEqual({ message: STARTING_UP_MESSAGE });
+  });
+
+  it("lets the staff app read the refusal, so it can say the server is starting", async () => {
+    const res = await startingUpResponse(new Request("http://localhost/facility", { headers: { origin: appOrigin } }));
+
+    expect(res.status).toBe(503);
+    expect(res.headers.get("access-control-allow-origin")).toBe(appOrigin);
+    expect(res.headers.get("access-control-allow-credentials")).toBe("true");
   });
 });

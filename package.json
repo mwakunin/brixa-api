@@ -22,6 +22,7 @@
     "outbox:drain": "tsx src/cli/drain-outbox.ts"
   },
   "dependencies": {
+    "@google-cloud/storage": "^8.4.0",
     "@hono/node-server": "^2.1.1",
     "@hono/zod-openapi": "^1.6.2",
     "@scalar/hono-api-reference": "^0.9.13",
@@ -31,6 +32,7 @@
     "dotenv-expand": "^12.0.2",
     "drizzle-orm": "^0.45.2",
     "drizzle-zod": "^0.8.3",
+    "google-auth-library": "11.3.1",
     "hono": "^4.13.5",
     "hono-pino": "^0.10.3",
     "ioredis": "^6.0.0",
