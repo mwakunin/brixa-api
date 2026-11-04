@@ -116,6 +116,7 @@ Everything the pilot needs to leave its current system on one day:
 - **Reports a facility must file or run daily:** MOH 705A/705B and 717, revenue and cashier summaries, stock status.
 - **PWA offline support** at the service points that need it.
 - **Backups and a disaster-recovery drill**, and a security review before real patient data arrives.
+- **Migrations that are safe on live data.** Adding an audit action rewrites the `audit_log_action_known` CHECK, which re-scans the whole log while holding a lock that blocks every audit write, and so every request that audits. The drizzle migrator applies all pending migrations in one transaction, so `NOT VALID` followed by `VALIDATE CONSTRAINT` cannot help as things stand. Before go-live: a migrator that commits each migration on its own (or a separate validate step at deploy), or a lookup table of known actions in place of the CHECK. Found in review of PR #4.
 - **Training and the simplicity test** (`SPEC.md` §7.9): new staff in each role do their daily tasks after one short session, watched and timed. Where they get stuck is fixed before go-live.
 - **Legal clearance** from P0: written confirmation that the pilot may run this system before certification.
 

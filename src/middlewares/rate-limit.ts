@@ -190,6 +190,13 @@ export const rateLimits = {
   invitation: () => rateLimit({ points: 10, duration: 900, keyPrefix: "invite", key: byAddress }),
 
   /**
+   * Public document verification, per address. A 160-bit code cannot be
+   * guessed, so this only bounds volume: a pharmacy checking a queue of
+   * prescriptions stays well inside it.
+   */
+  verify: () => rateLimit({ points: 30, duration: 60, keyPrefix: "verify", key: byAddress }),
+
+  /**
    * Invitations sent, per facility admin. Each one is an email from our
    * domain, so this caps mail-bombing through a compromised admin account.
    */

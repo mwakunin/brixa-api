@@ -14,6 +14,8 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 
+import type { DocumentContent } from "@/lib/document-content";
+
 import { account, session, user, verification } from "./auth-schema";
 
 // Re-exported so the rest of the app imports every table from one module,
@@ -201,6 +203,10 @@ export const auditLog = pgTable("audit_log", {
     | "membership.granted"
     | "membership.roles_changed"
     | "membership.revoked"
+    | "document.issued"
+    | "document.voided"
+    | "document.viewed"
+    | "document.verified"
   >().notNull(),
   /** What it happened to. Not a foreign key: the log outlives what it names. */
   entityType: text().notNull(),
@@ -219,6 +225,10 @@ export const auditLog = pgTable("audit_log", {
     "membership.granted",
     "membership.roles_changed",
     "membership.revoked",
+    "document.issued",
+    "document.voided",
+    "document.viewed",
+    "document.verified",
   ]),
 ]);
 
@@ -239,7 +249,7 @@ export const auditLog = pgTable("audit_log", {
 export const numberSeries = pgTable("number_series", {
   id: uuid().primaryKey().defaultRandom(),
   facilityId: uuid().notNull().references(() => facilities.id),
-  kind: text().$type<"outpatient" | "inpatient">().notNull(),
+  kind: text().$type<"outpatient" | "inpatient" | "receipt">().notNull(),
   /** Facility-chosen, e.g. `OP`. Applies to numbers issued from now on. */
   prefix: text().notNull(),
   /** Zero-padded width: 4 gives OP0001. A number grows past it, never truncates. */
@@ -250,7 +260,7 @@ export const numberSeries = pgTable("number_series", {
 }, t => [
   unique("number_series_facility_id_kind_key").on(t.facilityId, t.kind),
   unique("number_series_facility_id_id_key").on(t.facilityId, t.id),
-  oneOf("number_series_kind_known", t.kind, ["outpatient", "inpatient"]),
+  oneOf("number_series_kind_known", t.kind, ["outpatient", "inpatient", "receipt"]),
   oneOf("number_series_reset_period_known", t.resetPeriod, ["never", "yearly", "daily"]),
   check("number_series_prefix_shape", sql`${t.prefix} ~ '^[A-Za-z0-9/-]{1,12}$'`),
   check("number_series_padding_range", sql`${t.padding} BETWEEN 1 AND 12`),
@@ -403,6 +413,62 @@ export const invitations = pgTable("invitations", {
   ),
 ]);
 
+// ---------------------------------------------------------------------------
+// Printed documents (SCHEMA.md §6.2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Every printed document the facility issues: its number, the code its QR
+ * carries, and exactly what it says.
+ *
+ * Issued in the transaction that finalises whatever it documents, which is
+ * also the one that takes its number (rule 20). From then on it is frozen
+ * (rule 19): a trigger refuses any change except voiding it once, and refuses
+ * deletion from every role, so a voided document keeps its number and the
+ * series has no gaps. Modules point at a document (a receipt row at its
+ * document), never the other way, so no polymorphic reference is needed
+ * (rule 22).
+ */
+export const documents = pgTable("documents", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  kind: text().$type<"receipt">().notNull(),
+  /** From this facility's number series of the same kind. */
+  number: text().notNull(),
+  /**
+   * The QR's payload and the public verify endpoint's only credential: 160
+   * random bits, base64url. Unguessable because that endpoint has no session.
+   */
+  verificationCode: text().notNull().unique(),
+  /** What is printed, and all that the PDF is rendered from (rule 7). */
+  content: jsonb().$type<DocumentContent>().notNull(),
+  issuedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  /** The membership that issued it; null when the system did. */
+  issuedBy: uuid(),
+  voidedAt: timestamp({ withTimezone: true }),
+  /** Kept with the document, never shown on the public verify page. */
+  voidReason: text(),
+}, t => [
+  unique("documents_facility_id_id_key").on(t.facilityId, t.id),
+  unique("documents_facility_id_kind_number_key").on(t.facilityId, t.kind, t.number),
+  foreignKey({
+    name: "documents_issued_by_fk",
+    columns: [t.facilityId, t.issuedBy],
+    foreignColumns: [memberships.facilityId, memberships.id],
+  }),
+  oneOf("documents_kind_known", t.kind, ["receipt"]),
+  // 20 bytes of base64url: a shorter code typed in by hand would be guessable.
+  check("documents_verification_code_shape", sql`${t.verificationCode} ~ '^[A-Za-z0-9_-]{27}$'`),
+  // Voided means at some time, for a stated reason; otherwise neither. The
+  // explicit IS NOT NULL matters: on a NULL reason `length(...) > 0` is NULL,
+  // and a CHECK passes on NULL.
+  check(
+    "documents_void_has_reason",
+    sql`(${t.voidedAt} IS NULL AND ${t.voidReason} IS NULL)
+      OR (${t.voidedAt} IS NOT NULL AND ${t.voidReason} IS NOT NULL AND length(btrim(${t.voidReason})) > 0)`,
+  ),
+]);
+
 /** What a membership may hold: taken from the column, never restated. */
 export type MembershipRole = (typeof memberships.$inferSelect)["roles"][number];
 
@@ -420,4 +486,5 @@ export const TENANT_TABLES = [
   "number_series_counters",
   "outbox",
   "invitations",
+  "documents",
 ] as const;
