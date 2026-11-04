@@ -4,7 +4,9 @@ Status as of P1 (2026-11-04). The Digital Health Regulations 2025 name encryptio
 
 ## In transit
 
-Every connection that carries health data or credentials is encrypted, and the application refuses to start in production if one is configured without encryption.
+Every connection that leaves the machine and carries health data or credentials is encrypted, and the application refuses to start in production if one is configured without encryption.
+
+The one exemption is a database on the loopback interface (`localhost`, `127.0.0.1`, `::1`, `[::1]`), whose traffic never leaves the machine (`isLocalDatabase` in `src/db/connection.ts`). In production that would be a database proxy such as the Cloud SQL Auth Proxy, if one is used: it listens locally and itself encrypts the connection to the database.
 
 | Connection | Control | Where | Proven by |
 |---|---|---|---|

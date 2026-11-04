@@ -19,6 +19,15 @@ const PRODUCTION_REQUIRED = [
   "RESEND_FROM_EMAIL",
 ] as const;
 
+/**
+ * `KEY=` in a .env file arrives as "", and means "not set", not a value: a
+ * blank queue would fail its format check, and a blank directory would put
+ * local files in the working directory.
+ */
+function unsetIfBlank<T extends z.ZodType>(schema: T) {
+  return z.preprocess(value => (value === "" ? undefined : value), schema);
+}
+
 /** The username from a DSN, or undefined if it isn't parseable. */
 function parseRole(dsn: string | undefined): string | undefined {
   if (!dsn)
@@ -100,20 +109,20 @@ const EnvSchema = z.object({
    * waits on the data-residency answer (SPEC.md §4), so it is configuration,
    * never code.
    */
-  STORAGE_BUCKET: z.string().optional(),
-  STORAGE_LOCAL_DIR: z.string().default(".storage"),
+  STORAGE_BUCKET: unsetIfBlank(z.string().optional()),
+  STORAGE_LOCAL_DIR: unsetIfBlank(z.string().default(".storage")),
 
   // --- Background jobs (Cloud Tasks and Cloud Scheduler, CLAUDE.md §7) ---
   /**
    * `projects/P/locations/L/queues/Q`. When set, every commit that queues an
    * outbox job also creates a Cloud Task to drain it at once.
    */
-  TASKS_QUEUE: z.string().regex(/^projects\/[^/]+\/locations\/[^/]+\/queues\/[^/]+$/, "projects/P/locations/L/queues/Q").optional(),
+  TASKS_QUEUE: unsetIfBlank(z.string().regex(/^projects\/[^/]+\/locations\/[^/]+\/queues\/[^/]+$/, "projects/P/locations/L/queues/Q").optional()),
   /**
    * The service account Cloud Tasks and Cloud Scheduler sign their identity
    * tokens as: the only caller the internal routes accept.
    */
-  TASKS_INVOKER_EMAIL: z.email().optional(),
+  TASKS_INVOKER_EMAIL: unsetIfBlank(z.email().optional()),
 })
   .superRefine((input, ctx) => {
     if (input.NODE_ENV === "production") {

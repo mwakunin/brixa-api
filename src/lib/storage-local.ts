@@ -1,6 +1,8 @@
+import type { FileHandle } from "node:fs/promises";
+
 import { Buffer } from "node:buffer";
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { ObjectStorage } from "./storage";
@@ -24,9 +26,12 @@ function signature(secret: string, key: string, expires: number): string {
   return createHmac("sha256", secret).update(`local-storage-url:${key}:${expires}`).digest("base64url");
 }
 
-/** True if `sig` is a valid, unexpired signature for `key` until `expires`. */
+/**
+ * True if `sig` is a valid, unexpired signature for `key`. `expires` is in
+ * milliseconds, so a link lasts exactly as long as it was signed for.
+ */
 export function verifyLocalSignature(secret: string, key: string, expires: number, sig: string, now = Date.now()): boolean {
-  if (!Number.isInteger(expires) || expires * 1000 < now)
+  if (!Number.isInteger(expires) || expires < now)
     return false;
 
   const expected = Buffer.from(signature(secret, key, expires));
@@ -49,16 +54,31 @@ export function localStorage(options: { root: string; baseUrl: string; secret: s
     async put(key, body, { contentType }) {
       const file = fileFor(key);
       await mkdir(path.dirname(file), { recursive: true });
+
+      let created: FileHandle;
       try {
         // `wx`: fail rather than overwrite, as Cloud Storage's precondition does.
-        await writeFile(file, body, { flag: "wx" });
+        created = await open(file, "wx");
       }
       catch (err) {
         if ((err as NodeJS.ErrnoException).code === "EEXIST")
           throw new ObjectExistsError();
         throw err;
       }
-      await writeFile(`${file}.content-type`, contentType);
+
+      try {
+        await created.writeFile(body);
+        await created.close();
+        await writeFile(`${file}.content-type`, contentType);
+      }
+      catch (err) {
+        // This call made the file, so it removes it: a half-written object
+        // would refuse every retry as already existing.
+        await created.close().catch(() => undefined);
+        await rm(file, { force: true });
+        await rm(`${file}.content-type`, { force: true });
+        throw err;
+      }
     },
 
     async get(key) {
@@ -74,7 +94,7 @@ export function localStorage(options: { root: string; baseUrl: string; secret: s
 
     async createSignedUrl(key, urlOptions = {}) {
       assertObjectKey(key);
-      const expires = Math.floor(Date.now() / 1000) + signedUrlLifetime(urlOptions.expiresInSeconds);
+      const expires = Date.now() + signedUrlLifetime(urlOptions.expiresInSeconds) * 1000;
       const url = new URL(`${LOCAL_FILES_PATH}/${key}`, options.baseUrl);
       url.searchParams.set("expires", String(expires));
       url.searchParams.set("signature", signature(options.secret, key, expires));
@@ -89,13 +109,18 @@ export function localStorage(options: { root: string; baseUrl: string; secret: s
   };
 }
 
-/** The content type `put` recorded, for the route that serves the file. */
+/**
+ * The content type `put` recorded, for the route that serves the file. Only a
+ * missing record falls back to a generic type; any other failure is raised.
+ */
 export async function localContentType(root: string, key: string): Promise<string> {
   const file = path.resolve(root, assertObjectKey(key));
   try {
     return (await readFile(`${file}.content-type`, "utf8")) || "application/octet-stream";
   }
-  catch {
-    return "application/octet-stream";
+  catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT")
+      return "application/octet-stream";
+    throw err;
   }
 }

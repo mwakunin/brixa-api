@@ -27,7 +27,9 @@ router.get(`${LOCAL_FILES_PATH}/*`, async (c) => {
   if (!verifyLocalSignature(env.BETTER_AUTH_SECRET, key, expires, signature))
     return refused();
 
-  const body = await storage.get(key).catch(() => null);
+  // The signature covers the key, so it is one this system issued. A failure
+  // to read it is a fault, raised as a logged 500 rather than hidden as a 404.
+  const body = await storage.get(key);
   if (!body)
     return refused();
 

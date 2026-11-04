@@ -45,8 +45,9 @@ export function createTenantRouter() {
  * The app (APP_URL) calls this API from its own origin with the session
  * cookie, so the browser needs credentialed CORS naming that exact origin. A
  * request from any other origin gets no CORS headers, and its browser refuses
- * to hand it the response. Registered first, so a preflight is answered before
- * the rate limiter or `withFacility` sees it. If the API is later served from
+ * to hand it the response. Registered ahead of everything but the hardened
+ * headers, so a preflight is answered before the rate limiter or
+ * `withFacility` sees it. If the API is later served from
  * the app's own origin through a proxy, this simply never fires.
  */
 function staffAppCors() {
@@ -76,8 +77,10 @@ function hardenedHeaders() {
 
 export default function createApp() {
   const app = createRouter();
-  app.use(staffAppCors())
-    .use(hardenedHeaders())
+  // Headers first: a CORS preflight is answered by `staffAppCors` without
+  // reaching anything registered after it, and it must carry them too.
+  app.use(hardenedHeaders())
+    .use(staffAppCors())
     .use(requestId())
     .use(serveEmojiFavicon("🏥"))
     .use(pinoLogger());

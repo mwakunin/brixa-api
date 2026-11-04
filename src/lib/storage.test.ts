@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -71,6 +71,18 @@ describe("local storage", () => {
     expect(await local.get(key)).toEqual(BYTES);
   });
 
+  it("leaves nothing behind when a write fails, so a retry can succeed", async () => {
+    const key = newObjectKey(FACILITY, "test");
+    // A directory where the content-type record goes makes that write fail.
+    await mkdir(path.join(root, `${key}.content-type`), { recursive: true });
+
+    await expect(local.put(key, BYTES, { contentType: "application/pdf" })).rejects.toThrow();
+    expect(await local.get(key)).toBeNull();
+
+    await rm(path.join(root, `${key}.content-type`), { recursive: true });
+    await expect(local.put(key, BYTES, { contentType: "application/pdf" })).resolves.toBeUndefined();
+  });
+
   it("answers null for a missing object, and deleting one is not an error", async () => {
     const key = newObjectKey(FACILITY, "test");
 
@@ -113,13 +125,16 @@ describe("a local signed URL", () => {
     expect(new Uint8Array(await res.arrayBuffer())).toEqual(BYTES);
   });
 
-  it("stops working once it expires", async () => {
+  it("works for exactly as long as it was signed for", async () => {
     const key = await stored();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const issued = Date.now();
     const url = await storage.createSignedUrl(key, { expiresInSeconds: 60 });
 
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(Date.now() + 61_000);
+    vi.setSystemTime(issued + 59_999);
+    expect((await fetchUrl(url)).status).toBe(200);
 
+    vi.setSystemTime(issued + 60_001);
     expect((await fetchUrl(url)).status).toBe(404);
   });
 
