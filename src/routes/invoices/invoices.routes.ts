@@ -33,6 +33,18 @@ const LineSchema = z.object({
   serviceDate: z.string(),
 });
 
+const AdjustmentSummarySchema = z.object({
+  id: z.uuid(),
+  kind: z.enum(["credit_note", "waiver", "write_off"]),
+  amountCents: z.number().int(),
+  reason: z.string(),
+  status: z.enum(["pending", "approved", "rejected", "withdrawn"]),
+  /** An approved credit note's number. */
+  number: z.string().nullable(),
+  requestedAt: z.string(),
+  decidedAt: z.string().nullable(),
+});
+
 const InvoiceSchema = z.object({
   id: z.uuid(),
   encounterId: z.uuid(),
@@ -44,13 +56,15 @@ const InvoiceSchema = z.object({
   payerName: z.string().nullable(),
   /** A draft's is the sum of its lines; a finalised invoice's is frozen. */
   totalCents: z.number().int(),
-  /** What is still owed on a finalised invoice; null otherwise. */
+  /** What is still owed on a finalised invoice, after approved adjustments; null otherwise. */
   balanceCents: z.number().int().nullable(),
   createdAt: z.string(),
   finalisedAt: z.string().nullable(),
   voidedAt: z.string().nullable(),
   voidReason: z.string().nullable(),
   lines: z.array(LineSchema),
+  /** Credit notes, waivers and write-offs asked for against it; only approved ones count. */
+  adjustments: z.array(AdjustmentSummarySchema),
 });
 
 const SummarySchema = InvoiceSchema.pick({

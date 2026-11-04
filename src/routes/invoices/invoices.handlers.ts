@@ -46,6 +46,7 @@ function invoiceJson(detail: InvoiceDetail) {
     voidedAt: iso(detail.voidedAt),
     voidReason: detail.voidReason,
     lines: detail.lines,
+    adjustments: detail.adjustments.map(a => ({ ...a, requestedAt: a.requestedAt.toISOString(), decidedAt: iso(a.decidedAt) })),
   };
 }
 

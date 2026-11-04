@@ -236,6 +236,10 @@ export const auditLog = pgTable("audit_log", {
     | "invoice.finalised"
     | "invoice.voided"
     | "invoice.viewed"
+    | "adjustment.requested"
+    | "adjustment.approved"
+    | "adjustment.rejected"
+    | "adjustment.withdrawn"
   >().notNull(),
   /** What it happened to. Not a foreign key: the log outlives what it names. */
   entityType: text().notNull(),
@@ -285,6 +289,10 @@ export const auditLog = pgTable("audit_log", {
     "invoice.finalised",
     "invoice.voided",
     "invoice.viewed",
+    "adjustment.requested",
+    "adjustment.approved",
+    "adjustment.rejected",
+    "adjustment.withdrawn",
   ]),
 ]);
 
@@ -1177,6 +1185,58 @@ export const chargeAssignments = pgTable("charge_assignments", {
   check("charge_assignments_amount_whole_shillings", sql`${t.amountCents} > 0 AND ${t.amountCents} % 100 = 0`),
 ]);
 
+/**
+ * An amount taken off a finalised invoice (SCHEMA.md §7.5): a `credit_note`
+ * corrects a billing error and is a numbered fiscal document; a `waiver`
+ * forgives part of a bill; a `write_off` gives up on a debt. Requested by
+ * one person and approved by another (rule 24). Approved adjustments share
+ * the invoice's total with allocations (M3), and the balance is derived.
+ * P7 adds the `payer_disallowance` kind and its disposition.
+ */
+export const invoiceAdjustments = pgTable("invoice_adjustments", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  invoiceId: uuid().notNull(),
+  accountId: uuid().notNull(),
+  kind: text().$type<"credit_note" | "waiver" | "write_off">().notNull(),
+  amountCents: integer().notNull(),
+  reason: text().notNull(),
+  status: text().$type<"pending" | "approved" | "rejected" | "withdrawn">().default("pending").notNull(),
+  requestedBy: uuid().notNull(),
+  requestedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  decidedBy: uuid(),
+  decidedAt: timestamp({ withTimezone: true }),
+  /** An approved credit note's printed document, carrying its number. */
+  documentId: uuid(),
+}, t => [
+  foreignKey({
+    name: "invoice_adjustments_invoice_fk",
+    columns: [t.facilityId, t.invoiceId, t.accountId],
+    foreignColumns: [invoices.facilityId, invoices.id, invoices.accountId],
+  }),
+  foreignKey({ name: "invoice_adjustments_document_fk", columns: [t.facilityId, t.documentId], foreignColumns: [documents.facilityId, documents.id] }),
+  foreignKey({ name: "invoice_adjustments_requested_by_fk", columns: [t.facilityId, t.requestedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "invoice_adjustments_decided_by_fk", columns: [t.facilityId, t.decidedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  index("invoice_adjustments_invoice_index").on(t.invoiceId),
+  index("invoice_adjustments_pending_index").on(t.facilityId).where(sql`${t.status} = 'pending'`),
+  oneOf("invoice_adjustments_kind_known", t.kind, ["credit_note", "waiver", "write_off"]),
+  oneOf("invoice_adjustments_status_known", t.status, ["pending", "approved", "rejected", "withdrawn"]),
+  check("invoice_adjustments_amount_whole_shillings", sql`${t.amountCents} > 0 AND ${t.amountCents} % 100 = 0`),
+  check("invoice_adjustments_reason_present", sql`length(btrim(${t.reason})) > 0`),
+  // Approved or rejected by someone else; withdrawn only by the requester.
+  check(
+    "invoice_adjustments_decision",
+    sql`(${t.status} = 'pending' AND ${t.decidedBy} IS NULL AND ${t.decidedAt} IS NULL)
+      OR (${t.status} IN ('approved', 'rejected') AND ${t.decidedBy} IS NOT NULL AND ${t.decidedAt} IS NOT NULL
+          AND ${t.decidedBy} <> ${t.requestedBy})
+      OR (${t.status} = 'withdrawn' AND ${t.decidedBy} = ${t.requestedBy} AND ${t.decidedAt} IS NOT NULL)`,
+  ),
+  check(
+    "invoice_adjustments_credit_note_document",
+    sql`(${t.kind} = 'credit_note' AND ${t.status} = 'approved') = (${t.documentId} IS NOT NULL)`,
+  ),
+]);
+
 /** What a membership may hold: taken from the column, never restated. */
 export type MembershipRole = (typeof memberships.$inferSelect)["roles"][number];
 
@@ -1215,4 +1275,5 @@ export const TENANT_TABLES = [
   "invoices",
   "invoice_lines",
   "charge_assignments",
+  "invoice_adjustments",
 ] as const;

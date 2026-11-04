@@ -11,6 +11,7 @@ import {
   charges,
   documents,
   encounters,
+  invoiceAdjustments,
   invoiceLines,
   invoices,
   patientNumbers,
@@ -56,7 +57,8 @@ export class BillingError extends Error {
     | "not_draft"
     | "already_void"
     | "charges_unbilled"
-    | "void_needs_finance") {
+    | "void_needs_finance"
+    | "has_adjustments") {
     super({
       encounter_not_found: "No such encounter",
       encounter_cancelled: "A cancelled encounter is not billed",
@@ -69,6 +71,7 @@ export class BillingError extends Error {
       already_void: "This invoice is already voided",
       charges_unbilled: "Some charges are not on any bill yet; void this draft and draft it again",
       void_needs_finance: "Only a finance manager or the facility admin voids a finalised invoice",
+      has_adjustments: "This invoice has approved adjustments; it stands as adjusted",
     }[code]);
     this.name = "BillingError";
   }
@@ -344,8 +347,8 @@ export async function finaliseInvoice(tx: AppDb, facilityId: string, invoiceId: 
 /**
  * Voids an invoice, releasing its charges to be billed again. A finalised
  * one keeps its number, and its document is voided with it; only finance
- * may void one (`mayVoidFinalised`). Slice 5 adds: refused while money is
- * allocated to it.
+ * may void one (`mayVoidFinalised`), and not while an approved adjustment
+ * stands against it. Slice 5 adds: nor while money is allocated to it.
  */
 export async function voidInvoice(
   tx: AppDb,
@@ -361,6 +364,8 @@ export async function voidInvoice(
     throw new BillingError("already_void");
   if (invoice.status === "finalised" && !input.mayVoidFinalised)
     throw new BillingError("void_needs_finance");
+  if (await adjustedCents(tx, invoice.id) > 0)
+    throw new BillingError("has_adjustments");
 
   if (invoice.documentId)
     await voidDocument(tx, { facilityId, documentId: invoice.documentId, reason: input.reason, voidedBy: actor, at });
@@ -408,6 +413,36 @@ async function visitLine(tx: AppDb, encounter: EncounterRow): Promise<string> {
   return `${admission ? `Admission ${admission.number}` : "Admission"}, ${started} to ${ended}`;
 }
 
+/**
+ * Who a bill is for, as printed: the account billed and, for a payer, the
+ * patient too. Shared by the invoice and its credit notes.
+ */
+export async function billedFields(tx: AppDb, accountId: string, patientId: string): Promise<{ label: string; value: string }[]> {
+  const [patient] = await tx
+    .select({ givenName: patients.givenName, middleNames: patients.middleNames, familyName: patients.familyName })
+    .from(patients)
+    .where(eq(patients.id, patientId))
+    .limit(1);
+  const [opNumber] = await tx
+    .select({ number: patientNumbers.number })
+    .from(patientNumbers)
+    .where(and(eq(patientNumbers.patientId, patientId), eq(patientNumbers.kind, "outpatient")))
+    .limit(1);
+  const [account] = await tx
+    .select({ payerName: payers.name })
+    .from(accounts)
+    .leftJoin(payers, eq(payers.id, accounts.payerId))
+    .where(eq(accounts.id, accountId))
+    .limit(1);
+
+  const patientName = [patient.givenName, patient.middleNames, patient.familyName].filter(Boolean).join(" ");
+  return [
+    { label: "Bill to", value: account.payerName ?? patientName },
+    ...(account.payerName ? [{ label: "Patient", value: patientName }] : []),
+    { label: "Patient number", value: opNumber?.number ?? "" },
+  ];
+}
+
 /** What the invoice prints, frozen at finalisation (rule 7). */
 async function printedInvoice(
   tx: AppDb,
@@ -416,30 +451,10 @@ async function printedInvoice(
   lines: Line[],
   totalCents: number,
 ): Promise<PrintedContent> {
-  const [patient] = await tx
-    .select({ givenName: patients.givenName, middleNames: patients.middleNames, familyName: patients.familyName })
-    .from(patients)
-    .where(eq(patients.id, encounter.patientId))
-    .limit(1);
-  const [opNumber] = await tx
-    .select({ number: patientNumbers.number })
-    .from(patientNumbers)
-    .where(and(eq(patientNumbers.patientId, encounter.patientId), eq(patientNumbers.kind, "outpatient")))
-    .limit(1);
-  const [account] = await tx
-    .select({ payerName: payers.name })
-    .from(accounts)
-    .leftJoin(payers, eq(payers.id, accounts.payerId))
-    .where(eq(accounts.id, invoice.accountId))
-    .limit(1);
-
-  const patientName = [patient.givenName, patient.middleNames, patient.familyName].filter(Boolean).join(" ");
   return {
     title: TITLES[invoice.kind],
     fields: [
-      { label: "Bill to", value: account.payerName ?? patientName },
-      ...(account.payerName ? [{ label: "Patient", value: patientName }] : []),
-      { label: "Patient number", value: opNumber?.number ?? "" },
+      ...await billedFields(tx, invoice.accountId, encounter.patientId),
       { label: "Visit", value: await visitLine(tx, encounter) },
     ],
     table: {
@@ -482,17 +497,44 @@ export async function invoiceDetail(tx: AppDb, invoiceId: string) {
     throw new BillingError("invoice_not_found");
 
   const lines = await linesOf(tx, invoiceId);
+  const adjustments = await tx
+    .select({
+      id: invoiceAdjustments.id,
+      kind: invoiceAdjustments.kind,
+      amountCents: invoiceAdjustments.amountCents,
+      reason: invoiceAdjustments.reason,
+      status: invoiceAdjustments.status,
+      number: documents.number,
+      requestedAt: invoiceAdjustments.requestedAt,
+      decidedAt: invoiceAdjustments.decidedAt,
+    })
+    .from(invoiceAdjustments)
+    .leftJoin(documents, eq(documents.id, invoiceAdjustments.documentId))
+    .where(eq(invoiceAdjustments.invoiceId, invoiceId))
+    .orderBy(asc(invoiceAdjustments.requestedAt), asc(invoiceAdjustments.id));
+
   const totalCents = row.invoice.totalCents ?? lines.reduce((sum, l) => sum + l.amountCents, 0);
+  const adjustedCents = adjustments.filter(a => a.status === "approved").reduce((sum, a) => sum + a.amountCents, 0);
   return {
     ...row.invoice,
     number: row.number,
     accountKind: row.accountKind,
     payerName: row.payerName,
     totalCents,
-    // Slice 5 subtracts live allocations, slice 4b live adjustments.
-    balanceCents: row.invoice.status === "finalised" ? totalCents : null,
+    // Slice 5 subtracts live allocations too.
+    balanceCents: row.invoice.status === "finalised" ? totalCents - adjustedCents : null,
     lines,
+    adjustments,
   };
+}
+
+/** Σ approved adjustments of an invoice: what M3 counts besides allocations. */
+export async function adjustedCents(tx: AppDb, invoiceId: string): Promise<number> {
+  const [row] = await tx
+    .select({ cents: sql<number>`coalesce(sum(${invoiceAdjustments.amountCents}), 0)`.mapWith(Number) })
+    .from(invoiceAdjustments)
+    .where(and(eq(invoiceAdjustments.invoiceId, invoiceId), eq(invoiceAdjustments.status, "approved")));
+  return row.cents;
 }
 
 export type InvoiceDetail = Awaited<ReturnType<typeof invoiceDetail>>;

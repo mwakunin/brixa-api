@@ -354,6 +354,16 @@ Adjustments **share an invoice's capacity with allocations** (M3). An invoice ca
 
 **Reversing an adjustment** changes only its reversal columns, needs a second person's approval like the original, and returns the amount to the invoice's balance. A disallowance cannot be reversed while a live rebill line points at it; credit the supplementary invoice first.
 
+**As built (P2, slice 4b): credit notes, waivers and write-offs.**
+
+- `invoice_adjustments`: `invoice_id` and `account_id` (three-column FK to the invoice, M1), `kind` (credit_note \| waiver \| write_off; P7 adds `payer_disallowance` and `disposition`), `amount_cents` (whole shillings), a one-line `reason`, `status` (pending \| approved \| rejected \| withdrawn), `requested_by`/`requested_at`, `decided_by`/`decided_at`, and `document_id` for an approved credit note. P2 has no reason codes; a code list waits for the pilot's answer on waivers (`SPEC.md` §9, question 8) and P7's disallowance policy (D4).
+- **Who (decided 2026-11-04):** billers (cashier, billing clerk, finance manager, facility admin) ask; the finance manager or the facility admin approves or rejects; only the requester withdraws. A CHECK requires the decider to differ from the requester (rule 24).
+- **Only against a finalised invoice, and within what is left (M3).** Approving locks the invoice, then the adjustment, and re-checks that approved adjustments stay within the total. The invoice's balance is its total less approved adjustments (slice 5 subtracts allocations).
+- **A credit note takes its number when approved** (`CN-2026-000001`), and its printed document names the invoice it credits, the reason and the amount. Waivers and write-offs are not printed.
+- An invoice with an approved adjustment cannot be voided.
+- **Trigger** `invoice_adjustments_lifecycle` (every role, the owner included): written pending; decided once; what it asks for never changes; never removed; approval locks the invoice and refuses one that is not finalised or that would take off more than the total.
+- **Not yet:** reversing an approved adjustment (with a second person, as above). It follows as its own slice.
+
 Resubmitting a claim does **not** raise a credit note. It creates a new claim version (§9), and money moves only at final adjudication.
 
 ### 7.6 Invariants

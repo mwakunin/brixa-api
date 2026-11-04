@@ -120,6 +120,20 @@
       "when": 1793820347124,
       "tag": "0016_invoices_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1793822037827,
+      "tag": "0017_adjustments",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1793822039488,
+      "tag": "0018_adjustments_rls",
+      "breakpoints": true
     }
   ]
 }
