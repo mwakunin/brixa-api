@@ -16,7 +16,9 @@ import invoices from "@/routes/invoices/invoices.index";
 import localFiles from "@/routes/local-files.route";
 import me from "@/routes/me/me.index";
 import patients from "@/routes/patients/patients.index";
+import payments from "@/routes/payments/payments.index";
 import prices from "@/routes/prices/prices.index";
+import shifts from "@/routes/shifts/shifts.index";
 import staff from "@/routes/staff/staff.index";
 import superadmin from "@/routes/superadmin/superadmin.index";
 import verify from "@/routes/verify/verify.index";
@@ -76,6 +78,8 @@ const tenantRoutes = [
   charges,
   invoices,
   adjustments,
+  shifts,
+  payments,
 ] as unknown as readonly AppOpenAPI[];
 
 [...unscopedRoutes, ...developmentRoutes, ...tenantRoutes].forEach((route) => {

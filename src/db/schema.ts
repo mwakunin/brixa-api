@@ -241,6 +241,14 @@ export const auditLog = pgTable("audit_log", {
     | "adjustment.rejected"
     | "adjustment.withdrawn"
     | "adjustment.listed"
+    | "shift.opened"
+    | "shift.closed"
+    | "payment.recorded"
+    | "payment.reversed"
+    | "allocation.recorded"
+    | "allocation.reversed"
+    | "account.viewed"
+    | "payment.viewed"
   >().notNull(),
   /** What it happened to. Not a foreign key: the log outlives what it names. */
   entityType: text().notNull(),
@@ -295,6 +303,14 @@ export const auditLog = pgTable("audit_log", {
     "adjustment.rejected",
     "adjustment.withdrawn",
     "adjustment.listed",
+    "shift.opened",
+    "shift.closed",
+    "payment.recorded",
+    "payment.reversed",
+    "allocation.recorded",
+    "allocation.reversed",
+    "account.viewed",
+    "payment.viewed",
   ]),
 ]);
 
@@ -1240,6 +1256,137 @@ export const invoiceAdjustments = pgTable("invoice_adjustments", {
   ),
 ]);
 
+// ---------------------------------------------------------------------------
+// Payments (SCHEMA.md §7.4)
+// ---------------------------------------------------------------------------
+
+/**
+ * A cashier's turn at the counter. Cash and card are taken inside one
+ * (decided 2026-11-04). At close the cashier declares the cash counted;
+ * what was expected, and the variance, are derived from the shift's payments.
+ */
+export const cashierShifts = pgTable("cashier_shifts", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  /** The cashier's membership. */
+  cashierId: uuid().notNull(),
+  openedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  openingFloatCents: integer().default(0).notNull(),
+  closedAt: timestamp({ withTimezone: true }),
+  declaredCashCents: integer(),
+}, t => [
+  unique("cashier_shifts_facility_id_id_key").on(t.facilityId, t.id),
+  // A payment's shift names its cashier too, so it is always the receiver's own.
+  unique("cashier_shifts_facility_id_id_cashier_id_key").on(t.facilityId, t.id, t.cashierId),
+  foreignKey({ name: "cashier_shifts_cashier_fk", columns: [t.facilityId, t.cashierId], foreignColumns: [memberships.facilityId, memberships.id] }),
+  uniqueIndex("cashier_shifts_one_open").on(t.facilityId, t.cashierId).where(sql`${t.closedAt} IS NULL`),
+  check("cashier_shifts_float_whole_shillings", sql`${t.openingFloatCents} >= 0 AND ${t.openingFloatCents} % 100 = 0`),
+  check(
+    "cashier_shifts_closing",
+    sql`(${t.closedAt} IS NULL AND ${t.declaredCashCents} IS NULL)
+      OR (${t.closedAt} IS NOT NULL AND ${t.declaredCashCents} >= 0 AND ${t.declaredCashCents} % 100 = 0)`,
+  ),
+]);
+
+/**
+ * Money received, as credit on one account. Allocations decide which bills
+ * it settles; what is not allocated is the account's credit (a deposit).
+ * Every payment has its receipt, issued in the same transaction (rule 20).
+ * Reversed, never edited (SCHEMA.md §10). Slice 6 adds the M-Pesa methods.
+ */
+export const payments = pgTable("payments", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  accountId: uuid().notNull(),
+  method: text().$type<"cash" | "card" | "bank">().notNull(),
+  amountCents: integer().notNull(),
+  /** The card slip's or bank transfer's reference; cash has none. */
+  reference: text(),
+  /** Required for cash and card. */
+  cashierShiftId: uuid(),
+  /** The visit or admission it was paid towards, e.g. an admission deposit. */
+  encounterId: uuid(),
+  /** The receipt, carrying its number. */
+  documentId: uuid().notNull(),
+  receivedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  receivedBy: uuid().notNull(),
+  reversedAt: timestamp({ withTimezone: true }),
+  reversedBy: uuid(),
+  reversalReason: text(),
+}, t => [
+  unique("payments_facility_id_id_key").on(t.facilityId, t.id),
+  // M1: what refers to a payment names its account too.
+  unique("payments_facility_id_id_account_id_key").on(t.facilityId, t.id, t.accountId),
+  foreignKey({ name: "payments_account_fk", columns: [t.facilityId, t.accountId], foreignColumns: [accounts.facilityId, accounts.id] }),
+  foreignKey({
+    name: "payments_shift_fk",
+    columns: [t.facilityId, t.cashierShiftId, t.receivedBy],
+    foreignColumns: [cashierShifts.facilityId, cashierShifts.id, cashierShifts.cashierId],
+  }),
+  foreignKey({ name: "payments_encounter_fk", columns: [t.facilityId, t.encounterId], foreignColumns: [encounters.facilityId, encounters.id] }),
+  foreignKey({ name: "payments_document_fk", columns: [t.facilityId, t.documentId], foreignColumns: [documents.facilityId, documents.id] }),
+  foreignKey({ name: "payments_received_by_fk", columns: [t.facilityId, t.receivedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "payments_reversed_by_fk", columns: [t.facilityId, t.reversedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  index("payments_account_index").on(t.accountId),
+  index("payments_shift_index").on(t.cashierShiftId),
+  index("payments_encounter_index").on(t.encounterId),
+  oneOf("payments_method_known", t.method, ["cash", "card", "bank"]),
+  check("payments_amount_whole_shillings", sql`${t.amountCents} > 0 AND ${t.amountCents} % 100 = 0`),
+  check(
+    "payments_reference",
+    sql`(${t.method} = 'cash' AND ${t.reference} IS NULL)
+      OR (${t.method} <> 'cash' AND length(btrim(${t.reference})) > 0)`,
+  ),
+  check("payments_counter_shift", sql`(${t.method} IN ('cash', 'card')) = (${t.cashierShiftId} IS NOT NULL)`),
+  // Reversed with a reason, and never by the person who took it (decided 2026-11-04).
+  check(
+    "payments_reversal",
+    sql`(${t.reversedAt} IS NULL AND ${t.reversedBy} IS NULL AND ${t.reversalReason} IS NULL)
+      OR (${t.reversedAt} IS NOT NULL AND ${t.reversedBy} IS NOT NULL AND ${t.reversalReason} IS NOT NULL AND length(btrim(${t.reversalReason})) > 0
+          AND ${t.reversedBy} <> ${t.receivedBy})`,
+  ),
+]);
+
+/**
+ * How much of a payment settles one invoice. Live while neither it nor its
+ * payment is reversed. Σ live allocations of a payment never exceed it (M2);
+ * of an invoice, together with approved adjustments, never its total (M3).
+ */
+export const allocations = pgTable("allocations", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  paymentId: uuid().notNull(),
+  invoiceId: uuid().notNull(),
+  accountId: uuid().notNull(),
+  amountCents: integer().notNull(),
+  allocatedBy: uuid().notNull(),
+  allocatedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  reversedAt: timestamp({ withTimezone: true }),
+  reversedBy: uuid(),
+  reversalReason: text(),
+}, t => [
+  foreignKey({
+    name: "allocations_payment_fk",
+    columns: [t.facilityId, t.paymentId, t.accountId],
+    foreignColumns: [payments.facilityId, payments.id, payments.accountId],
+  }),
+  foreignKey({
+    name: "allocations_invoice_fk",
+    columns: [t.facilityId, t.invoiceId, t.accountId],
+    foreignColumns: [invoices.facilityId, invoices.id, invoices.accountId],
+  }),
+  foreignKey({ name: "allocations_allocated_by_fk", columns: [t.facilityId, t.allocatedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "allocations_reversed_by_fk", columns: [t.facilityId, t.reversedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  index("allocations_payment_index").on(t.paymentId),
+  index("allocations_invoice_index").on(t.invoiceId),
+  check("allocations_amount_whole_shillings", sql`${t.amountCents} > 0 AND ${t.amountCents} % 100 = 0`),
+  check(
+    "allocations_reversal",
+    sql`(${t.reversedAt} IS NULL AND ${t.reversedBy} IS NULL AND ${t.reversalReason} IS NULL)
+      OR (${t.reversedAt} IS NOT NULL AND ${t.reversedBy} IS NOT NULL AND ${t.reversalReason} IS NOT NULL AND length(btrim(${t.reversalReason})) > 0)`,
+  ),
+]);
+
 /** What a membership may hold: taken from the column, never restated. */
 export type MembershipRole = (typeof memberships.$inferSelect)["roles"][number];
 
@@ -1279,4 +1426,7 @@ export const TENANT_TABLES = [
   "invoice_lines",
   "charge_assignments",
   "invoice_adjustments",
+  "cashier_shifts",
+  "payments",
+  "allocations",
 ] as const;

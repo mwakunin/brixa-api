@@ -1,0 +1,5392 @@
+{
+  "id": "91c12070-896b-4f99-9df0-31c9dda0574c",
+  "prevId": "fa0de20f-5f0f-466a-b8d1-36be28dbcf6b",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.account": {
+      "name": "account",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "account_id": {
+          "name": "account_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_id": {
+          "name": "provider_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "access_token": {
+          "name": "access_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "refresh_token": {
+          "name": "refresh_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "id_token": {
+          "name": "id_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "access_token_expires_at": {
+          "name": "access_token_expires_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "refresh_token_expires_at": {
+          "name": "refresh_token_expires_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "scope": {
+          "name": "scope",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "password": {
+          "name": "password",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "account_user_id_idx": {
+          "name": "account_user_id_idx",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        },
+        "account_provider_id_account_id_idx": {
+          "name": "account_provider_id_account_id_idx",
+          "columns": [
+            {
+              "expression": "provider_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "account_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {
+        "account_user_id_user_id_fk": {
+          "name": "account_user_id_user_id_fk",
+          "tableFrom": "account",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "tableTo": "user",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "cascade"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.accounts": {
+      "name": "accounts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "facility_id": {
+          "name": "facility_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "patient_id": {
+          "name": "patient_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "payer_id": {
+          "name": "payer_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "accounts_facility_id_facilities_id_fk": {
+          "name": "accounts_facility_id_facilities_id_fk",
+          "tableFrom": "accounts",
+          "columnsFrom": [
+            "facility_id"
+          ],
+          "tableTo": "facilities",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "accounts_patient_fk": {
+          "name": "accounts_patient_fk",
+          "tableFrom": "accounts",
+          "columnsFrom": [
+            "facility_id",
+            "patient_id"
+          ],
+          "tableTo": "patients",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "accounts_payer_fk": {
+          "name": "accounts_payer_fk",
+          "tableFrom": "accounts",
+          "columnsFrom": [
+            "facility_id",
+            "payer_id"
+          ],
+          "tableTo": "payers",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "accounts_facility_id_id_key": {
+          "name": "accounts_facility_id_id_key",
+          "columns": [
+            "facility_id",
+            "id"
+          ],
+          "nullsNotDistinct": false
+        },
+        "accounts_facility_id_patient_id_key": {
+          "name": "accounts_facility_id_patient_id_key",
+          "columns": [
+            "facility_id",
+            "patient_id"
+          ],
+          "nullsNotDistinct": false
+        },
+        "accounts_facility_id_payer_id_key": {
+          "name": "accounts_facility_id_payer_id_key",
+          "columns": [
+            "facility_id",
+            "payer_id"
+          ],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "accounts_kind_known": {
+          "name": "accounts_kind_known",
+          "value": "\"accounts\".\"kind\" IN ('patient', 'payer')"
+        },
+        "accounts_one_owner": {
+          "name": "accounts_one_owner",
+          "value": "num_nonnulls(\"accounts\".\"patient_id\", \"accounts\".\"payer_id\") = 1"
+        },
+        "accounts_kind_matches": {
+          "name": "accounts_kind_matches",
+          "value": "(\"accounts\".\"kind\" = 'patient') = (\"accounts\".\"patient_id\" IS NOT NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.admissions": {
+      "name": "admissions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "facility_id": {
+          "name": "facility_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "encounter_id": {
+          "name": "encounter_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "admission_number": {
+          "name": "admission_number",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "admitted_at": {
+          "name": "admitted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "admitted_by": {
+          "name": "admitted_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "discharged_at": {
+          "name": "discharged_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "discharged_by": {
+          "name": "discharged_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "discharge_disposition": {
+          "name": "discharge_disposition",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "admissions_facility_id_facilities_id_fk": {
+          "name": "admissions_facility_id_facilities_id_fk",
+          "tableFrom": "admissions",
+          "columnsFrom": [
+            "facility_id"
+          ],
+          "tableTo": "facilities",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "admissions_encounter_fk": {
+          "name": "admissions_encounter_fk",
+          "tableFrom": "admissions",
+          "columnsFrom": [
+            "facility_id",
+            "encounter_id"
+          ],
+          "tableTo": "encounters",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "admissions_admitted_by_fk": {
+          "name": "admissions_admitted_by_fk",
+          "tableFrom": "admissions",
+          "columnsFrom": [
+            "facility_id",
+            "admitted_by"
+          ],
+          "tableTo": "memberships",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "admissions_discharged_by_fk": {
+          "name": "admissions_discharged_by_fk",
+          "tableFrom": "admissions",
+          "columnsFrom": [
+            "facility_id",
+            "discharged_by"
+          ],
+          "tableTo": "memberships",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "admissions_facility_id_id_key": {
+          "name": "admissions_facility_id_id_key",
+          "columns": [
+            "facility_id",
+            "id"
+          ],
+          "nullsNotDistinct": false
+        },
+        "admissions_encounter_id_key": {
+          "name": "admissions_encounter_id_key",
+          "columns": [
+            "encounter_id"
+          ],
+          "nullsNotDistinct": false
+        },
+        "admissions_facility_id_admission_number_key": {
+          "name": "admissions_facility_id_admission_number_key",
+          "columns": [
+            "facility_id",
+            "admission_number"
+          ],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "admissions_discharge_disposition_known": {
+          "name": "admissions_discharge_disposition_known",
+          "value": "\"admissions\".\"discharge_disposition\" IN ('home', 'referred', 'died', 'absconded', 'against_advice')"
+        },
+        "admissions_discharge_complete": {
+          "name": "admissions_discharge_complete",
+          "value": "(\"admissions\".\"discharged_at\" IS NULL AND \"admissions\".\"discharged_by\" IS NULL AND \"admissions\".\"discharge_disposition\" IS NULL)\n      OR (\"admissions\".\"discharged_at\" IS NOT NULL AND \"admissions\".\"discharged_by\" IS NOT NULL AND \"admissions\".\"discharge_disposition\" IS NOT NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.allocations": {
+      "name": "allocations",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "facility_id": {
+          "name": "facility_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "payment_id": {
+          "name": "payment_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "invoice_id": {
+          "name": "invoice_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "account_id": {
+          "name": "account_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "amount_cents": {
+          "name": "amount_cents",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "allocated_by": {
+          "name": "allocated_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "allocated_at": {
+          "name": "allocated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "reversed_at": {
+          "name": "reversed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reversed_by": {
+          "name": "reversed_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reversal_reason": {
+          "name": "reversal_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "allocations_payment_index": {
+          "name": "allocations_payment_index",
+          "columns": [
+            {
+              "expression": "payment_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        },
+        "allocations_invoice_index": {
+          "name": "allocations_invoice_index",
+          "columns": [
+            {
+              "expression": "invoice_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {
+        "allocations_facility_id_facilities_id_fk": {
+          "name": "allocations_facility_id_facilities_id_fk",
+          "tableFrom": "allocations",
+          "columnsFrom": [
+            "facility_id"
+          ],
+          "tableTo": "facilities",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "allocations_payment_fk": {
+          "name": "allocations_payment_fk",
+          "tableFrom": "allocations",
+          "columnsFrom": [
+            "facility_id",
+            "payment_id",
+            "account_id"
+          ],
+          "tableTo": "payments",
+          "columnsTo": [
+            "facility_id",
+            "id",
+            "account_id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "allocations_invoice_fk": {
+          "name": "allocations_invoice_fk",
+          "tableFrom": "allocations",
+          "columnsFrom": [
+            "facility_id",
+            "invoice_id",
+            "account_id"
+          ],
+          "tableTo": "invoices",
+          "columnsTo": [
+            "facility_id",
+            "id",
+            "account_id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "allocations_allocated_by_fk": {
+          "name": "allocations_allocated_by_fk",
+          "tableFrom": "allocations",
+          "columnsFrom": [
+            "facility_id",
+            "allocated_by"
+          ],
+          "tableTo": "memberships",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "allocations_reversed_by_fk": {
+          "name": "allocations_reversed_by_fk",
+          "tableFrom": "allocations",
+          "columnsFrom": [
+            "facility_id",
+            "reversed_by"
+          ],
+          "tableTo": "memberships",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "allocations_amount_whole_shillings": {
+          "name": "allocations_amount_whole_shillings",
+          "value": "\"allocations\".\"amount_cents\" > 0 AND \"allocations\".\"amount_cents\" % 100 = 0"
+        },
+        "allocations_reversal": {
+          "name": "allocations_reversal",
+          "value": "(\"allocations\".\"reversed_at\" IS NULL AND \"allocations\".\"reversed_by\" IS NULL AND \"allocations\".\"reversal_reason\" IS NULL)\n      OR (\"allocations\".\"reversed_at\" IS NOT NULL AND \"allocations\".\"reversed_by\" IS NOT NULL AND \"allocations\".\"reversal_reason\" IS NOT NULL AND length(btrim(\"allocations\".\"reversal_reason\")) > 0)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.audit_log": {
+      "name": "audit_log",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "facility_id": {
+          "name": "facility_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_id": {
+          "name": "actor_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "action": {
+          "name": "action",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "entity_type": {
+          "name": "entity_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "entity_id": {
+          "name": "entity_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "summary": {
+          "name": "summary",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "detail": {
+          "name": "detail",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "at": {
+          "name": "at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "audit_log_facility_id_at_index": {
+          "name": "audit_log_facility_id_at_index",
+          "columns": [
+            {
+              "expression": "facility_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        },
+        "audit_log_facility_id_entity_type_entity_id_index": {
+          "name": "audit_log_facility_id_entity_type_entity_id_index",
+          "columns": [
+            {
+              "expression": "facility_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "entity_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "entity_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {
+        "audit_log_facility_id_facilities_id_fk": {
+          "name": "audit_log_facility_id_facilities_id_fk",
+          "tableFrom": "audit_log",
+          "columnsFrom": [
+            "facility_id"
+          ],
+          "tableTo": "facilities",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "audit_log_actor_id_user_id_fk": {
+          "name": "audit_log_actor_id_user_id_fk",
+          "tableFrom": "audit_log",
+          "columnsFrom": [
+            "actor_id"
+          ],
+          "tableTo": "user",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "audit_log_action_known": {
+          "name": "audit_log_action_known",
+          "value": "\"audit_log\".\"action\" IN ('facility.created', 'invitation.created', 'invitation.revoked', 'membership.granted', 'membership.roles_changed', 'membership.revoked', 'document.issued', 'document.voided', 'document.viewed', 'document.verified', 'patient.registered', 'patient.updated', 'patient.identifier_added', 'patient.viewed', 'patient.searched', 'encounter.opened', 'encounter.closed', 'encounter.cancelled', 'encounter.viewed', 'patient.admitted', 'patient.transferred', 'patient.discharged', 'ward.created', 'bed.created', 'billable_item.created', 'price_change.requested', 'price_change.approved', 'price_change.rejected', 'price_change.withdrawn', 'ward.bed_day_item_set', 'charge.posted', 'charge.accrued', 'charge.cancelled', 'invoice.drafted', 'invoice.finalised', 'invoice.voided', 'invoice.viewed', 'adjustment.requested', 'adjustment.approved', 'adjustment.rejected', 'adjustment.withdrawn', 'adjustment.listed', 'shift.opened', 'shift.closed', 'payment.recorded', 'payment.reversed', 'allocation.recorded', 'allocation.reversed', 'account.viewed', 'payment.viewed')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.bed_stays": {
+      "name": "bed_stays",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "facility_id": {
+          "name": "facility_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "admission_id": {
+          "name": "admission_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "bed_id": {
+          "name": "bed_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ended_at": {
+          "name": "ended_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "started_by": {
+          "name": "started_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ended_by": {
+          "name": "ended_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "bed_stays_admission_index": {
+          "name": "bed_stays_admission_index",
+          "columns": [
+            {
+              "expression": "facility_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "admission_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "started_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {
+        "bed_stays_facility_id_facilities_id_fk": {
+          "name": "bed_stays_facility_id_facilities_id_fk",
+          "tableFrom": "bed_stays",
+          "columnsFrom": [
+            "facility_id"
+          ],
+          "tableTo": "facilities",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "bed_stays_admission_fk": {
+          "name": "bed_stays_admission_fk",
+          "tableFrom": "bed_stays",
+          "columnsFrom": [
+            "facility_id",
+            "admission_id"
+          ],
+          "tableTo": "admissions",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "bed_stays_bed_fk": {
+          "name": "bed_stays_bed_fk",
+          "tableFrom": "bed_stays",
+          "columnsFrom": [
+            "facility_id",
+            "bed_id"
+          ],
+          "tableTo": "beds",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "bed_stays_started_by_fk": {
+          "name": "bed_stays_started_by_fk",
+          "tableFrom": "bed_stays",
+          "columnsFrom": [
+            "facility_id",
+            "started_by"
+          ],
+          "tableTo": "memberships",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "bed_stays_ended_by_fk": {
+          "name": "bed_stays_ended_by_fk",
+          "tableFrom": "bed_stays",
+          "columnsFrom": [
+            "facility_id",
+            "ended_by"
+          ],
+          "tableTo": "memberships",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "bed_stays_facility_id_id_key": {
+          "name": "bed_stays_facility_id_id_key",
+          "columns": [
+            "facility_id",
+            "id"
+          ],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "bed_stays_ends_after_start": {
+          "name": "bed_stays_ends_after_start",
+          "value": "\"bed_stays\".\"ended_at\" IS NULL OR \"bed_stays\".\"ended_at\" >= \"bed_stays\".\"started_at\""
+        },
+        "bed_stays_ended_by_whom": {
+          "name": "bed_stays_ended_by_whom",
+          "value": "(\"bed_stays\".\"ended_at\" IS NULL) = (\"bed_stays\".\"ended_by\" IS NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.beds": {
+      "name": "beds",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "facility_id": {
+          "name": "facility_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ward_id": {
+          "name": "ward_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "label": {
+          "name": "label",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "is_active": {
+          "name": "is_active",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "beds_facility_id_facilities_id_fk": {
+          "name": "beds_facility_id_facilities_id_fk",
+          "tableFrom": "beds",
+          "columnsFrom": [
+            "facility_id"
+          ],
+          "tableTo": "facilities",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "beds_ward_fk": {
+          "name": "beds_ward_fk",
+          "tableFrom": "beds",
+          "columnsFrom": [
+            "facility_id",
+            "ward_id"
+          ],
+          "tableTo": "wards",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "beds_facility_id_id_key": {
+          "name": "beds_facility_id_id_key",
+          "columns": [
+            "facility_id",
+            "id"
+          ],
+          "nullsNotDistinct": false
+        },
+        "beds_ward_id_label_key": {
+          "name": "beds_ward_id_label_key",
+          "columns": [
+            "ward_id",
+            "label"
+          ],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "beds_label_present": {
+          "name": "beds_label_present",
+          "value": "length(btrim(\"beds\".\"label\")) > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.billable_items": {
+      "name": "billable_items",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "facility_id": {
+          "name": "facility_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "code": {
+          "name": "code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "category": {
+          "name": "category",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "is_active": {
+          "name": "is_active",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "billable_items_facility_id_facilities_id_fk": {
+          "name": "billable_items_facility_id_facilities_id_fk",
+          "tableFrom": "billable_items",
+          "columnsFrom": [
+            "facility_id"
+          ],
+          "tableTo": "facilities",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "billable_items_facility_id_id_key": {
+          "name": "billable_items_facility_id_id_key",
+          "columns": [
+            "facility_id",
+            "id"
+          ],
+          "nullsNotDistinct": false
+        },
+        "billable_items_facility_id_code_key": {
+          "name": "billable_items_facility_id_code_key",
+          "columns": [
+            "facility_id",
+            "code"
+          ],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "billable_items_category_known": {
+          "name": "billable_items_category_known",
+          "value": "\"billable_items\".\"category\" IN ('consultation', 'bed_day', 'lab', 'imaging', 'procedure', 'drug', 'consumable', 'service', 'other')"
+        },
+        "billable_items_code_shape": {
+          "name": "billable_items_code_shape",
+          "value": "\"billable_items\".\"code\" ~ '^[A-Z0-9][A-Z0-9./-]{0,23}$'"
+        },
+        "billable_items_name_present": {
+          "name": "billable_items_name_present",
+          "value": "length(btrim(\"billable_items\".\"name\")) > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.cashier_shifts": {
+      "name": "cashier_shifts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "facility_id": {
+          "name": "facility_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "cashier_id": {
+          "name": "cashier_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "opened_at": {
+          "name": "opened_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "opening_float_cents": {
+          "name": "opening_float_cents",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "closed_at": {
+          "name": "closed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "declared_cash_cents": {
+          "name": "declared_cash_cents",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "cashier_shifts_one_open": {
+          "name": "cashier_shifts_one_open",
+          "columns": [
+            {
+              "expression": "facility_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "cashier_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "with": {},
+          "method": "btree",
+          "where": "\"cashier_shifts\".\"closed_at\" IS NULL",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {
+        "cashier_shifts_facility_id_facilities_id_fk": {
+          "name": "cashier_shifts_facility_id_facilities_id_fk",
+          "tableFrom": "cashier_shifts",
+          "columnsFrom": [
+            "facility_id"
+          ],
+          "tableTo": "facilities",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "cashier_shifts_cashier_fk": {
+          "name": "cashier_shifts_cashier_fk",
+          "tableFrom": "cashier_shifts",
+          "columnsFrom": [
+            "facility_id",
+            "cashier_id"
+          ],
+          "tableTo": "memberships",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "cashier_shifts_facility_id_id_key": {
+          "name": "cashier_shifts_facility_id_id_key",
+          "columns": [
+            "facility_id",
+            "id"
+          ],
+          "nullsNotDistinct": false
+        },
+        "cashier_shifts_facility_id_id_cashier_id_key": {
+          "name": "cashier_shifts_facility_id_id_cashier_id_key",
+          "columns": [
+            "facility_id",
+            "id",
+            "cashier_id"
+          ],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "cashier_shifts_float_whole_shillings": {
+          "name": "cashier_shifts_float_whole_shillings",
+          "value": "\"cashier_shifts\".\"opening_float_cents\" >= 0 AND \"cashier_shifts\".\"opening_float_cents\" % 100 = 0"
+        },
+        "cashier_shifts_closing": {
+          "name": "cashier_shifts_closing",
+          "value": "(\"cashier_shifts\".\"closed_at\" IS NULL AND \"cashier_shifts\".\"declared_cash_cents\" IS NULL)\n      OR (\"cashier_shifts\".\"closed_at\" IS NOT NULL AND \"cashier_shifts\".\"declared_cash_cents\" >= 0 AND \"cashier_shifts\".\"declared_cash_cents\" % 100 = 0)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.charge_assignments": {
+      "name": "charge_assignments",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "facility_id": {
+          "name": "facility_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "charge_id": {
+          "name": "charge_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "invoice_line_id": {
+          "name": "invoice_line_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "account_id": {
+          "name": "account_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "amount_cents": {
+          "name": "amount_cents",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "mode": {
+          "name": "mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "charge_assignments_charge_index": {
+          "name": "charge_assignments_charge_index",
+          "columns": [
+            {
+              "expression": "charge_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        },
+        "charge_assignments_line_index": {
+          "name": "charge_assignments_line_index",
+          "columns": [
+            {
+              "expression": "invoice_line_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {
+        "charge_assignments_facility_id_facilities_id_fk": {
+          "name": "charge_assignments_facility_id_facilities_id_fk",
+          "tableFrom": "charge_assignments",
+          "columnsFrom": [
+            "facility_id"
+          ],
+          "tableTo": "facilities",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "charge_assignments_charge_fk": {
+          "name": "charge_assignments_charge_fk",
+          "tableFrom": "charge_assignments",
+          "columnsFrom": [
+            "facility_id",
+            "charge_id"
+          ],
+          "tableTo": "charges",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "charge_assignments_line_fk": {
+          "name": "charge_assignments_line_fk",
+          "tableFrom": "charge_assignments",
+          "columnsFrom": [
+            "facility_id",
+            "invoice_line_id",
+            "account_id"
+          ],
+          "tableTo": "invoice_lines",
+          "columnsTo": [
+            "facility_id",
+            "id",
+            "account_id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "charge_assignments_mode_known": {
+          "name": "charge_assignments_mode_known",
+          "value": "\"charge_assignments\".\"mode\" IN ('itemised', 'absorbed')"
+        },
+        "charge_assignments_amount_whole_shillings": {
+          "name": "charge_assignments_amount_whole_shillings",
+          "value": "\"charge_assignments\".\"amount_cents\" > 0 AND \"charge_assignments\".\"amount_cents\" % 100 = 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.charges": {
+      "name": "charges",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "facility_id": {
+          "name": "facility_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "encounter_id": {
+          "name": "encounter_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "billable_item_id": {
+          "name": "billable_item_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "quantity": {
+          "name": "quantity",
+          "type": "numeric(11, 3)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "unit_price_cents": {
+          "name": "unit_price_cents",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "amount_cents": {
+          "name": "amount_cents",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "price_list_item_id": {
+          "name": "price_list_item_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "service_date": {
+          "name": "service_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "bed_stay_id": {
+          "name": "bed_stay_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "manual_reason": {
+          "name": "manual_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "captured_by": {
+          "name": "captured_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "captured_at": {
+          "name": "captured_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "cancelled_at": {
+          "name": "cancelled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cancelled_by": {
+          "name": "cancelled_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cancellation_reason": {
+          "name": "cancellation_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "charges_encounter_index": {
+          "name": "charges_encounter_index",
+          "columns": [
+            {
+              "expression": "facility_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "encounter_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "service_date",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        },
+        "charges_one_bed_day_per_night": {
+          "name": "charges_one_bed_day_per_night",
+          "columns": [
+            {
+              "expression": "encounter_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "service_date",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "with": {},
+          "method": "btree",
+          "where": "\"charges\".\"bed_stay_id\" IS NOT NULL",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {
+        "charges_facility_id_facilities_id_fk": {
+          "name": "charges_facility_id_facilities_id_fk",
+          "tableFrom": "charges",
+          "columnsFrom": [
+            "facility_id"
+          ],
+          "tableTo": "facilities",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "charges_encounter_fk": {
+          "name": "charges_encounter_fk",
+          "tableFrom": "charges",
+          "columnsFrom": [
+            "facility_id",
+            "encounter_id"
+          ],
+          "tableTo": "encounters",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "charges_item_fk": {
+          "name": "charges_item_fk",
+          "tableFrom": "charges",
+          "columnsFrom": [
+            "facility_id",
+            "billable_item_id"
+          ],
+          "tableTo": "billable_items",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "charges_price_fk": {
+          "name": "charges_price_fk",
+          "tableFrom": "charges",
+          "columnsFrom": [
+            "facility_id",
+            "price_list_item_id"
+          ],
+          "tableTo": "price_list_items",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "charges_bed_stay_fk": {
+          "name": "charges_bed_stay_fk",
+          "tableFrom": "charges",
+          "columnsFrom": [
+            "facility_id",
+            "bed_stay_id"
+          ],
+          "tableTo": "bed_stays",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "charges_captured_by_fk": {
+          "name": "charges_captured_by_fk",
+          "tableFrom": "charges",
+          "columnsFrom": [
+            "facility_id",
+            "captured_by"
+          ],
+          "tableTo": "memberships",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "charges_cancelled_by_fk": {
+          "name": "charges_cancelled_by_fk",
+          "tableFrom": "charges",
+          "columnsFrom": [
+            "facility_id",
+            "cancelled_by"
+          ],
+          "tableTo": "memberships",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "charges_facility_id_id_key": {
+          "name": "charges_facility_id_id_key",
+          "columns": [
+            "facility_id",
+            "id"
+          ],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "charges_quantity_positive": {
+          "name": "charges_quantity_positive",
+          "value": "\"charges\".\"quantity\" > 0"
+        },
+        "charges_unit_price_nonnegative": {
+          "name": "charges_unit_price_nonnegative",
+          "value": "\"charges\".\"unit_price_cents\" >= 0"
+        },
+        "charges_amount_whole_shillings": {
+          "name": "charges_amount_whole_shillings",
+          "value": "\"charges\".\"amount_cents\" >= 0 AND \"charges\".\"amount_cents\" % 100 = 0"
+        },
+        "charges_source_or_reason": {
+          "name": "charges_source_or_reason",
+          "value": "num_nonnulls(\"charges\".\"bed_stay_id\") <= 1\n      AND ((num_nonnulls(\"charges\".\"bed_stay_id\") = 0) = (\"charges\".\"manual_reason\" IS NOT NULL AND length(btrim(\"charges\".\"manual_reason\")) > 0))"
+        },
+        "charges_manual_has_person": {
+          "name": "charges_manual_has_person",
+          "value": "\"charges\".\"manual_reason\" IS NULL OR \"charges\".\"captured_by\" IS NOT NULL"
+        },
+        "charges_cancellation_complete": {
+          "name": "charges_cancellation_complete",
+          "value": "(\"charges\".\"cancelled_at\" IS NULL AND \"charges\".\"cancelled_by\" IS NULL AND \"charges\".\"cancellation_reason\" IS NULL)\n      OR (\"charges\".\"cancelled_at\" IS NOT NULL AND \"charges\".\"cancelled_by\" IS NOT NULL\n          AND \"charges\".\"cancellation_reason\" IS NOT NULL AND length(btrim(\"charges\".\"cancellation_reason\")) > 0)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.documents": {
+      "name": "documents",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "facility_id": {
+          "name": "facility_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "number": {
+          "name": "number",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "verification_code": {
+          "name": "verification_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content": {
+          "name": "content",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "issued_at": {
+          "name": "issued_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "issued_by": {
+          "name": "issued_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "voided_at": {
+          "name": "voided_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "void_reason": {
+          "name": "void_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "documents_facility_id_facilities_id_fk": {
+          "name": "documents_facility_id_facilities_id_fk",
+          "tableFrom": "documents",
+          "columnsFrom": [
+            "facility_id"
+          ],
+          "tableTo": "facilities",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "documents_issued_by_fk": {
+          "name": "documents_issued_by_fk",
+          "tableFrom": "documents",
+          "columnsFrom": [
+            "facility_id",
+            "issued_by"
+          ],
+          "tableTo": "memberships",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "documents_verificationCode_unique": {
+          "name": "documents_verificationCode_unique",
+          "columns": [
+            "verification_code"
+          ],
+          "nullsNotDistinct": false
+        },
+        "documents_facility_id_id_key": {
+          "name": "documents_facility_id_id_key",
+          "columns": [
+            "facility_id",
+            "id"
+          ],
+          "nullsNotDistinct": false
+        },
+        "documents_facility_id_kind_number_key": {
+          "name": "documents_facility_id_kind_number_key",
+          "columns": [
+            "facility_id",
+            "kind",
+            "number"
+          ],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "documents_kind_known": {
+          "name": "documents_kind_known",
+          "value": "\"documents\".\"kind\" IN ('receipt', 'invoice', 'credit_note')"
+        },
+        "documents_verification_code_shape": {
+          "name": "documents_verification_code_shape",
+          "value": "\"documents\".\"verification_code\" ~ '^[A-Za-z0-9_-]{27}$'"
+        },
+        "documents_void_has_reason": {
+          "name": "documents_void_has_reason",
+          "value": "(\"documents\".\"voided_at\" IS NULL AND \"documents\".\"void_reason\" IS NULL)\n      OR (\"documents\".\"voided_at\" IS NOT NULL AND \"documents\".\"void_reason\" IS NOT NULL AND length(btrim(\"documents\".\"void_reason\")) > 0)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.encounters": {
+      "name": "encounters",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "facility_id": {
+          "name": "facility_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "patient_id": {
+          "name": "patient_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'open'"
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "ended_at": {
+          "name": "ended_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "opened_by": {
+          "name": "opened_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "closed_by": {
+          "name": "closed_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cancel_reason": {
+          "name": "cancel_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "parent_encounter_id": {
+          "name": "parent_encounter_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "encounters_one_open_per_patient_and_kind": {
+          "name": "encounters_one_open_per_patient_and_kind",
+          "columns": [
+            {
+              "expression": "facility_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "patient_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "kind",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "with": {},
+          "method": "btree",
+          "where": "\"encounters\".\"status\" = 'open'",
+          "concurrently": false
+        },
+        "encounters_patient_index": {
+          "name": "encounters_patient_index",
+          "columns": [
+            {
+              "expression": "facility_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "patient_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "started_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {
+        "encounters_facility_id_facilities_id_fk": {
+          "name": "encounters_facility_id_facilities_id_fk",
+          "tableFrom": "encounters",
+          "columnsFrom": [
+            "facility_id"
+          ],
+          "tableTo": "facilities",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "encounters_patient_fk": {
+          "name": "encounters_patient_fk",
+          "tableFrom": "encounters",
+          "columnsFrom": [
+            "facility_id",
+            "patient_id"
+          ],
+          "tableTo": "patients",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "encounters_opened_by_fk": {
+          "name": "encounters_opened_by_fk",
+          "tableFrom": "encounters",
+          "columnsFrom": [
+            "facility_id",
+            "opened_by"
+          ],
+          "tableTo": "memberships",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "encounters_closed_by_fk": {
+          "name": "encounters_closed_by_fk",
+          "tableFrom": "encounters",
+          "columnsFrom": [
+            "facility_id",
+            "closed_by"
+          ],
+          "tableTo": "memberships",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "encounters_parent_fk": {
+          "name": "encounters_parent_fk",
+          "tableFrom": "encounters",
+          "columnsFrom": [
+            "facility_id",
+            "parent_encounter_id"
+          ],
+          "tableTo": "encounters",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "encounters_facility_id_id_key": {
+          "name": "encounters_facility_id_id_key",
+          "columns": [
+            "facility_id",
+            "id"
+          ],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "encounters_kind_known": {
+          "name": "encounters_kind_known",
+          "value": "\"encounters\".\"kind\" IN ('opd', 'emergency', 'ipd')"
+        },
+        "encounters_status_known": {
+          "name": "encounters_status_known",
+          "value": "\"encounters\".\"status\" IN ('open', 'closed', 'cancelled')"
+        },
+        "encounters_lifecycle": {
+          "name": "encounters_lifecycle",
+          "value": "(\"encounters\".\"status\" = 'open' AND \"encounters\".\"ended_at\" IS NULL AND \"encounters\".\"closed_by\" IS NULL AND \"encounters\".\"cancel_reason\" IS NULL)\n      OR (\"encounters\".\"status\" = 'closed' AND \"encounters\".\"ended_at\" IS NOT NULL AND \"encounters\".\"closed_by\" IS NOT NULL AND \"encounters\".\"cancel_reason\" IS NULL)\n      OR (\"encounters\".\"status\" = 'cancelled' AND \"encounters\".\"ended_at\" IS NOT NULL AND \"encounters\".\"closed_by\" IS NOT NULL\n          AND \"encounters\".\"cancel_reason\" IS NOT NULL AND length(btrim(\"encounters\".\"cancel_reason\")) > 0)"
+        },
+        "encounters_ends_after_start": {
+          "name": "encounters_ends_after_start",
+          "value": "\"encounters\".\"ended_at\" IS NULL OR \"encounters\".\"ended_at\" >= \"encounters\".\"started_at\""
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.facilities": {
+      "name": "facilities",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kmhfr_code": {
+          "name": "kmhfr_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "keph_level": {
+          "name": "keph_level",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "county": {
+          "name": "county",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sha_contract_ref": {
+          "name": "sha_contract_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "facilities_kmhfrCode_unique": {
+          "name": "facilities_kmhfrCode_unique",
+          "columns": [
+            "kmhfr_code"
+          ],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "facilities_status_known": {
+          "name": "facilities_status_known",
+          "value": "\"facilities\".\"status\" IN ('active', 'suspended')"
+        },
+        "facilities_keph_level_valid": {
+          "name": "facilities_keph_level_valid",
+          "value": "\"facilities\".\"keph_level\" BETWEEN 1 AND 6"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.invitations": {
+      "name": "invitations",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "facility_id": {
+          "name": "facility_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "email": {
+          "name": "email",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "roles": {
+          "name": "roles",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "invited_by": {
+          "name": "invited_by",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "token_hash": {
+          "name": "token_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "accepted_at": {
+          "name": "accepted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "accepted_user_id": {
+          "name": "accepted_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "invitations_one_pending_per_email": {
+          "name": "invitations_one_pending_per_email",
+          "columns": [
+            {
+              "expression": "facility_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "email",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "with": {},
+          "method": "btree",
+          "where": "\"invitations\".\"status\" = 'pending'",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {
+        "invitations_facility_id_facilities_id_fk": {
+          "name": "invitations_facility_id_facilities_id_fk",
+          "tableFrom": "invitations",
+          "columnsFrom": [
+            "facility_id"
+          ],
+          "tableTo": "facilities",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "invitations_invited_by_user_id_fk": {
+          "name": "invitations_invited_by_user_id_fk",
+          "tableFrom": "invitations",
+          "columnsFrom": [
+            "invited_by"
+          ],
+          "tableTo": "user",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "invitations_accepted_user_id_user_id_fk": {
+          "name": "invitations_accepted_user_id_user_id_fk",
+          "tableFrom": "invitations",
+          "columnsFrom": [
+            "accepted_user_id"
+          ],
+          "tableTo": "user",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "invitations_tokenHash_unique": {
+          "name": "invitations_tokenHash_unique",
+          "columns": [
+            "token_hash"
+          ],
+          "nullsNotDistinct": false
+        },
+        "invitations_facility_id_id_key": {
+          "name": "invitations_facility_id_id_key",
+          "columns": [
+            "facility_id",
+            "id"
+          ],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "invitations_roles_known": {
+          "name": "invitations_roles_known",
+          "value": "\"invitations\".\"roles\" <@ ARRAY['facility_admin', 'auditor', 'records_clerk', 'doctor', 'clinical_officer', 'nurse', 'ward_nurse', 'lab_tech', 'lab_supervisor', 'pharmacist', 'pharm_tech', 'storekeeper', 'cashier', 'billing_clerk', 'claims_officer', 'finance_manager']::text[]"
+        },
+        "invitations_roles_not_empty": {
+          "name": "invitations_roles_not_empty",
+          "value": "cardinality(\"invitations\".\"roles\") > 0"
+        },
+        "invitations_status_known": {
+          "name": "invitations_status_known",
+          "value": "\"invitations\".\"status\" IN ('pending', 'accepted', 'revoked')"
+        },
+        "invitations_email_lowercase": {
+          "name": "invitations_email_lowercase",
+          "value": "\"invitations\".\"email\" = lower(\"invitations\".\"email\")"
+        },
+        "invitations_acceptance_matches_status": {
+          "name": "invitations_acceptance_matches_status",
+          "value": "(\"invitations\".\"status\" = 'accepted' AND \"invitations\".\"accepted_at\" IS NOT NULL AND \"invitations\".\"accepted_user_id\" IS NOT NULL)\n      OR (\"invitations\".\"status\" <> 'accepted' AND \"invitations\".\"accepted_at\" IS NULL AND \"invitations\".\"accepted_user_id\" IS NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.invoice_adjustments": {
+      "name": "invoice_adjustments",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "facility_id": {
+          "name": "facility_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "invoice_id": {
+          "name": "invoice_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "account_id": {
+          "name": "account_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "amount_cents": {
+          "name": "amount_cents",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "requested_by": {
+          "name": "requested_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "requested_at": {
+          "name": "requested_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "decided_by": {
+          "name": "decided_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "decided_at": {
+          "name": "decided_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "document_id": {
+          "name": "document_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "invoice_adjustments_invoice_index": {
+          "name": "invoice_adjustments_invoice_index",
+          "columns": [
+            {
+              "expression": "invoice_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        },
+        "invoice_adjustments_pending_index": {
+          "name": "invoice_adjustments_pending_index",
+          "columns": [
+            {
+              "expression": "facility_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "where": "\"invoice_adjustments\".\"status\" = 'pending'",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {
+        "invoice_adjustments_facility_id_facilities_id_fk": {
+          "name": "invoice_adjustments_facility_id_facilities_id_fk",
+          "tableFrom": "invoice_adjustments",
+          "columnsFrom": [
+            "facility_id"
+          ],
+          "tableTo": "facilities",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "invoice_adjustments_invoice_fk": {
+          "name": "invoice_adjustments_invoice_fk",
+          "tableFrom": "invoice_adjustments",
+          "columnsFrom": [
+            "facility_id",
+            "invoice_id",
+            "account_id"
+          ],
+          "tableTo": "invoices",
+          "columnsTo": [
+            "facility_id",
+            "id",
+            "account_id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "invoice_adjustments_document_fk": {
+          "name": "invoice_adjustments_document_fk",
+          "tableFrom": "invoice_adjustments",
+          "columnsFrom": [
+            "facility_id",
+            "document_id"
+          ],
+          "tableTo": "documents",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "invoice_adjustments_requested_by_fk": {
+          "name": "invoice_adjustments_requested_by_fk",
+          "tableFrom": "invoice_adjustments",
+          "columnsFrom": [
+            "facility_id",
+            "requested_by"
+          ],
+          "tableTo": "memberships",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "invoice_adjustments_decided_by_fk": {
+          "name": "invoice_adjustments_decided_by_fk",
+          "tableFrom": "invoice_adjustments",
+          "columnsFrom": [
+            "facility_id",
+            "decided_by"
+          ],
+          "tableTo": "memberships",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "invoice_adjustments_kind_known": {
+          "name": "invoice_adjustments_kind_known",
+          "value": "\"invoice_adjustments\".\"kind\" IN ('credit_note', 'waiver', 'write_off')"
+        },
+        "invoice_adjustments_status_known": {
+          "name": "invoice_adjustments_status_known",
+          "value": "\"invoice_adjustments\".\"status\" IN ('pending', 'approved', 'rejected', 'withdrawn')"
+        },
+        "invoice_adjustments_amount_whole_shillings": {
+          "name": "invoice_adjustments_amount_whole_shillings",
+          "value": "\"invoice_adjustments\".\"amount_cents\" > 0 AND \"invoice_adjustments\".\"amount_cents\" % 100 = 0"
+        },
+        "invoice_adjustments_reason_present": {
+          "name": "invoice_adjustments_reason_present",
+          "value": "length(btrim(\"invoice_adjustments\".\"reason\")) > 0"
+        },
+        "invoice_adjustments_decision": {
+          "name": "invoice_adjustments_decision",
+          "value": "(\"invoice_adjustments\".\"status\" = 'pending' AND \"invoice_adjustments\".\"decided_by\" IS NULL AND \"invoice_adjustments\".\"decided_at\" IS NULL)\n      OR (\"invoice_adjustments\".\"status\" IN ('approved', 'rejected') AND \"invoice_adjustments\".\"decided_by\" IS NOT NULL AND \"invoice_adjustments\".\"decided_at\" IS NOT NULL\n          AND \"invoice_adjustments\".\"decided_by\" <> \"invoice_adjustments\".\"requested_by\")\n      OR (\"invoice_adjustments\".\"status\" = 'withdrawn' AND \"invoice_adjustments\".\"decided_by\" = \"invoice_adjustments\".\"requested_by\" AND \"invoice_adjustments\".\"decided_at\" IS NOT NULL)"
+        },
+        "invoice_adjustments_credit_note_document": {
+          "name": "invoice_adjustments_credit_note_document",
+          "value": "(\"invoice_adjustments\".\"kind\" = 'credit_note' AND \"invoice_adjustments\".\"status\" = 'approved') = (\"invoice_adjustments\".\"document_id\" IS NOT NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.invoice_lines": {
+      "name": "invoice_lines",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "facility_id": {
+          "name": "facility_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "invoice_id": {
+          "name": "invoice_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "account_id": {
+          "name": "account_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "code": {
+          "name": "code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "description": {
+          "name": "description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "quantity": {
+          "name": "quantity",
+          "type": "numeric(11, 3)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "unit_price_cents": {
+          "name": "unit_price_cents",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "amount_cents": {
+          "name": "amount_cents",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "service_date": {
+          "name": "service_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "invoice_lines_invoice_index": {
+          "name": "invoice_lines_invoice_index",
+          "columns": [
+            {
+              "expression": "invoice_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {
+        "invoice_lines_facility_id_facilities_id_fk": {
+          "name": "invoice_lines_facility_id_facilities_id_fk",
+          "tableFrom": "invoice_lines",
+          "columnsFrom": [
+            "facility_id"
+          ],
+          "tableTo": "facilities",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "invoice_lines_invoice_fk": {
+          "name": "invoice_lines_invoice_fk",
+          "tableFrom": "invoice_lines",
+          "columnsFrom": [
+            "facility_id",
+            "invoice_id",
+            "account_id"
+          ],
+          "tableTo": "invoices",
+          "columnsTo": [
+            "facility_id",
+            "id",
+            "account_id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "invoice_lines_facility_id_id_account_id_key": {
+          "name": "invoice_lines_facility_id_id_account_id_key",
+          "columns": [
+            "facility_id",
+            "id",
+            "account_id"
+          ],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "invoice_lines_kind_known": {
+          "name": "invoice_lines_kind_known",
+          "value": "\"invoice_lines\".\"kind\" IN ('itemised')"
+        },
+        "invoice_lines_amount_whole_shillings": {
+          "name": "invoice_lines_amount_whole_shillings",
+          "value": "\"invoice_lines\".\"amount_cents\" > 0 AND \"invoice_lines\".\"amount_cents\" % 100 = 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.invoices": {
+      "name": "invoices",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "facility_id": {
+          "name": "facility_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "account_id": {
+          "name": "account_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "encounter_id": {
+          "name": "encounter_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'draft'"
+        },
+        "total_cents": {
+          "name": "total_cents",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "document_id": {
+          "name": "document_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "finalised_at": {
+          "name": "finalised_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "finalised_by": {
+          "name": "finalised_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "voided_at": {
+          "name": "voided_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "voided_by": {
+          "name": "voided_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "void_reason": {
+          "name": "void_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "invoices_one_live_final": {
+          "name": "invoices_one_live_final",
+          "columns": [
+            {
+              "expression": "encounter_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "account_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "with": {},
+          "method": "btree",
+          "where": "\"invoices\".\"kind\" = 'final' AND \"invoices\".\"status\" <> 'void'",
+          "concurrently": false
+        },
+        "invoices_encounter_index": {
+          "name": "invoices_encounter_index",
+          "columns": [
+            {
+              "expression": "facility_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "encounter_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {
+        "invoices_facility_id_facilities_id_fk": {
+          "name": "invoices_facility_id_facilities_id_fk",
+          "tableFrom": "invoices",
+          "columnsFrom": [
+            "facility_id"
+          ],
+          "tableTo": "facilities",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "invoices_account_fk": {
+          "name": "invoices_account_fk",
+          "tableFrom": "invoices",
+          "columnsFrom": [
+            "facility_id",
+            "account_id"
+          ],
+          "tableTo": "accounts",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "invoices_encounter_fk": {
+          "name": "invoices_encounter_fk",
+          "tableFrom": "invoices",
+          "columnsFrom": [
+            "facility_id",
+            "encounter_id"
+          ],
+          "tableTo": "encounters",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "invoices_document_fk": {
+          "name": "invoices_document_fk",
+          "tableFrom": "invoices",
+          "columnsFrom": [
+            "facility_id",
+            "document_id"
+          ],
+          "tableTo": "documents",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "invoices_created_by_fk": {
+          "name": "invoices_created_by_fk",
+          "tableFrom": "invoices",
+          "columnsFrom": [
+            "facility_id",
+            "created_by"
+          ],
+          "tableTo": "memberships",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "invoices_finalised_by_fk": {
+          "name": "invoices_finalised_by_fk",
+          "tableFrom": "invoices",
+          "columnsFrom": [
+            "facility_id",
+            "finalised_by"
+          ],
+          "tableTo": "memberships",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "invoices_voided_by_fk": {
+          "name": "invoices_voided_by_fk",
+          "tableFrom": "invoices",
+          "columnsFrom": [
+            "facility_id",
+            "voided_by"
+          ],
+          "tableTo": "memberships",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "invoices_facility_id_id_key": {
+          "name": "invoices_facility_id_id_key",
+          "columns": [
+            "facility_id",
+            "id"
+          ],
+          "nullsNotDistinct": false
+        },
+        "invoices_facility_id_id_account_id_key": {
+          "name": "invoices_facility_id_id_account_id_key",
+          "columns": [
+            "facility_id",
+            "id",
+            "account_id"
+          ],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "invoices_kind_known": {
+          "name": "invoices_kind_known",
+          "value": "\"invoices\".\"kind\" IN ('interim', 'final', 'supplementary')"
+        },
+        "invoices_status_known": {
+          "name": "invoices_status_known",
+          "value": "\"invoices\".\"status\" IN ('draft', 'finalised', 'void')"
+        },
+        "invoices_lifecycle": {
+          "name": "invoices_lifecycle",
+          "value": "(\"invoices\".\"status\" = 'draft' AND \"invoices\".\"total_cents\" IS NULL AND \"invoices\".\"document_id\" IS NULL AND \"invoices\".\"finalised_at\" IS NULL\n          AND \"invoices\".\"finalised_by\" IS NULL AND \"invoices\".\"voided_at\" IS NULL AND \"invoices\".\"voided_by\" IS NULL AND \"invoices\".\"void_reason\" IS NULL)\n      OR (\"invoices\".\"status\" = 'finalised' AND \"invoices\".\"total_cents\" IS NOT NULL AND \"invoices\".\"document_id\" IS NOT NULL\n          AND \"invoices\".\"finalised_at\" IS NOT NULL AND \"invoices\".\"finalised_by\" IS NOT NULL\n          AND \"invoices\".\"voided_at\" IS NULL AND \"invoices\".\"voided_by\" IS NULL AND \"invoices\".\"void_reason\" IS NULL)\n      OR (\"invoices\".\"status\" = 'void' AND \"invoices\".\"voided_at\" IS NOT NULL AND \"invoices\".\"voided_by\" IS NOT NULL\n          AND \"invoices\".\"void_reason\" IS NOT NULL AND length(btrim(\"invoices\".\"void_reason\")) > 0)"
+        },
+        "invoices_total_whole_shillings": {
+          "name": "invoices_total_whole_shillings",
+          "value": "\"invoices\".\"total_cents\" IS NULL OR (\"invoices\".\"total_cents\" >= 0 AND \"invoices\".\"total_cents\" % 100 = 0)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.job_failures": {
+      "name": "job_failures",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "facility_id": {
+          "name": "facility_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "job": {
+          "name": "job",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "subject_id": {
+          "name": "subject_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "error": {
+          "name": "error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "failed_at": {
+          "name": "failed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "resolved_at": {
+          "name": "resolved_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "job_failures_open_once": {
+          "name": "job_failures_open_once",
+          "columns": [
+            {
+              "expression": "facility_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "job",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "subject_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "error",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "with": {},
+          "method": "btree",
+          "where": "\"job_failures\".\"resolved_at\" IS NULL",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {
+        "job_failures_facility_id_facilities_id_fk": {
+          "name": "job_failures_facility_id_facilities_id_fk",
+          "tableFrom": "job_failures",
+          "columnsFrom": [
+            "facility_id"
+          ],
+          "tableTo": "facilities",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "job_failures_job_known": {
+          "name": "job_failures_job_known",
+          "value": "\"job_failures\".\"job\" IN ('bed_day_accrual')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.memberships": {
+      "name": "memberships",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "facility_id": {
+          "name": "facility_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "roles": {
+          "name": "roles",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "is_active": {
+          "name": "is_active",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "memberships_facility_id_facilities_id_fk": {
+          "name": "memberships_facility_id_facilities_id_fk",
+          "tableFrom": "memberships",
+          "columnsFrom": [
+            "facility_id"
+          ],
+          "tableTo": "facilities",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "memberships_user_id_user_id_fk": {
+          "name": "memberships_user_id_user_id_fk",
+          "tableFrom": "memberships",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "tableTo": "user",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "memberships_user_id_facility_id_key": {
+          "name": "memberships_user_id_facility_id_key",
+          "columns": [
+            "user_id",
+            "facility_id"
+          ],
+          "nullsNotDistinct": false
+        },
+        "memberships_facility_id_id_key": {
+          "name": "memberships_facility_id_id_key",
+          "columns": [
+            "facility_id",
+            "id"
+          ],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "memberships_roles_known": {
+          "name": "memberships_roles_known",
+          "value": "\"memberships\".\"roles\" <@ ARRAY['facility_admin', 'auditor', 'records_clerk', 'doctor', 'clinical_officer', 'nurse', 'ward_nurse', 'lab_tech', 'lab_supervisor', 'pharmacist', 'pharm_tech', 'storekeeper', 'cashier', 'billing_clerk', 'claims_officer', 'finance_manager']::text[]"
+        },
+        "memberships_roles_not_empty": {
+          "name": "memberships_roles_not_empty",
+          "value": "cardinality(\"memberships\".\"roles\") > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.number_series": {
+      "name": "number_series",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "facility_id": {
+          "name": "facility_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "prefix": {
+          "name": "prefix",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "padding": {
+          "name": "padding",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 4
+        },
+        "reset_period": {
+          "name": "reset_period",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "number_series_facility_id_facilities_id_fk": {
+          "name": "number_series_facility_id_facilities_id_fk",
+          "tableFrom": "number_series",
+          "columnsFrom": [
+            "facility_id"
+          ],
+          "tableTo": "facilities",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "number_series_facility_id_kind_key": {
+          "name": "number_series_facility_id_kind_key",
+          "columns": [
+            "facility_id",
+            "kind"
+          ],
+          "nullsNotDistinct": false
+        },
+        "number_series_facility_id_id_key": {
+          "name": "number_series_facility_id_id_key",
+          "columns": [
+            "facility_id",
+            "id"
+          ],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "number_series_kind_known": {
+          "name": "number_series_kind_known",
+          "value": "\"number_series\".\"kind\" IN ('outpatient', 'inpatient', 'admission', 'receipt', 'invoice', 'credit_note')"
+        },
+        "number_series_reset_period_known": {
+          "name": "number_series_reset_period_known",
+          "value": "\"number_series\".\"reset_period\" IN ('never', 'yearly', 'daily')"
+        },
+        "number_series_prefix_shape": {
+          "name": "number_series_prefix_shape",
+          "value": "\"number_series\".\"prefix\" ~ '^[A-Za-z0-9/-]{1,12}$'"
+        },
+        "number_series_padding_range": {
+          "name": "number_series_padding_range",
+          "value": "\"number_series\".\"padding\" BETWEEN 1 AND 12"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.number_series_counters": {
+      "name": "number_series_counters",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "facility_id": {
+          "name": "facility_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "series_id": {
+          "name": "series_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "period_key": {
+          "name": "period_key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "next_value": {
+          "name": "next_value",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "number_series_counters_facility_id_facilities_id_fk": {
+          "name": "number_series_counters_facility_id_facilities_id_fk",
+          "tableFrom": "number_series_counters",
+          "columnsFrom": [
+            "facility_id"
+          ],
+          "tableTo": "facilities",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "number_series_counters_series_fk": {
+          "name": "number_series_counters_series_fk",
+          "tableFrom": "number_series_counters",
+          "columnsFrom": [
+            "facility_id",
+            "series_id"
+          ],
+          "tableTo": "number_series",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "number_series_counters_series_id_period_key_key": {
+          "name": "number_series_counters_series_id_period_key_key",
+          "columns": [
+            "series_id",
+            "period_key"
+          ],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "number_series_counters_next_value_positive": {
+          "name": "number_series_counters_next_value_positive",
+          "value": "\"number_series_counters\".\"next_value\" >= 1"
+        },
+        "number_series_counters_period_key_shape": {
+          "name": "number_series_counters_period_key_shape",
+          "value": "\"number_series_counters\".\"period_key\" ~ '^(all|[0-9]{4}|[0-9]{4}-[0-9]{2}-[0-9]{2})$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.outbox": {
+      "name": "outbox",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "facility_id": {
+          "name": "facility_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "operation": {
+          "name": "operation",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "subject_id": {
+          "name": "subject_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "attempts": {
+          "name": "attempts",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "available_at": {
+          "name": "available_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "last_error": {
+          "name": "last_error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "outbox_pending_index": {
+          "name": "outbox_pending_index",
+          "columns": [
+            {
+              "expression": "available_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "where": "\"outbox\".\"status\" = 'pending'",
+          "concurrently": false
+        },
+        "outbox_facility_id_operation_subject_id_index": {
+          "name": "outbox_facility_id_operation_subject_id_index",
+          "columns": [
+            {
+              "expression": "facility_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "operation",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "subject_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {
+        "outbox_facility_id_facilities_id_fk": {
+          "name": "outbox_facility_id_facilities_id_fk",
+          "tableFrom": "outbox",
+          "columnsFrom": [
+            "facility_id"
+          ],
+          "tableTo": "facilities",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "outbox_operation_known": {
+          "name": "outbox_operation_known",
+          "value": "\"outbox\".\"operation\" IN ('invitation.send')"
+        },
+        "outbox_status_known": {
+          "name": "outbox_status_known",
+          "value": "\"outbox\".\"status\" IN ('pending', 'done', 'skipped', 'failed')"
+        },
+        "outbox_attempts_nonnegative": {
+          "name": "outbox_attempts_nonnegative",
+          "value": "\"outbox\".\"attempts\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.patient_identifiers": {
+      "name": "patient_identifiers",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "facility_id": {
+          "name": "facility_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "patient_id": {
+          "name": "patient_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "type": {
+          "name": "type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "value": {
+          "name": "value",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "added_at": {
+          "name": "added_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "added_by": {
+          "name": "added_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "patient_identifiers_lookup_index": {
+          "name": "patient_identifiers_lookup_index",
+          "columns": [
+            {
+              "expression": "facility_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "value",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {
+        "patient_identifiers_facility_id_facilities_id_fk": {
+          "name": "patient_identifiers_facility_id_facilities_id_fk",
+          "tableFrom": "patient_identifiers",
+          "columnsFrom": [
+            "facility_id"
+          ],
+          "tableTo": "facilities",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "patient_identifiers_patient_fk": {
+          "name": "patient_identifiers_patient_fk",
+          "tableFrom": "patient_identifiers",
+          "columnsFrom": [
+            "facility_id",
+            "patient_id"
+          ],
+          "tableTo": "patients",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "patient_identifiers_added_by_fk": {
+          "name": "patient_identifiers_added_by_fk",
+          "tableFrom": "patient_identifiers",
+          "columnsFrom": [
+            "facility_id",
+            "added_by"
+          ],
+          "tableTo": "memberships",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "patient_identifiers_patient_id_type_value_key": {
+          "name": "patient_identifiers_patient_id_type_value_key",
+          "columns": [
+            "patient_id",
+            "type",
+            "value"
+          ],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "patient_identifiers_type_known": {
+          "name": "patient_identifiers_type_known",
+          "value": "\"patient_identifiers\".\"type\" IN ('national_id', 'passport', 'birth_certificate', 'alien_id', 'refugee_id', 'sha_number', 'client_registry_id', 'other')"
+        },
+        "patient_identifiers_value_shape": {
+          "name": "patient_identifiers_value_shape",
+          "value": "\"patient_identifiers\".\"value\" ~ '^[A-Z0-9/-]{1,40}$'"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.patient_numbers": {
+      "name": "patient_numbers",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "facility_id": {
+          "name": "facility_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "patient_id": {
+          "name": "patient_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "number": {
+          "name": "number",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "issued_at": {
+          "name": "issued_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "patient_numbers_number_search_index": {
+          "name": "patient_numbers_number_search_index",
+          "columns": [
+            {
+              "expression": "facility_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "upper(\"number\")",
+              "isExpression": true,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {
+        "patient_numbers_facility_id_facilities_id_fk": {
+          "name": "patient_numbers_facility_id_facilities_id_fk",
+          "tableFrom": "patient_numbers",
+          "columnsFrom": [
+            "facility_id"
+          ],
+          "tableTo": "facilities",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "patient_numbers_patient_fk": {
+          "name": "patient_numbers_patient_fk",
+          "tableFrom": "patient_numbers",
+          "columnsFrom": [
+            "facility_id",
+            "patient_id"
+          ],
+          "tableTo": "patients",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "patient_numbers_facility_id_number_key": {
+          "name": "patient_numbers_facility_id_number_key",
+          "columns": [
+            "facility_id",
+            "number"
+          ],
+          "nullsNotDistinct": false
+        },
+        "patient_numbers_patient_id_kind_key": {
+          "name": "patient_numbers_patient_id_kind_key",
+          "columns": [
+            "patient_id",
+            "kind"
+          ],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "patient_numbers_kind_known": {
+          "name": "patient_numbers_kind_known",
+          "value": "\"patient_numbers\".\"kind\" IN ('outpatient', 'inpatient')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.patients": {
+      "name": "patients",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "facility_id": {
+          "name": "facility_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "given_name": {
+          "name": "given_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "middle_names": {
+          "name": "middle_names",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "family_name": {
+          "name": "family_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "date_of_birth": {
+          "name": "date_of_birth",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "dob_is_estimated": {
+          "name": "dob_is_estimated",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "sex": {
+          "name": "sex",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "phone": {
+          "name": "phone",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "no_phone_reason": {
+          "name": "no_phone_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "no_id_reason": {
+          "name": "no_id_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "unidentified": {
+          "name": "unidentified",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "registered_at": {
+          "name": "registered_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "registered_by": {
+          "name": "registered_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "patients_family_name_index": {
+          "name": "patients_family_name_index",
+          "columns": [
+            {
+              "expression": "facility_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "lower(\"family_name\")",
+              "isExpression": true,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        },
+        "patients_phone_index": {
+          "name": "patients_phone_index",
+          "columns": [
+            {
+              "expression": "facility_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "phone",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {
+        "patients_facility_id_facilities_id_fk": {
+          "name": "patients_facility_id_facilities_id_fk",
+          "tableFrom": "patients",
+          "columnsFrom": [
+            "facility_id"
+          ],
+          "tableTo": "facilities",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "patients_registered_by_fk": {
+          "name": "patients_registered_by_fk",
+          "tableFrom": "patients",
+          "columnsFrom": [
+            "facility_id",
+            "registered_by"
+          ],
+          "tableTo": "memberships",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "patients_facility_id_id_key": {
+          "name": "patients_facility_id_id_key",
+          "columns": [
+            "facility_id",
+            "id"
+          ],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "patients_sex_known": {
+          "name": "patients_sex_known",
+          "value": "\"patients\".\"sex\" IN ('male', 'female', 'intersex')"
+        },
+        "patients_no_phone_reason_known": {
+          "name": "patients_no_phone_reason_known",
+          "value": "\"patients\".\"no_phone_reason\" IN ('no_phone', 'unidentified')"
+        },
+        "patients_no_id_reason_known": {
+          "name": "patients_no_id_reason_known",
+          "value": "\"patients\".\"no_id_reason\" IN ('none_held', 'not_carried', 'unidentified')"
+        },
+        "patients_names_present": {
+          "name": "patients_names_present",
+          "value": "length(btrim(\"patients\".\"given_name\")) > 0 AND length(btrim(\"patients\".\"family_name\")) > 0"
+        },
+        "patients_phone_e164": {
+          "name": "patients_phone_e164",
+          "value": "\"patients\".\"phone\" IS NULL OR \"patients\".\"phone\" ~ '^\\+[1-9][0-9]{7,14}$'"
+        },
+        "patients_phone_or_reason": {
+          "name": "patients_phone_or_reason",
+          "value": "(\"patients\".\"phone\" IS NULL) = (\"patients\".\"no_phone_reason\" IS NOT NULL)"
+        },
+        "patients_sex_unless_unidentified": {
+          "name": "patients_sex_unless_unidentified",
+          "value": "\"patients\".\"sex\" IS NOT NULL OR \"patients\".\"unidentified\""
+        },
+        "patients_unidentified_reasons": {
+          "name": "patients_unidentified_reasons",
+          "value": "(\"patients\".\"no_phone_reason\" IS DISTINCT FROM 'unidentified' AND \"patients\".\"no_id_reason\" IS DISTINCT FROM 'unidentified') OR \"patients\".\"unidentified\""
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.payers": {
+      "name": "payers",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "facility_id": {
+          "name": "facility_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "is_active": {
+          "name": "is_active",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "payers_facility_id_facilities_id_fk": {
+          "name": "payers_facility_id_facilities_id_fk",
+          "tableFrom": "payers",
+          "columnsFrom": [
+            "facility_id"
+          ],
+          "tableTo": "facilities",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "payers_facility_id_id_key": {
+          "name": "payers_facility_id_id_key",
+          "columns": [
+            "facility_id",
+            "id"
+          ],
+          "nullsNotDistinct": false
+        },
+        "payers_facility_id_name_key": {
+          "name": "payers_facility_id_name_key",
+          "columns": [
+            "facility_id",
+            "name"
+          ],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "payers_name_present": {
+          "name": "payers_name_present",
+          "value": "length(btrim(\"payers\".\"name\")) > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.payments": {
+      "name": "payments",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "facility_id": {
+          "name": "facility_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "account_id": {
+          "name": "account_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "method": {
+          "name": "method",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "amount_cents": {
+          "name": "amount_cents",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reference": {
+          "name": "reference",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cashier_shift_id": {
+          "name": "cashier_shift_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "encounter_id": {
+          "name": "encounter_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "document_id": {
+          "name": "document_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "received_at": {
+          "name": "received_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "received_by": {
+          "name": "received_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reversed_at": {
+          "name": "reversed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reversed_by": {
+          "name": "reversed_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "reversal_reason": {
+          "name": "reversal_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "payments_account_index": {
+          "name": "payments_account_index",
+          "columns": [
+            {
+              "expression": "account_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        },
+        "payments_shift_index": {
+          "name": "payments_shift_index",
+          "columns": [
+            {
+              "expression": "cashier_shift_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        },
+        "payments_encounter_index": {
+          "name": "payments_encounter_index",
+          "columns": [
+            {
+              "expression": "encounter_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {
+        "payments_facility_id_facilities_id_fk": {
+          "name": "payments_facility_id_facilities_id_fk",
+          "tableFrom": "payments",
+          "columnsFrom": [
+            "facility_id"
+          ],
+          "tableTo": "facilities",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "payments_account_fk": {
+          "name": "payments_account_fk",
+          "tableFrom": "payments",
+          "columnsFrom": [
+            "facility_id",
+            "account_id"
+          ],
+          "tableTo": "accounts",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "payments_shift_fk": {
+          "name": "payments_shift_fk",
+          "tableFrom": "payments",
+          "columnsFrom": [
+            "facility_id",
+            "cashier_shift_id",
+            "received_by"
+          ],
+          "tableTo": "cashier_shifts",
+          "columnsTo": [
+            "facility_id",
+            "id",
+            "cashier_id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "payments_encounter_fk": {
+          "name": "payments_encounter_fk",
+          "tableFrom": "payments",
+          "columnsFrom": [
+            "facility_id",
+            "encounter_id"
+          ],
+          "tableTo": "encounters",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "payments_document_fk": {
+          "name": "payments_document_fk",
+          "tableFrom": "payments",
+          "columnsFrom": [
+            "facility_id",
+            "document_id"
+          ],
+          "tableTo": "documents",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "payments_received_by_fk": {
+          "name": "payments_received_by_fk",
+          "tableFrom": "payments",
+          "columnsFrom": [
+            "facility_id",
+            "received_by"
+          ],
+          "tableTo": "memberships",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "payments_reversed_by_fk": {
+          "name": "payments_reversed_by_fk",
+          "tableFrom": "payments",
+          "columnsFrom": [
+            "facility_id",
+            "reversed_by"
+          ],
+          "tableTo": "memberships",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "payments_facility_id_id_key": {
+          "name": "payments_facility_id_id_key",
+          "columns": [
+            "facility_id",
+            "id"
+          ],
+          "nullsNotDistinct": false
+        },
+        "payments_facility_id_id_account_id_key": {
+          "name": "payments_facility_id_id_account_id_key",
+          "columns": [
+            "facility_id",
+            "id",
+            "account_id"
+          ],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "payments_method_known": {
+          "name": "payments_method_known",
+          "value": "\"payments\".\"method\" IN ('cash', 'card', 'bank')"
+        },
+        "payments_amount_whole_shillings": {
+          "name": "payments_amount_whole_shillings",
+          "value": "\"payments\".\"amount_cents\" > 0 AND \"payments\".\"amount_cents\" % 100 = 0"
+        },
+        "payments_reference": {
+          "name": "payments_reference",
+          "value": "(\"payments\".\"method\" = 'cash' AND \"payments\".\"reference\" IS NULL)\n      OR (\"payments\".\"method\" <> 'cash' AND length(btrim(\"payments\".\"reference\")) > 0)"
+        },
+        "payments_counter_shift": {
+          "name": "payments_counter_shift",
+          "value": "(\"payments\".\"method\" IN ('cash', 'card')) = (\"payments\".\"cashier_shift_id\" IS NOT NULL)"
+        },
+        "payments_reversal": {
+          "name": "payments_reversal",
+          "value": "(\"payments\".\"reversed_at\" IS NULL AND \"payments\".\"reversed_by\" IS NULL AND \"payments\".\"reversal_reason\" IS NULL)\n      OR (\"payments\".\"reversed_at\" IS NOT NULL AND \"payments\".\"reversed_by\" IS NOT NULL AND \"payments\".\"reversal_reason\" IS NOT NULL AND length(btrim(\"payments\".\"reversal_reason\")) > 0\n          AND \"payments\".\"reversed_by\" <> \"payments\".\"received_by\")"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.price_change_lines": {
+      "name": "price_change_lines",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "facility_id": {
+          "name": "facility_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "price_change_id": {
+          "name": "price_change_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "billable_item_id": {
+          "name": "billable_item_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "unit_price_cents": {
+          "name": "unit_price_cents",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "price_change_lines_facility_id_facilities_id_fk": {
+          "name": "price_change_lines_facility_id_facilities_id_fk",
+          "tableFrom": "price_change_lines",
+          "columnsFrom": [
+            "facility_id"
+          ],
+          "tableTo": "facilities",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "price_change_lines_change_fk": {
+          "name": "price_change_lines_change_fk",
+          "tableFrom": "price_change_lines",
+          "columnsFrom": [
+            "facility_id",
+            "price_change_id"
+          ],
+          "tableTo": "price_changes",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "price_change_lines_item_fk": {
+          "name": "price_change_lines_item_fk",
+          "tableFrom": "price_change_lines",
+          "columnsFrom": [
+            "facility_id",
+            "billable_item_id"
+          ],
+          "tableTo": "billable_items",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "price_change_lines_change_item_key": {
+          "name": "price_change_lines_change_item_key",
+          "columns": [
+            "price_change_id",
+            "billable_item_id"
+          ],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "price_change_lines_price_nonnegative": {
+          "name": "price_change_lines_price_nonnegative",
+          "value": "\"price_change_lines\".\"unit_price_cents\" >= 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.price_changes": {
+      "name": "price_changes",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "facility_id": {
+          "name": "facility_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "price_list_id": {
+          "name": "price_list_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "effective_from": {
+          "name": "effective_from",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "requested_by": {
+          "name": "requested_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "requested_at": {
+          "name": "requested_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "decided_by": {
+          "name": "decided_by",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "decided_at": {
+          "name": "decided_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "price_changes_facility_id_facilities_id_fk": {
+          "name": "price_changes_facility_id_facilities_id_fk",
+          "tableFrom": "price_changes",
+          "columnsFrom": [
+            "facility_id"
+          ],
+          "tableTo": "facilities",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "price_changes_price_list_fk": {
+          "name": "price_changes_price_list_fk",
+          "tableFrom": "price_changes",
+          "columnsFrom": [
+            "facility_id",
+            "price_list_id"
+          ],
+          "tableTo": "price_lists",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "price_changes_requested_by_fk": {
+          "name": "price_changes_requested_by_fk",
+          "tableFrom": "price_changes",
+          "columnsFrom": [
+            "facility_id",
+            "requested_by"
+          ],
+          "tableTo": "memberships",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "price_changes_decided_by_fk": {
+          "name": "price_changes_decided_by_fk",
+          "tableFrom": "price_changes",
+          "columnsFrom": [
+            "facility_id",
+            "decided_by"
+          ],
+          "tableTo": "memberships",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "price_changes_facility_id_id_key": {
+          "name": "price_changes_facility_id_id_key",
+          "columns": [
+            "facility_id",
+            "id"
+          ],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "price_changes_status_known": {
+          "name": "price_changes_status_known",
+          "value": "\"price_changes\".\"status\" IN ('pending', 'approved', 'rejected', 'withdrawn')"
+        },
+        "price_changes_reason_present": {
+          "name": "price_changes_reason_present",
+          "value": "length(btrim(\"price_changes\".\"reason\")) > 0"
+        },
+        "price_changes_decision": {
+          "name": "price_changes_decision",
+          "value": "(\"price_changes\".\"status\" = 'pending' AND \"price_changes\".\"decided_by\" IS NULL AND \"price_changes\".\"decided_at\" IS NULL)\n      OR (\"price_changes\".\"status\" IN ('approved', 'rejected') AND \"price_changes\".\"decided_by\" IS NOT NULL AND \"price_changes\".\"decided_at\" IS NOT NULL\n          AND \"price_changes\".\"decided_by\" <> \"price_changes\".\"requested_by\")\n      OR (\"price_changes\".\"status\" = 'withdrawn' AND \"price_changes\".\"decided_by\" = \"price_changes\".\"requested_by\" AND \"price_changes\".\"decided_at\" IS NOT NULL)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.price_list_items": {
+      "name": "price_list_items",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "facility_id": {
+          "name": "facility_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "price_list_id": {
+          "name": "price_list_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "billable_item_id": {
+          "name": "billable_item_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "unit_price_cents": {
+          "name": "unit_price_cents",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "valid_from": {
+          "name": "valid_from",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "valid_to": {
+          "name": "valid_to",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "price_change_id": {
+          "name": "price_change_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "price_list_items_lookup_index": {
+          "name": "price_list_items_lookup_index",
+          "columns": [
+            {
+              "expression": "price_list_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "billable_item_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "valid_from",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {
+        "price_list_items_facility_id_facilities_id_fk": {
+          "name": "price_list_items_facility_id_facilities_id_fk",
+          "tableFrom": "price_list_items",
+          "columnsFrom": [
+            "facility_id"
+          ],
+          "tableTo": "facilities",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "price_list_items_list_fk": {
+          "name": "price_list_items_list_fk",
+          "tableFrom": "price_list_items",
+          "columnsFrom": [
+            "facility_id",
+            "price_list_id"
+          ],
+          "tableTo": "price_lists",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "price_list_items_item_fk": {
+          "name": "price_list_items_item_fk",
+          "tableFrom": "price_list_items",
+          "columnsFrom": [
+            "facility_id",
+            "billable_item_id"
+          ],
+          "tableTo": "billable_items",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "price_list_items_change_fk": {
+          "name": "price_list_items_change_fk",
+          "tableFrom": "price_list_items",
+          "columnsFrom": [
+            "facility_id",
+            "price_change_id"
+          ],
+          "tableTo": "price_changes",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "price_list_items_facility_id_id_key": {
+          "name": "price_list_items_facility_id_id_key",
+          "columns": [
+            "facility_id",
+            "id"
+          ],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "price_list_items_price_nonnegative": {
+          "name": "price_list_items_price_nonnegative",
+          "value": "\"price_list_items\".\"unit_price_cents\" >= 0"
+        },
+        "price_list_items_valid_range": {
+          "name": "price_list_items_valid_range",
+          "value": "\"price_list_items\".\"valid_to\" IS NULL OR \"price_list_items\".\"valid_to\" >= \"price_list_items\".\"valid_from\""
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.price_lists": {
+      "name": "price_lists",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "facility_id": {
+          "name": "facility_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "price_lists_one_cash_list": {
+          "name": "price_lists_one_cash_list",
+          "columns": [
+            {
+              "expression": "facility_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "with": {},
+          "method": "btree",
+          "where": "\"price_lists\".\"kind\" = 'cash'",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {
+        "price_lists_facility_id_facilities_id_fk": {
+          "name": "price_lists_facility_id_facilities_id_fk",
+          "tableFrom": "price_lists",
+          "columnsFrom": [
+            "facility_id"
+          ],
+          "tableTo": "facilities",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "price_lists_facility_id_id_key": {
+          "name": "price_lists_facility_id_id_key",
+          "columns": [
+            "facility_id",
+            "id"
+          ],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "price_lists_kind_known": {
+          "name": "price_lists_kind_known",
+          "value": "\"price_lists\".\"kind\" IN ('cash')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.session": {
+      "name": "session",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "token": {
+          "name": "token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "ip_address": {
+          "name": "ip_address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "user_agent": {
+          "name": "user_agent",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "session_user_id_idx": {
+          "name": "session_user_id_idx",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {
+        "session_user_id_user_id_fk": {
+          "name": "session_user_id_user_id_fk",
+          "tableFrom": "session",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "tableTo": "user",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "cascade"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "session_token_unique": {
+          "name": "session_token_unique",
+          "columns": [
+            "token"
+          ],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.user": {
+      "name": "user",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "email": {
+          "name": "email",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "email_verified": {
+          "name": "email_verified",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "image": {
+          "name": "image",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "role": {
+          "name": "role",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'user'"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "user_email_unique": {
+          "name": "user_email_unique",
+          "columns": [
+            "email"
+          ],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.verification": {
+      "name": "verification",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "identifier": {
+          "name": "identifier",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "value": {
+          "name": "value",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "verification_identifier_idx": {
+          "name": "verification_identifier_idx",
+          "columns": [
+            {
+              "expression": "identifier",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "with": {},
+          "method": "btree",
+          "concurrently": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.wards": {
+      "name": "wards",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "facility_id": {
+          "name": "facility_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "bed_day_item_id": {
+          "name": "bed_day_item_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_active": {
+          "name": "is_active",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "wards_facility_id_facilities_id_fk": {
+          "name": "wards_facility_id_facilities_id_fk",
+          "tableFrom": "wards",
+          "columnsFrom": [
+            "facility_id"
+          ],
+          "tableTo": "facilities",
+          "columnsTo": [
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        },
+        "wards_bed_day_item_fk": {
+          "name": "wards_bed_day_item_fk",
+          "tableFrom": "wards",
+          "columnsFrom": [
+            "facility_id",
+            "bed_day_item_id"
+          ],
+          "tableTo": "billable_items",
+          "columnsTo": [
+            "facility_id",
+            "id"
+          ],
+          "onUpdate": "no action",
+          "onDelete": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "wards_facility_id_id_key": {
+          "name": "wards_facility_id_id_key",
+          "columns": [
+            "facility_id",
+            "id"
+          ],
+          "nullsNotDistinct": false
+        },
+        "wards_facility_id_name_key": {
+          "name": "wards_facility_id_name_key",
+          "columns": [
+            "facility_id",
+            "name"
+          ],
+          "nullsNotDistinct": false
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "wards_name_present": {
+          "name": "wards_name_present",
+          "value": "length(btrim(\"wards\".\"name\")) > 0"
+        }
+      },
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {},
+  "schemas": {},
+  "views": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

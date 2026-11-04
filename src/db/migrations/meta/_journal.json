@@ -148,6 +148,20 @@
       "when": 1793825609572,
       "tag": "0020_review_fixes_triggers",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1793966757309,
+      "tag": "0021_payments",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1793966761921,
+      "tag": "0022_payments_rls",
+      "breakpoints": true
     }
   ]
 }

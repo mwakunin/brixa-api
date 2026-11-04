@@ -56,7 +56,9 @@ const InvoiceSchema = z.object({
   payerName: z.string().nullable(),
   /** A draft's is the sum of its lines; a finalised invoice's is frozen. */
   totalCents: z.number().int(),
-  /** What is still owed on a finalised invoice, after approved adjustments; null otherwise. */
+  /** Σ live allocations: what payments have settled. */
+  paidCents: z.number().int(),
+  /** What is still owed on a finalised invoice, after payments and approved adjustments; null otherwise. */
   balanceCents: z.number().int().nullable(),
   createdAt: z.string(),
   finalisedAt: z.string().nullable(),

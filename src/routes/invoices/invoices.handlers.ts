@@ -40,6 +40,7 @@ function invoiceJson(detail: InvoiceDetail) {
     accountKind: detail.accountKind,
     payerName: detail.payerName,
     totalCents: detail.totalCents,
+    paidCents: detail.paidCents,
     balanceCents: detail.balanceCents,
     createdAt: detail.createdAt.toISOString(),
     finalisedAt: iso(detail.finalisedAt),
