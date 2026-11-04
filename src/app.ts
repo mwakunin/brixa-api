@@ -4,6 +4,7 @@ import env from "@/env";
 import configureOpenAPI from "@/lib/configure-open-api";
 import createApp from "@/lib/create-app";
 import documents from "@/routes/documents/documents.index";
+import encounters from "@/routes/encounters/encounters.index";
 import facility from "@/routes/facility/facility.index";
 import health from "@/routes/health.route";
 import index from "@/routes/index.route";
@@ -15,6 +16,7 @@ import patients from "@/routes/patients/patients.index";
 import staff from "@/routes/staff/staff.index";
 import superadmin from "@/routes/superadmin/superadmin.index";
 import verify from "@/routes/verify/verify.index";
+import wards from "@/routes/wards/wards.index";
 
 const app = createApp();
 
@@ -64,6 +66,8 @@ const tenantRoutes = [
   staff,
   documents,
   patients,
+  encounters,
+  wards,
 ] as unknown as readonly AppOpenAPI[];
 
 [...unscopedRoutes, ...developmentRoutes, ...tenantRoutes].forEach((route) => {

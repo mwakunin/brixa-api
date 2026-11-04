@@ -52,6 +52,13 @@ export const createFacility: AppRouteHandler<CreateFacilityRoute> = async (c) =>
         resetPeriod: "never",
         startAt: body.numbering.nextInpatientNumber,
       });
+      // Each admission's own number, restarting every year: ADM-2026-0001.
+      await registerSeries(tx, {
+        facilityId: facility.id,
+        kind: "admission",
+        prefix: "ADM-",
+        resetPeriod: "yearly",
+      });
 
       await recordAudit(tx, {
         facilityId: facility.id,

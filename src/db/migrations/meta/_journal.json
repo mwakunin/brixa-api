@@ -64,6 +64,20 @@
       "when": 1793815367722,
       "tag": "0008_patients_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1793816355937,
+      "tag": "0009_encounters",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1793816358346,
+      "tag": "0010_encounters_rls",
+      "breakpoints": true
     }
   ]
 }

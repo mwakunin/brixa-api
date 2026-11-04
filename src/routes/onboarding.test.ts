@@ -70,6 +70,7 @@ describe("onboarding a facility", () => {
 
     const series = await db.select().from(numberSeries).where(eq(numberSeries.facilityId, created.id));
     expect(series.map(s => [s.kind, s.prefix, s.resetPeriod]).sort()).toEqual([
+      ["admission", "ADM-", "yearly"],
       ["inpatient", "IP", "never"],
       ["outpatient", "OPD", "never"],
     ]);
@@ -77,8 +78,12 @@ describe("onboarding a facility", () => {
       SELECT s.kind, c.next_value FROM number_series_counters c
       JOIN number_series s ON s.id = c.series_id WHERE c.facility_id = $1 ORDER BY s.kind
     `, [created.id]);
-    // Continues from the paper register for OP; IP starts at 1.
-    expect(counters).toEqual([{ kind: "inpatient", next_value: 1 }, { kind: "outpatient", next_value: 1201 }]);
+    // Continues from the paper register for OP; IP and admissions start at 1.
+    expect(counters).toEqual([
+      { kind: "admission", next_value: 1 },
+      { kind: "inpatient", next_value: 1 },
+      { kind: "outpatient", next_value: 1201 },
+    ]);
 
     const [invitation] = await db.select().from(invitations).where(eq(invitations.facilityId, created.id));
     expect(invitation).toMatchObject({

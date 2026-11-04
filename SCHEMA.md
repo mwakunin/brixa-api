@@ -351,6 +351,15 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 
 **Encounters.** `encounters` has `kind` (opd \| ipd \| emergency), a lifecycle status, `started_at` / `ended_at`, the department, and the attending membership. `parent_encounter_id` links a casualty encounter to the admission it led to; whether casualty charges roll into the inpatient bill is a pilot question. `queue_entries` tracks a patient through service points (triage → consultation → lab → pharmacy → cashier). `appointments` drive reminders (`CLAUDE.md` §7).
 
+**As built (P2, slice 2).** A thin version of the above, enough to bill:
+
+- `encounters`: `kind` (opd \| emergency \| ipd), `status` (open \| closed \| cancelled, lifecycle only), `started_at`, `ended_at`, `opened_by` and `closed_by` (memberships), `cancel_reason`, `parent_encounter_id`. A CHECK ties the columns to the status. A partial unique index allows **one open encounter of each kind per patient**. Departments and the attending clinician arrive with P3's queues.
+- `admissions`: 1:1 with an ipd encounter; `admission_number` from a new yearly series `admission` (`ADM-2026-0001`, registered at onboarding and backfilled for existing facilities); `discharge_disposition` (home \| referred \| died \| absconded \| against_advice) for MOH 717. The **IP number** is issued at the patient's first admission and reused for every later one.
+- `wards`, `beds`: created by the facility admin, renamed or retired, never removed. Occupancy is derived from open stays.
+- `bed_stays`: `started_at`, `ended_at`, and a generated `during` tstzrange carrying the two exclusion constraints (no bed holds two patients at once; no admission is in two beds at once), with `btree_gist`. A transfer ends one stay and starts the next at the same instant; discharge or cancellation ends the last. A trigger refuses any change to a stay that has ended.
+- Reading an encounter, or a patient's list of encounters, is audited as `encounter.viewed`.
+- Roles: visits are opened and closed by records clerks, nurses, doctors, clinical officers and the facility admin; ward nurses can also admit, transfer and discharge. Every member may read.
+
 **Clinical record.** `observations` (vitals and charted values, with `entered_in_error` instead of deletion), `diagnoses` (ICD code, provisional \| final \| secondary), `clinical_notes` (`signed_at`, `addendum_of`: a signed note is corrected only by an addendum), `orders` and `order_items` (lab, imaging, procedure, medication, service; medication items carry dose, route, frequency and duration). Every clinical act records the acting membership, whose licence details live on `memberships` (rule 25).
 
 **Inpatient.** `admissions` is 1:1 with an ipd encounter and carries the admission number. `bed_stays` holds a `tstzrange` with two `EXCLUDE` constraints: no bed holds two patients at once, and no admission is in two beds at once. A transfer ends one stay and starts the next. `medication_administrations` records each dose against its order item (given \| held \| refused \| missed). `discharge_summaries` are immutable once signed.

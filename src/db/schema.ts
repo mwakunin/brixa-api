@@ -213,6 +213,15 @@ export const auditLog = pgTable("audit_log", {
     | "patient.identifier_added"
     | "patient.viewed"
     | "patient.searched"
+    | "encounter.opened"
+    | "encounter.closed"
+    | "encounter.cancelled"
+    | "encounter.viewed"
+    | "patient.admitted"
+    | "patient.transferred"
+    | "patient.discharged"
+    | "ward.created"
+    | "bed.created"
   >().notNull(),
   /** What it happened to. Not a foreign key: the log outlives what it names. */
   entityType: text().notNull(),
@@ -240,6 +249,15 @@ export const auditLog = pgTable("audit_log", {
     "patient.identifier_added",
     "patient.viewed",
     "patient.searched",
+    "encounter.opened",
+    "encounter.closed",
+    "encounter.cancelled",
+    "encounter.viewed",
+    "patient.admitted",
+    "patient.transferred",
+    "patient.discharged",
+    "ward.created",
+    "bed.created",
   ]),
 ]);
 
@@ -260,7 +278,7 @@ export const auditLog = pgTable("audit_log", {
 export const numberSeries = pgTable("number_series", {
   id: uuid().primaryKey().defaultRandom(),
   facilityId: uuid().notNull().references(() => facilities.id),
-  kind: text().$type<"outpatient" | "inpatient" | "receipt">().notNull(),
+  kind: text().$type<"outpatient" | "inpatient" | "admission" | "receipt">().notNull(),
   /** Facility-chosen, e.g. `OP`. Applies to numbers issued from now on. */
   prefix: text().notNull(),
   /** Zero-padded width: 4 gives OP0001. A number grows past it, never truncates. */
@@ -271,7 +289,7 @@ export const numberSeries = pgTable("number_series", {
 }, t => [
   unique("number_series_facility_id_kind_key").on(t.facilityId, t.kind),
   unique("number_series_facility_id_id_key").on(t.facilityId, t.id),
-  oneOf("number_series_kind_known", t.kind, ["outpatient", "inpatient", "receipt"]),
+  oneOf("number_series_kind_known", t.kind, ["outpatient", "inpatient", "admission", "receipt"]),
   oneOf("number_series_reset_period_known", t.resetPeriod, ["never", "yearly", "daily"]),
   check("number_series_prefix_shape", sql`${t.prefix} ~ '^[A-Za-z0-9/-]{1,12}$'`),
   check("number_series_padding_range", sql`${t.padding} BETWEEN 1 AND 12`),
@@ -612,6 +630,149 @@ export const patientIdentifiers = pgTable("patient_identifiers", {
   check("patient_identifiers_value_shape", sql`${t.value} ~ '^[A-Z0-9/-]{1,40}$'`),
 ]);
 
+// ---------------------------------------------------------------------------
+// Encounters, wards and admissions (SCHEMA.md §8)
+// ---------------------------------------------------------------------------
+
+/** A ward. Its beds are where a patient's bed-days are counted (P2, charges). */
+export const wards = pgTable("wards", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  name: text().notNull(),
+  isActive: boolean().default(true).notNull(),
+  createdAt: createdAt(),
+}, t => [
+  unique("wards_facility_id_id_key").on(t.facilityId, t.id),
+  unique("wards_facility_id_name_key").on(t.facilityId, t.name),
+  check("wards_name_present", sql`length(btrim(${t.name})) > 0`),
+]);
+
+export const beds = pgTable("beds", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  wardId: uuid().notNull(),
+  /** As painted on the bed, e.g. `B12`. */
+  label: text().notNull(),
+  isActive: boolean().default(true).notNull(),
+  createdAt: createdAt(),
+}, t => [
+  unique("beds_facility_id_id_key").on(t.facilityId, t.id),
+  unique("beds_ward_id_label_key").on(t.wardId, t.label),
+  foreignKey({ name: "beds_ward_fk", columns: [t.facilityId, t.wardId], foreignColumns: [wards.facilityId, wards.id] }),
+  check("beds_label_present", sql`length(btrim(${t.label})) > 0`),
+]);
+
+/**
+ * A patient's contact with the facility: an outpatient visit, an emergency
+ * attendance, or an admission (`ipd`). Charges, notes and orders all hang off
+ * one (SCHEMA.md §7.2, §8).
+ *
+ * `status` is lifecycle only (rule 17): open while care is under way, closed
+ * when it ends, cancelled if it was opened by mistake. One open encounter of
+ * each kind per patient at a time.
+ */
+export const encounters = pgTable("encounters", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  patientId: uuid().notNull(),
+  kind: text().$type<"opd" | "emergency" | "ipd">().notNull(),
+  status: text().$type<"open" | "closed" | "cancelled">().default("open").notNull(),
+  startedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  endedAt: timestamp({ withTimezone: true }),
+  openedBy: uuid().notNull(),
+  /** Who closed or cancelled it. */
+  closedBy: uuid(),
+  cancelReason: text(),
+  /** The visit this one came from, e.g. the emergency attendance an admission followed. */
+  parentEncounterId: uuid(),
+  updatedAt: updatedAt(),
+}, t => [
+  unique("encounters_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({ name: "encounters_patient_fk", columns: [t.facilityId, t.patientId], foreignColumns: [patients.facilityId, patients.id] }),
+  foreignKey({ name: "encounters_opened_by_fk", columns: [t.facilityId, t.openedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "encounters_closed_by_fk", columns: [t.facilityId, t.closedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({
+    name: "encounters_parent_fk",
+    columns: [t.facilityId, t.parentEncounterId],
+    foreignColumns: [t.facilityId, t.id],
+  }),
+  uniqueIndex("encounters_one_open_per_patient_and_kind")
+    .on(t.facilityId, t.patientId, t.kind)
+    .where(sql`${t.status} = 'open'`),
+  index("encounters_patient_index").on(t.facilityId, t.patientId, t.startedAt),
+  oneOf("encounters_kind_known", t.kind, ["opd", "emergency", "ipd"]),
+  oneOf("encounters_status_known", t.status, ["open", "closed", "cancelled"]),
+  check(
+    "encounters_lifecycle",
+    sql`(${t.status} = 'open' AND ${t.endedAt} IS NULL AND ${t.closedBy} IS NULL AND ${t.cancelReason} IS NULL)
+      OR (${t.status} = 'closed' AND ${t.endedAt} IS NOT NULL AND ${t.closedBy} IS NOT NULL AND ${t.cancelReason} IS NULL)
+      OR (${t.status} = 'cancelled' AND ${t.endedAt} IS NOT NULL AND ${t.closedBy} IS NOT NULL
+          AND ${t.cancelReason} IS NOT NULL AND length(btrim(${t.cancelReason})) > 0)`,
+  ),
+  check("encounters_ends_after_start", sql`${t.endedAt} IS NULL OR ${t.endedAt} >= ${t.startedAt}`),
+]);
+
+/**
+ * An inpatient stay: one per `ipd` encounter, carrying its admission number
+ * (yearly, e.g. `ADM-2026-0153`). Discharge closes the encounter and ends the
+ * bed stay; the clinical discharge summary is P5.
+ */
+export const admissions = pgTable("admissions", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  encounterId: uuid().notNull(),
+  admissionNumber: text().notNull(),
+  admittedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  admittedBy: uuid().notNull(),
+  dischargedAt: timestamp({ withTimezone: true }),
+  dischargedBy: uuid(),
+  /** How the stay ended, for MOH 717 and the ward's own count. */
+  dischargeDisposition: text().$type<"home" | "referred" | "died" | "absconded" | "against_advice">(),
+}, t => [
+  unique("admissions_facility_id_id_key").on(t.facilityId, t.id),
+  unique("admissions_encounter_id_key").on(t.encounterId),
+  unique("admissions_facility_id_admission_number_key").on(t.facilityId, t.admissionNumber),
+  foreignKey({ name: "admissions_encounter_fk", columns: [t.facilityId, t.encounterId], foreignColumns: [encounters.facilityId, encounters.id] }),
+  foreignKey({ name: "admissions_admitted_by_fk", columns: [t.facilityId, t.admittedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "admissions_discharged_by_fk", columns: [t.facilityId, t.dischargedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  oneOf("admissions_discharge_disposition_known", t.dischargeDisposition, ["home", "referred", "died", "absconded", "against_advice"]),
+  check(
+    "admissions_discharge_complete",
+    sql`(${t.dischargedAt} IS NULL AND ${t.dischargedBy} IS NULL AND ${t.dischargeDisposition} IS NULL)
+      OR (${t.dischargedAt} IS NOT NULL AND ${t.dischargedBy} IS NOT NULL AND ${t.dischargeDisposition} IS NOT NULL)`,
+  ),
+]);
+
+/**
+ * Which bed an admission occupied, and when. A transfer ends one stay and
+ * starts the next; discharge ends the last. Bed-days are derived from these
+ * (SCHEMA.md §7.2), never counted by hand.
+ *
+ * Migration 0010 adds `during`, a `tstzrange` computed from the two
+ * instants, and two exclusion constraints on it: no bed holds two patients
+ * at once, and no admission is in two beds at once. Drizzle cannot express
+ * either, so they live in SQL only.
+ */
+export const bedStays = pgTable("bed_stays", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  admissionId: uuid().notNull(),
+  bedId: uuid().notNull(),
+  startedAt: timestamp({ withTimezone: true }).notNull(),
+  endedAt: timestamp({ withTimezone: true }),
+  startedBy: uuid().notNull(),
+  endedBy: uuid(),
+}, t => [
+  unique("bed_stays_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({ name: "bed_stays_admission_fk", columns: [t.facilityId, t.admissionId], foreignColumns: [admissions.facilityId, admissions.id] }),
+  foreignKey({ name: "bed_stays_bed_fk", columns: [t.facilityId, t.bedId], foreignColumns: [beds.facilityId, beds.id] }),
+  foreignKey({ name: "bed_stays_started_by_fk", columns: [t.facilityId, t.startedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "bed_stays_ended_by_fk", columns: [t.facilityId, t.endedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  index("bed_stays_admission_index").on(t.facilityId, t.admissionId, t.startedAt),
+  check("bed_stays_ends_after_start", sql`${t.endedAt} IS NULL OR ${t.endedAt} >= ${t.startedAt}`),
+  check("bed_stays_ended_by_whom", sql`(${t.endedAt} IS NULL) = (${t.endedBy} IS NULL)`),
+]);
+
 /** What a membership may hold: taken from the column, never restated. */
 export type MembershipRole = (typeof memberships.$inferSelect)["roles"][number];
 
@@ -633,4 +794,9 @@ export const TENANT_TABLES = [
   "patients",
   "patient_numbers",
   "patient_identifiers",
+  "wards",
+  "beds",
+  "encounters",
+  "admissions",
+  "bed_stays",
 ] as const;
