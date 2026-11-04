@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { appOrigin } from "./auth";
 import { startingUpResponse } from "./starting-up";
 import { createStartupGate, STARTING_UP_MESSAGE } from "./startup-gate";
 
@@ -87,5 +88,13 @@ describe("the startup gate", () => {
     expect(res.headers.get("strict-transport-security")).toBe("max-age=31536000; includeSubDomains");
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
     expect(await res.json()).toEqual({ message: STARTING_UP_MESSAGE });
+  });
+
+  it("lets the staff app read the refusal, so it can say the server is starting", async () => {
+    const res = await startingUpResponse(new Request("http://localhost/facility", { headers: { origin: appOrigin } }));
+
+    expect(res.status).toBe(503);
+    expect(res.headers.get("access-control-allow-origin")).toBe(appOrigin);
+    expect(res.headers.get("access-control-allow-credentials")).toBe("true");
   });
 });

@@ -50,7 +50,7 @@ export function createTenantRouter() {
  * `withFacility` sees it. If the API is later served from
  * the app's own origin through a proxy, this simply never fires.
  */
-function staffAppCors() {
+export function staffAppCors() {
   return cors({
     origin: origin => (origin === appOrigin ? origin : null),
     credentials: true,

@@ -117,7 +117,12 @@ const EnvSchema = z.object({
    * `projects/P/locations/L/queues/Q`. When set, every commit that queues an
    * outbox job also creates a Cloud Task to drain it at once.
    */
-  TASKS_QUEUE: unsetIfBlank(z.string().regex(/^projects\/[^/]+\/locations\/[^/]+\/queues\/[^/]+$/, "projects/P/locations/L/queues/Q").optional()),
+  // Characters Cloud Tasks accepts in each part, so a typo stops startup
+  // rather than failing every task: a queue id is letters, digits, hyphens.
+  TASKS_QUEUE: unsetIfBlank(z.string().regex(
+    /^projects\/[a-z0-9.:-]+\/locations\/[a-z0-9-]+\/queues\/[A-Za-z0-9-]{1,100}$/,
+    "projects/P/locations/L/queues/Q, the queue id letters, digits and hyphens only",
+  ).optional()),
   /**
    * The service account Cloud Tasks and Cloud Scheduler sign their identity
    * tokens as: the only caller the internal routes accept.
