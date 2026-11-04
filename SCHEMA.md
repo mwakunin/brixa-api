@@ -180,6 +180,30 @@ The same counter issues every human-facing sequential number:
 - **Fiscal numbers are issued at finalisation**, in the same transaction that freezes the document, never at draft (rule 20). A draft invoice has no number. A voided document keeps its number, so the sequence has no gaps an auditor must explain.
 - The counter lock serializes finalisations per facility and kind. This is acceptable because finalisation is fast and does no external I/O (rule 18). A SHA call must never run while the lock is held.
 
+### 6.2 Printed documents (as built, P1)
+
+Every printed, numbered document goes through one table, `documents`. The module whose work it records (payments for a receipt, billing for an invoice) issues it in the same transaction that finalises that work, by calling `issueDocument` (`src/lib/documents.ts`):
+
+1. It takes the number from the facility's series of the same `kind` (§6.1, rule 20).
+2. It mints a `verification_code`: 160 random bits, base64url, the payload of the QR printed on every page.
+3. It freezes `content`: exactly what is printed (title, label and value pairs, a table, totals, notes, all as formatted text), plus the facility's name and KMHFR code as they are at that moment (rule 7). The PDF is rendered from `content` and nothing else, so a reprint years later says what the original said.
+4. It records the issuing membership in `issued_by` (rule 25) and writes `document.issued` to the audit log.
+
+| Column | Notes |
+|---|---|
+| `kind` | `receipt` so far. Kinds are added to the CHECK as the modules that issue them land; each needs a number series of the same kind |
+| `number` | Unique per `(facility_id, kind)` |
+| `verification_code` | Globally unique; `CHECK` holds the 27-character shape |
+| `content` | jsonb, validated by `documentContentSchema` (`src/lib/document-content.ts`) |
+| `issued_at`, `issued_by` | `issued_by` → `memberships (facility_id, id)`; null when the system issued it |
+| `voided_at`, `void_reason` | Both or neither; the reason is never shown publicly |
+
+- **Modules point at their document**, never the reverse: a receipt row will carry `document_id` with a composite foreign key to `documents (facility_id, id)`. So the document's number and code live on the document row, and no polymorphic reference is needed (rule 22). This replaces the `number` column the §7 sketches put on invoices and adjustments.
+- **Frozen by a trigger** (`documents_frozen`, migration 0006) for every role, the owner included: the only change allowed is voiding once (setting `voided_at` and `void_reason`), a voided document never changes again, and no document is deleted. The runtime role holds `SELECT`, `INSERT` and `UPDATE (voided_at, void_reason)` only.
+- **Voiding** (`voidDocument`) is done by the module whose correction made the document untrue, in the same transaction as that correction. The PDF then prints VOID across it.
+- **Printing:** `GET /documents/{id}/pdf`. Who may open a document depends on its kind (`DOCUMENT_READERS`). Each opening writes `document.viewed` on the request transaction, so a failed render leaves no entry (rule 9).
+- **Public verification:** `GET /verify/{code}`, with no session and no facility, rate limited per address. It answers only the kind, title, number, issue time, the issuer as printed, and whether the document still stands (`valid` or `withdrawn`): nothing about the patient, and not the void reason. Each check writes `document.verified`, with no actor, to the issuing facility's audit log. The QR opens the staff app's page at `{APP_URL}/verify/{code}`, which calls this endpoint.
+
 ---
 
 ## 7. The money model
@@ -356,6 +380,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 
 **Immutable once finalised** (a trigger refuses updates to frozen columns; corrections are a credit note, a new version or an addendum):
 
+- issued documents (§6.2): voidable once, never edited or deleted
 - finalised invoices and their lines
 - submitted claims and their items
 - signed clinical notes and discharge summaries

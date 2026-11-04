@@ -45,6 +45,12 @@ const OWNER_ALLOWLIST = new Map([
     + "the invitation it names, after which the work runs as that tenant",
   ],
   [
+    "lib/verify-document.ts",
+    "checking a printed document arrives from its QR code with no session and "
+    + "no facility; the code is the whole lookup and yields only the facility "
+    + "of the document it names, after which the work runs as that tenant",
+  ],
+  [
     "jobs/outbox-worker.ts",
     "the worker drains every facility's queue; it claims and records jobs by "
     + "id and reads no facility data on this connection",

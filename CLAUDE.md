@@ -153,6 +153,7 @@ The detail is in `SCHEMA.md`. In short:
 - **Money moves at four levels:** charge → invoice → claim → remittance. Each level has its own invariants (`SCHEMA.md` §7.6, M1–M8).
 - **Payers:** SHA and insurers are payers with schemes; a patient's coverages become an encounter's billing plan in priority order. A rejected claim amount moves by adjustment document, never by editing charges.
 - **Patient numbers** are auto-generated sequentially per facility from a counter row, with a facility-chosen prefix. The same counter issues gap-free fiscal document numbers.
+- **Printed documents** go through `documents` (`SCHEMA.md` §6.2). The module that finalises the work calls `issueDocument` in that transaction: it takes the number, mints the QR verification code and freezes exactly what is printed. A PDF is rendered from that frozen content only, and every opening is audited. Never print a document from live rows.
 - **Pharmacy and stores:** shared drug catalogue (identity only); per-facility inventory items with the facility's own cost and selling prices; batch-level stock per store; first-expiry-first-out dispensing; every movement is a stock ledger entry.
 - **Prices** are per facility and per payer price list. Only `facility_admin` and `finance_manager` change them, and each change is audited with old and new values.
 - **Units of sale** (loose units vs packs) are an open question. Do not fix the stock unit model until it is answered.

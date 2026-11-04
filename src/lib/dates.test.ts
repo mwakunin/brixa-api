@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { businessDate } from "./dates";
+import { businessDate, printedDateTime } from "./dates";
 
 describe("businessDate", () => {
   it.each([
@@ -16,5 +16,17 @@ describe("businessDate", () => {
 
   it("always produces a zero-padded YYYY-MM-DD", () => {
     expect(businessDate(new Date("2026-02-03T12:00:00Z"))).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+});
+
+describe("printedDateTime", () => {
+  it.each([
+    // Printed in Kenyan time: the new year has begun in Nairobi.
+    ["2026-12-31T22:30:00Z", "1 Jan 2027, 01:30"],
+    ["2026-11-04T09:05:00Z", "4 Nov 2026, 12:05"],
+    // A 24-hour clock, with midnight as 00.
+    ["2026-11-04T21:00:00Z", "5 Nov 2026, 00:00"],
+  ])("prints %s as %s", (instant, expected) => {
+    expect(printedDateTime(new Date(instant))).toBe(expected);
   });
 });

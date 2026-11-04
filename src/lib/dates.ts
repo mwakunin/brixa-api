@@ -38,3 +38,27 @@ export function businessDate(at: Date = new Date()): string {
 
   return `${value("year")}-${value("month")}-${value("day")}`;
 }
+
+const printedParts = new Intl.DateTimeFormat("en-GB", {
+  timeZone: BUSINESS_TIME_ZONE,
+  calendar: "gregory",
+  numberingSystem: "latn",
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+});
+
+/**
+ * `at` as printed on a document, in Kenyan time: `4 Nov 2026, 14:05`.
+ * Assembled from parts for the same reason as `businessDate`: the layout must
+ * not depend on how the host's ICU punctuates a locale.
+ */
+export function printedDateTime(at: Date): string {
+  const parts = printedParts.formatToParts(at);
+  const value = (type: string) => parts.find(p => p.type === type)?.value ?? "";
+
+  return `${value("day")} ${value("month")} ${value("year")}, ${value("hour")}:${value("minute")}`;
+}
