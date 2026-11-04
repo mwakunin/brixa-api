@@ -1,6 +1,6 @@
 # Hospital Management System (Hospital SaaS) — Project Spec
 
-Status: scoping · Last updated: 2026-11-03
+Status: scoping · Last updated: 2026-11-04
 
 This document separates what has been **decided** from what is only **proposed** and what is still **open**, and records the design decisions taken (§5) with their reasoning. Update the status of items as they are settled. `CLAUDE.md` holds the coding conventions, `SCHEMA.md` the data model, and `ROADMAP.md` the order of work.
 
@@ -266,7 +266,13 @@ The pilot candidate's staff find their certified system too complex (§2). In a 
 
 ## 11. Commercial notes
 
-- Per-facility monthly subscription, tiered by number of users or beds.
+- **Pricing** *(proposed 2026-11-04, not decided)*: a per-facility monthly subscription in two parts.
+  - **Package, by modules.** A facility pays for what it runs: an outpatient package (records, queues, OPD, pharmacy, billing, with lab as an option) costs less than the full hospital package, which adds wards and inpatient care. Payers (SHA and insurers) could be a further add-on.
+  - **Size band within a package.** By beds, which KMHFR lists, which rarely change, and which track what a hospital earns; by monthly patient visits for a facility without beds.
+  - **Not per user.** Per-user fees push hospitals to share logins, which breaks the audit trail and the named, licensed clinician that claims and the controlled-drug register need (`CLAUDE.md` rules 9, 12, 25).
+  - **Not by KEPH level.** A level says what a facility is licensed to do, not how big it is or what it uses.
+  - **Levels 2 and 3 later**, through the outpatient package, once the Level 4 pilot is live. They are mostly outpatient and price-sensitive, and SHA pays their primary care mostly by capitation rather than per claim (§10, question 9), so the payer module works differently for them.
+  - **Code impact:** a per-facility module switch, built when the first optional module lands. Nothing in P1.
 - Paid onboarding, data migration, and staff training.
 - Pilot with one hospital before generalizing across hospital types. The pilot goes live as a complete cash hospital system in P6 (D8).
 - **The market is a replacement market.** SHA-contracted private hospitals must be on a certified HMIS by the end of 2026, so by launch each one already runs an incumbent system. Implications:
