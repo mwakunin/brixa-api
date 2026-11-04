@@ -46,11 +46,11 @@ A multi-tenant hospital management SaaS for Kenya, designed first for **Level 4 
 | Tenant resolution | One address for all facilities; the facility comes from the signed-in user's membership, never the hostname (section 4) | Confirmed |
 | Payments | Safaricom Daraja: C2B paybill per facility, plus STK push | Proposed |
 | Payer integration | `PayerGateway`: `manual` for private insurers; `afyaconnect` for SHA through DHA's integration platform, live only after certification | Proposed |
-| External calls | Transactional outbox, drained by Cloud Tasks workers | Proposed |
+| External calls | Transactional outbox, drained by Cloud Tasks workers | In use (P1) |
 | PDF rendering | pdfmake (tables across pages, built-in QR codes, no headless browser). A document's frozen data is the source of truth; the PDF is rendered from it | Confirmed |
 | Email | Resend, behind a small `sendEmail` interface | Confirmed |
 | SMS | Africa's Talking, behind a small `sendSms` interface. Brevo is the option to revisit for WhatsApp reminders | Confirmed |
-| Background jobs | Cloud Tasks + Cloud Scheduler | Proposed |
+| Background jobs | Cloud Tasks + Cloud Scheduler, created over REST (no gRPC client) | In use (P1): the outbox drain. Setup in `docs/deployment.md` |
 
 Not yet decided: production database host and region, and storage bucket location. Both depend on the data residency question in `SPEC.md`.
 
@@ -166,7 +166,7 @@ The detail is in `SCHEMA.md`. In short:
 
 **Outbox and external calls.** Every call to SHA, an insurer, Daraja, SMS or email is an outbox row written in the business transaction (rule 18). A worker claims it, calls out, and records the result in `gateway_exchanges` in a new transaction. Handlers re-read current state rather than trusting a payload, and are idempotent.
 
-**Background jobs.** Cloud Tasks for one-off jobs (reminders, outbox drains), Cloud Scheduler for recurring jobs. Workers are internal routes authenticated with Google-signed identity tokens, never public. Handlers must be idempotent (delivery is at-least-once); use deterministic task names such as `reminder-{appointmentId}-24h`. Payloads carry IDs only. Check current state at run time instead of trying to cancel tasks. Record permanent failures in `job_failures` for alerting and re-runs.
+**Background jobs.** Cloud Tasks for one-off jobs (reminders, outbox drains), Cloud Scheduler for recurring jobs. Workers are internal routes authenticated with Google-signed identity tokens, never public. Handlers must be idempotent (delivery is at-least-once); use deterministic task names such as `reminder-{appointmentId}-24h`. Payloads carry IDs only. Check current state at run time instead of trying to cancel tasks. An outbox job that gives up is marked `failed` with its `last_error`, and logged as `outbox job failed permanently` for alerting. Other jobs record permanent failures in `job_failures`, which arrives with the first of them (the nightly bed-day accrual, P2). Outbox jobs queued inside `runAsFacility` (or `nudgingAfterCommit`) are nudged by a Cloud Task once the transaction commits; never create a task inside one (rule 18).
 
 | Job | Trigger | Action |
 |---|---|---|
@@ -177,7 +177,7 @@ The detail is in `SCHEMA.md`. In short:
 | Reconciliation check | Scheduler, daily | Check identities M7 per facility; alert on drift |
 | Daily report | Scheduler, daily | Fan out per facility; generate the summary |
 
-**File storage.** One bucket per environment, not per facility. Tenant-prefixed random keys, e.g. `tenants/{facilityId}/patients/{patientId}/{uuid}`. Public access prevention on, uniform bucket-level access, versioning and soft delete on, Data Access audit logs on. Sign URLs via the service account's IAM `signBlob` permission, not key files. Validate file type and size; strip image EXIF data; scan external documents. Keep all access behind a small storage interface (`put`, `get`, `createSignedUrl`, `delete`). Bucket location cannot be changed after creation.
+**File storage.** One bucket per environment, not per facility. Tenant-prefixed random keys, e.g. `tenants/{facilityId}/patients/{patientId}/{uuid}`. Public access prevention on, uniform bucket-level access, versioning and soft delete on, Data Access audit logs on. Sign URLs via the service account's IAM `signBlob` permission, not key files. Validate file type and size; strip image EXIF data; scan external documents. Keep all access behind a small storage interface (`put`, `get`, `createSignedUrl`, `delete`): `src/lib/storage.ts`, with `newObjectKey` for keys and `src/lib/object-storage.ts` for the configured driver. Bucket location cannot be changed after creation.
 
 ---
 

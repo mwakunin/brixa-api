@@ -3,6 +3,7 @@ import type { Schema } from "hono";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { cors } from "hono/cors";
 import { requestId } from "hono/request-id";
+import { secureHeaders } from "hono/secure-headers";
 import { notFound, serveEmojiFavicon } from "stoker/middlewares";
 import { defaultHook } from "stoker/openapi";
 
@@ -59,9 +60,24 @@ function staffAppCors() {
   });
 }
 
+/**
+ * Response headers that harden every answer. HSTS is the one encryption in
+ * transit rests on (docs/certification/encryption.md): once a browser has
+ * seen it, it will not speak plain HTTP to this API again. Resources may be
+ * read by the staff app's site, not only this origin, since the app opens a
+ * document's PDF from its own pages.
+ */
+function hardenedHeaders() {
+  return secureHeaders({
+    strictTransportSecurity: "max-age=31536000; includeSubDomains",
+    crossOriginResourcePolicy: "same-site",
+  });
+}
+
 export default function createApp() {
   const app = createRouter();
   app.use(staffAppCors())
+    .use(hardenedHeaders())
     .use(requestId())
     .use(serveEmojiFavicon("🏥"))
     .use(pinoLogger());

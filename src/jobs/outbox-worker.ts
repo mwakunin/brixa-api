@@ -3,6 +3,7 @@ import type { OutboxOperation } from "@/lib/outbox";
 import { pool } from "@/db";
 import { errorLine } from "@/lib/error-summary";
 import { sendInvitation } from "@/lib/invitations";
+import { logger } from "@/lib/logger";
 
 /**
  * Drains the outbox (CLAUDE.md §7): claims due jobs, makes each call, records
@@ -17,8 +18,10 @@ import { sendInvitation } from "@/lib/invitations";
  * recording it leaves the job to come back when its lease runs out, so every
  * handler must be safe to run twice.
  *
- * Triggered by Cloud Tasks on write and a Scheduler sweep once those are
- * wired; `pnpm outbox:drain` runs it by hand.
+ * Triggered by a Cloud Task after each commit that queues a job, and by a
+ * Scheduler sweep, both through `POST /internal/outbox/drain`
+ * (routes/internal.route.ts). In development it runs in-process after the
+ * commit; `pnpm outbox:drain` runs it by hand.
  */
 
 export interface OutboxJob {
@@ -62,12 +65,33 @@ interface ClaimedRow {
  * that crashes its worker would be retried forever.
  */
 async function failAbandoned() {
-  await pool.query(`
+  const { rows } = await pool.query<FailedRow>(`
     UPDATE outbox
     SET status = 'failed', completed_at = now(),
         last_error = coalesce(last_error, 'Worker stopped during the final attempt')
     WHERE status = 'pending' AND attempts >= $1 AND available_at <= now()
+    RETURNING id, facility_id, operation, attempts
   `, [MAX_ATTEMPTS]);
+  rows.forEach(reportFailed);
+}
+
+interface FailedRow {
+  id: string;
+  facility_id: string;
+  operation: OutboxOperation;
+  attempts: number;
+}
+
+/**
+ * The line an alert matches on (docs/deployment.md): a job that will not be
+ * retried. Ids only, never the subject's details (rule 10); the row's
+ * `last_error` says why, for whoever re-runs it.
+ */
+function reportFailed(row: FailedRow) {
+  logger.error(
+    { outboxId: row.id, facilityId: row.facility_id, operation: row.operation, attempts: row.attempts },
+    "outbox job failed permanently",
+  );
 }
 
 /**
@@ -114,10 +138,12 @@ async function recordFailure(row: ClaimedRow, err: unknown) {
   const message = errorLine(err);
 
   if (row.attempts >= MAX_ATTEMPTS) {
-    await pool.query(
+    const { rowCount } = await pool.query(
       "UPDATE outbox SET status = 'failed', completed_at = now(), last_error = $2 WHERE id = $1 AND status = 'pending'",
       [row.id, message],
     );
+    if (rowCount)
+      reportFailed(row);
     return "failed" as const;
   }
 

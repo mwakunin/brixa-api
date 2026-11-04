@@ -1,0 +1,47 @@
+import { createMiddleware } from "hono/factory";
+import * as HttpStatusCodes from "stoker/http-status-codes";
+import * as HttpStatusPhrases from "stoker/http-status-phrases";
+
+import type { InvokerVerifier } from "@/lib/invoker-auth";
+import type { AppBindings } from "@/lib/types";
+
+import env from "@/env";
+import { drainOutbox } from "@/jobs/outbox-worker";
+import { DRAIN_PATH, INVOKER_AUDIENCE } from "@/lib/cloud-tasks";
+import { createRouter } from "@/lib/create-app";
+import { googleInvokerVerifier } from "@/lib/invoker-auth";
+
+/**
+ * Routes only Cloud Tasks and Cloud Scheduler call (CLAUDE.md §7), each with
+ * a Google-signed identity token (lib/invoker-auth.ts). Left out of the
+ * OpenAPI document: they are not part of the API anyone builds against.
+ *
+ *   POST /internal/outbox/drain   one pass over the outbox. A Cloud Task
+ *                                 after each commit that queues a job, and a
+ *                                 Scheduler sweep every minute for retries
+ *                                 and anything a nudge missed.
+ *
+ * Delivery is at least once and the drain is idempotent, so a duplicate
+ * call does nothing harmful. A 500 makes Cloud Tasks retry; a job that
+ * failed is already recorded for backoff, so the drain still answers 200.
+ */
+export function createInternalRouter(verifier: InvokerVerifier) {
+  const router = createRouter();
+
+  router.use("/internal/*", createMiddleware<AppBindings>(async (c, next) => {
+    if (!(await verifier.verify(c.req.header("authorization")))) {
+      c.var.logger.warn("internal route refused: no valid invoker token");
+      return c.json({ message: HttpStatusPhrases.UNAUTHORIZED }, HttpStatusCodes.UNAUTHORIZED);
+    }
+    await next();
+  }));
+
+  router.post(DRAIN_PATH, async c => c.json(await drainOutbox(), HttpStatusCodes.OK));
+
+  return router;
+}
+
+export default createInternalRouter(googleInvokerVerifier({
+  audience: INVOKER_AUDIENCE,
+  allowedEmails: new Set(env.TASKS_INVOKER_EMAIL ? [env.TASKS_INVOKER_EMAIL] : []),
+}));

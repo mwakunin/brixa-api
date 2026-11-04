@@ -88,6 +88,32 @@ const EnvSchema = z.object({
   // --- Email (Resend) ---
   RESEND_API_KEY: z.string().optional(),
   RESEND_FROM_EMAIL: z.string().optional(),
+
+  // --- File storage (CLAUDE.md §7) ---
+  /**
+   * `gcs` is Google Cloud Storage, and production must use it. `local`
+   * writes under STORAGE_LOCAL_DIR, for development and tests only.
+   */
+  STORAGE_DRIVER: z.enum(["local", "gcs"]).default("local"),
+  /**
+   * One bucket per environment. Its location cannot change once created and
+   * waits on the data-residency answer (SPEC.md §4), so it is configuration,
+   * never code.
+   */
+  STORAGE_BUCKET: z.string().optional(),
+  STORAGE_LOCAL_DIR: z.string().default(".storage"),
+
+  // --- Background jobs (Cloud Tasks and Cloud Scheduler, CLAUDE.md §7) ---
+  /**
+   * `projects/P/locations/L/queues/Q`. When set, every commit that queues an
+   * outbox job also creates a Cloud Task to drain it at once.
+   */
+  TASKS_QUEUE: z.string().regex(/^projects\/[^/]+\/locations\/[^/]+\/queues\/[^/]+$/, "projects/P/locations/L/queues/Q").optional(),
+  /**
+   * The service account Cloud Tasks and Cloud Scheduler sign their identity
+   * tokens as: the only caller the internal routes accept.
+   */
+  TASKS_INVOKER_EMAIL: z.email().optional(),
 })
   .superRefine((input, ctx) => {
     if (input.NODE_ENV === "production") {
@@ -126,6 +152,37 @@ const EnvSchema = z.object({
           message: "Must be set to the staff app's HTTPS origin in production",
         });
       }
+
+      // Encryption in transit (docs/certification/encryption.md). Cloud
+      // Tasks also calls this URL, carrying an identity token.
+      if (!input.BETTER_AUTH_URL.startsWith("https://")) {
+        ctx.addIssue({ code: "custom", path: ["BETTER_AUTH_URL"], message: "Must be the API's HTTPS URL in production" });
+      }
+      if (!input.REDIS_URL.startsWith("rediss://")) {
+        ctx.addIssue({ code: "custom", path: ["REDIS_URL"], message: "Must use TLS (rediss://) in production" });
+      }
+
+      // Local files would vanish with the container, and would be served by
+      // a route that exists for development only.
+      if (input.STORAGE_DRIVER !== "gcs") {
+        ctx.addIssue({ code: "custom", path: ["STORAGE_DRIVER"], message: "Must be 'gcs' in production" });
+      }
+
+      // Without these the outbox is never drained in production.
+      for (const key of ["TASKS_QUEUE", "TASKS_INVOKER_EMAIL"] as const) {
+        if (!input[key])
+          ctx.addIssue({ code: "custom", path: [key], message: "Must be set when NODE_ENV is 'production'" });
+      }
+    }
+
+    if (input.STORAGE_DRIVER === "gcs" && !input.STORAGE_BUCKET) {
+      ctx.addIssue({ code: "custom", path: ["STORAGE_BUCKET"], message: "Must be set when STORAGE_DRIVER is 'gcs'" });
+    }
+
+    // A queue whose tasks carry no identity token would be refused by the
+    // internal routes on every call.
+    if (input.TASKS_QUEUE && !input.TASKS_INVOKER_EMAIL) {
+      ctx.addIssue({ code: "custom", path: ["TASKS_INVOKER_EMAIL"], message: "Must be set when TASKS_QUEUE is" });
     }
 
     // Half a pair silently disables the feature, which is exactly the failure

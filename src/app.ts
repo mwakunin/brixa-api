@@ -1,12 +1,15 @@
 import type { AppOpenAPI } from "@/lib/types";
 
+import env from "@/env";
 import configureOpenAPI from "@/lib/configure-open-api";
 import createApp from "@/lib/create-app";
 import documents from "@/routes/documents/documents.index";
 import facility from "@/routes/facility/facility.index";
 import health from "@/routes/health.route";
 import index from "@/routes/index.route";
+import internal from "@/routes/internal.route";
 import invitations from "@/routes/invitations/invitations.index";
+import localFiles from "@/routes/local-files.route";
 import me from "@/routes/me/me.index";
 import staff from "@/routes/staff/staff.index";
 import superadmin from "@/routes/superadmin/superadmin.index";
@@ -24,7 +27,8 @@ configureOpenAPI(app);
  * owner connection. `invitations` is reached from an emailed link, with no
  * session and no facility: the token names the invitation. `verify` is
  * reached from a printed document's QR code, the same way: the code names the
- * document.
+ * document. `internal` is for Cloud Tasks and Cloud Scheduler alone, each
+ * call carrying a Google-signed identity token.
  *
  * These must stay ahead of the tenant routers, which register `withFacility`
  * at `/*` (app.test.ts checks it).
@@ -36,7 +40,14 @@ const unscopedRoutes = [
   superadmin,
   invitations,
   verify,
+  internal,
 ] as const;
+
+/**
+ * The local storage driver's download links, served only while that driver
+ * is configured; production cannot configure it (env.ts).
+ */
+const developmentRoutes = env.STORAGE_DRIVER === "local" ? [localFiles] : [];
 
 /**
  * Routers whose handlers see `facility`, `membership` and `db`.
@@ -53,7 +64,7 @@ const tenantRoutes = [
   documents,
 ] as unknown as readonly AppOpenAPI[];
 
-[...unscopedRoutes, ...tenantRoutes].forEach((route) => {
+[...unscopedRoutes, ...developmentRoutes, ...tenantRoutes].forEach((route) => {
   app.route("/", route);
 });
 
