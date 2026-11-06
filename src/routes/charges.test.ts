@@ -43,11 +43,12 @@ describe("charges posted by hand", () => {
   });
 
   it.each([
-    ["an item the cash list does not price", { billableItemId: "unpriced", quantity: "1" }, "not_covered"],
-    ["a service date in the future", { billableItemId: "consultation", quantity: "1", serviceDate: addDays(TODAY, 1) }, "service_date_invalid"],
-    ["a service date before the visit", { billableItemId: "consultation", quantity: "1", serviceDate: addDays(TODAY, -1) }, "service_date_invalid"],
-  ])("refuse %s", async (_label, body, code) => {
-    const res = await post({ ...body, billableItemId: h.items[body.billableItemId as keyof Hospital["items"]] });
+    ["an item the cash list does not price", { billableItemId: "unpriced", quantity: "1", days: 0 }, "not_covered"],
+    ["a service date in the future", { billableItemId: "consultation", quantity: "1", days: 1 }, "service_date_invalid"],
+    ["a service date before the visit", { billableItemId: "consultation", quantity: "1", days: -1 }, "service_date_invalid"],
+  ])("refuse %s", async (_label, { days, ...body }, code) => {
+    // Dated when the test runs, not when the file loaded: a run can cross midnight in Nairobi.
+    const res = await post({ ...body, serviceDate: addDays(TODAY, days), billableItemId: h.items[body.billableItemId as keyof Hospital["items"]] });
 
     expect([res.status, (await res.json()).code]).toEqual([409, code]);
   });

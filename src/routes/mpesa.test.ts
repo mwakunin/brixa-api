@@ -11,7 +11,8 @@ import { darajaTimestamp, resetDarajaTokens } from "@/lib/daraja";
 import { resetDb } from "@/test/helpers";
 import { call, hospital, TODAY } from "@/test/hospital";
 
-const YEAR = TODAY.slice(0, 4);
+/** The Kenyan year now: read when used, since TODAY is re-read for each test. */
+const year = () => TODAY.slice(0, 4);
 const PAYBILL = "600123";
 
 let h: Hospital;
@@ -137,7 +138,7 @@ describe("paybill payments", () => {
     const patientId = await h.patient();
     const invoiceId = await billed(patientId);
 
-    const res = await post("/c2b/confirmation", confirmation({ BillRefNumber: `inv ${YEAR}/000001`, TransAmount: "508.00" }));
+    const res = await post("/c2b/confirmation", confirmation({ BillRefNumber: `inv ${year()}/000001`, TransAmount: "508.00" }));
 
     expect(await res.json()).toEqual({ ResultCode: 0, ResultDesc: "Accepted" });
     expect(await invoice(invoiceId)).toMatchObject({ paidCents: 50_800, balanceCents: 0 });
@@ -157,7 +158,7 @@ describe("paybill payments", () => {
     const walkIn = await h.patient();
     const [op] = (await pool.query("SELECT number FROM patient_numbers WHERE patient_id = $1 AND kind = 'outpatient'", [walkIn])).rows;
 
-    await post("/c2b/confirmation", confirmation({ TransID: "SKADM00001", BillRefNumber: `ADM-${YEAR}-0001` }));
+    await post("/c2b/confirmation", confirmation({ TransID: "SKADM00001", BillRefNumber: `ADM-${year()}-0001` }));
     await post("/c2b/confirmation", confirmation({ TransID: "SKOPD00001", BillRefNumber: op.number.toLowerCase() }));
 
     expect(await paymentOf("SKADM00001")).toMatchObject({ encounterId });
@@ -282,7 +283,7 @@ describe("m-Pesa prompts", () => {
     await drainOutbox();
     const sent = JSON.parse(String(fetch.mock.calls.find(([url]) => String(url).includes("stkpush"))![1]!.body));
     // The last 12 characters of INV-YYYY-000001: unique per bill, unlike a prefix.
-    expect(sent).toMatchObject({ PhoneNumber: "254712345678", Amount: 508, AccountReference: `NV${YEAR}000001` });
+    expect(sent).toMatchObject({ PhoneNumber: "254712345678", Amount: 508, AccountReference: `NV${year()}000001` });
     expect((await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).status).toBe("sent");
     const [exchange] = await db.select().from(gatewayExchanges).where(eq(gatewayExchanges.operation, "stk_push"));
     expect(exchange.request).not.toHaveProperty("Password");
@@ -300,6 +301,29 @@ describe("m-Pesa prompts", () => {
     await call("POST", `/payments/${payment.id}/reverse`, h.facility.id, h.finance, { reason: "Wrong patient" });
     expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json())
       .toMatchObject({ status: "completed", paymentId: payment.id, paymentReversed: true });
+
+    // Placed again by hand: the prompt now shows the live payment.
+    const [transaction] = await db.select().from(mpesaTransactions).where(eq(mpesaTransactions.transactionId, "SKSTK00001"));
+    const placed = await (await call("POST", `/mpesa/transactions/${transaction.id}/assign`, h.facility.id, h.clerk, { patientId, invoiceId })).json();
+    expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json())
+      .toMatchObject({ paymentId: placed.paymentId, paymentReversed: false });
+  });
+
+  it("complete their prompt when the paybill confirmation placed the payment first", async () => {
+    await setUp();
+    const patientId = await h.patient();
+    const { id: encounterId } = await (await call("POST", "/admissions", h.facility.id, h.nurse, { patientId, bedId: h.beds.general })).json();
+    const request = await (await prompt({ patientId, phone: "0712345678", amountCents: 100_000, encounterId })).json();
+    daraja();
+    await drainOutbox();
+
+    // The admission number the phone showed matches by itself: the confirmation places the deposit.
+    await post("/c2b/confirmation", confirmation({ TransID: "SKADMIT001", TransAmount: "1000.00", BillRefNumber: `ADM-${year()}-0001` }));
+    expect(await paymentOf("SKADMIT001")).toMatchObject({ encounterId });
+    await paid("ws_CO_1", "SKADMIT001", 1000);
+
+    expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).toMatchObject({ status: "completed", receiptNumber: "SKADMIT001" });
+    expect(await db.select().from(payments)).toHaveLength(1);
   });
 
   it("close as failed when the patient declines, and are never sent twice", async () => {
@@ -342,7 +366,7 @@ describe("m-Pesa prompts", () => {
     await drainOutbox();
 
     // The confirmation carries the shortened reference the phone showed, which names no bill by itself.
-    await post("/c2b/confirmation", confirmation({ TransID: "SKBOTH0001", TransAmount: "508.00", BillRefNumber: `NV${YEAR}000001` }));
+    await post("/c2b/confirmation", confirmation({ TransID: "SKBOTH0001", TransAmount: "508.00", BillRefNumber: `NV${year()}000001` }));
     expect(await paymentOf("SKBOTH0001")).toBeUndefined();
     await paid("ws_CO_1", "SKBOTH0001", 508);
 

@@ -42,8 +42,8 @@ export class AdjustmentError extends Error {
     | "not_approved"
     | "already_reversed"
     | "reversal_open"
-    | "reversal_not_found") {
-    super({
+    | "reversal_not_found", message?: string) {
+    super(message ?? {
       invoice_not_found: "No such invoice",
       not_finalised: "Only a finalised invoice is adjusted",
       exceeds_balance: "That is more than is left on the invoice",
@@ -289,7 +289,7 @@ async function lockPendingReversal(tx: AppDb, id: string) {
   if (!reversal)
     throw new AdjustmentError("reversal_not_found");
   if (reversal.status !== "pending")
-    throw new AdjustmentError("not_pending");
+    throw new AdjustmentError("not_pending", "This reversal request has already been decided");
   return reversal;
 }
 

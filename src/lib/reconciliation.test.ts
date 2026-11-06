@@ -15,7 +15,8 @@ import { reconcile } from "@/lib/reconciliation";
 import { resetDb } from "@/test/helpers";
 import { at, call, hospital, TODAY } from "@/test/hospital";
 
-const YEAR = TODAY.slice(0, 4);
+/** The Kenyan year now: read when used, since TODAY is re-read for each test. */
+const year = () => TODAY.slice(0, 4);
 
 let h: Hospital;
 let token: string;
@@ -68,7 +69,7 @@ describe("a six-day admission (the P2 exit)", () => {
     expect(running).toMatchObject({ totalCents: 802_500, paidCents: 802_500, balanceCents: 0 });
 
     // Day 4: a KES 10,000 top-up by M-Pesa paybill, naming the admission.
-    await paybill("SKTOPUP001", `ADM-${YEAR}-0001`, 1_000_000, at(4, 12));
+    await paybill("SKTOPUP001", `ADM-${year()}-0001`, 1_000_000, at(4, 12));
     const [topUp] = await db.select().from(payments).where(eq(payments.method, "mpesa_c2b"));
     expect(topUp.encounterId).toBe(stay);
 

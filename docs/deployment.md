@@ -32,6 +32,8 @@ Every external call is an outbox row, drained by `POST /internal/outbox/drain` (
 3. **Cloud Scheduler job**, the sweep, every minute: `POST {BETTER_AUTH_URL}/internal/outbox/drain` with an OIDC token for the invoker account, audience set to the API's origin. It retries backed-off jobs and delivers anything a task missed.
 4. **Cloud Scheduler job**, the nightly bed-day run, at 00:15 Africa/Nairobi: `POST {BETTER_AUTH_URL}/internal/jobs/bed-days`, with the same OIDC token and audience. It charges every open admission's nights so far; it is idempotent, so a retry or a second run charges nothing twice.
 5. **Cloud Scheduler job**, the daily reconciliation check, at 02:00 Africa/Nairobi: `POST {BETTER_AUTH_URL}/internal/jobs/reconciliation`, same token and audience. It checks every facility's money identities (M2, M3, M4, M-Pesa); a finding stays in `job_failures` until fixed, and is logged as `money identities drifted`, which should alert.
+
+   Both nightly jobs need **retries**: Cloud Scheduler's default is none, so a run that fails as a whole (the database unreachable before any facility is checked) would wait for the next night. Set e.g. `--max-retry-attempts=3 --min-backoff=5m --max-backoff=30m`. Both jobs are idempotent, so a retry repeats nothing.
 6. **IAM for the Cloud Run runtime service account:**
    - `roles/cloudtasks.enqueuer` on the queue
    - `roles/iam.serviceAccountUser` on the invoker account, so a task can carry its token
@@ -39,7 +41,8 @@ Every external call is an outbox row, drained by `POST /internal/outbox/drain` (
    - `jsonPayload.msg = "money identities drifted"`: the daily check found money that does not add up. The line names the facility and the ids; `job_failures` holds each finding until it is fixed.
    - `jsonPayload.msg = "outbox job failed permanently"`: a job will not be retried. The line carries `outboxId`, `facilityId` and `operation`; the row's `last_error` says why.
    - `jsonPayload.msg = "outbox nudge failed; the scheduled sweep will deliver"`: Cloud Tasks could not be reached. Worth a look if it persists.
-   - `jsonPayload.msg = "job failed for a facility"`: the nightly bed-day run failed for one facility (`facilityId`, `job`). Nights it could not price are listed in that facility's `job_failures` instead.
+   - `jsonPayload.msg = "job failed for a facility"`: a nightly job (`job`: the bed-day run or the reconciliation check) failed for one facility (`facilityId`). Nights the bed-day run could not price are listed in that facility's `job_failures` instead.
+   - **A scheduled job that failed as a whole**: `resource.type = "cloud_scheduler_job"` with `severity >= ERROR`, i.e. the attempt got no 2xx from `/internal/jobs/…` even after its retries. No facility was checked or charged that night.
 
 ## 3. File storage
 

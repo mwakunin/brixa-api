@@ -292,7 +292,15 @@ export async function recordStkCallback(
   catch (err) {
     if (!isUniqueViolation(err))
       throw err;
-    [transaction] = await tx.select().from(mpesaTransactions).where(eq(mpesaTransactions.transactionId, callback.receiptNumber)).limit(1);
+    [transaction] = await tx.select().from(mpesaTransactions).where(eq(mpesaTransactions.transactionId, callback.receiptNumber)).for("update").limit(1);
+    // The paybill confirmation came first and its reference placed it already
+    // (an admission or patient number): one payment, now the prompt's too.
+    if (transaction?.status === "allocated" && request && request.status !== "completed" && transaction.amountCents === request.amountCents) {
+      await tx.update(mpesaStkRequests)
+        .set({ status: "completed", resultCode: 0, mpesaTransactionId: transaction.id, completedAt: new Date() })
+        .where(eq(mpesaStkRequests.id, request.id));
+      return { outcome: "queued" };
+    }
     if (!transaction || transaction.status !== "unmatched")
       return { outcome: "queued" };
   }
@@ -323,7 +331,8 @@ export async function stkRequestView(tx: AppDb, id: string) {
         .from(mpesaTransactions)
         .leftJoin(payments, eq(payments.mpesaTransactionId, mpesaTransactions.id))
         .where(eq(mpesaTransactions.id, request.mpesaTransactionId))
-        .orderBy(desc(payments.receivedAt))
+        // The live payment if there is one (it may have been reversed and placed again), else the reversed one.
+        .orderBy(sql`${payments.reversedAt} IS NULL DESC`, desc(payments.receivedAt))
         .limit(1)
     : [];
   return {

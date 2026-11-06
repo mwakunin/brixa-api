@@ -10,7 +10,8 @@ import { approveAdjustment, requestAdjustment } from "@/lib/adjustments";
 import { resetDb } from "@/test/helpers";
 import { call, hospital, TODAY } from "@/test/hospital";
 
-const YEAR = TODAY.slice(0, 4);
+/** The Kenyan year now: read when used, since TODAY is re-read for each test. */
+const year = () => TODAY.slice(0, 4);
 
 describe("adjustments", () => {
   let h: Hospital;
@@ -57,16 +58,16 @@ describe("adjustments", () => {
     const { id } = await (await ask({ kind: "credit_note", amountCents: 800 })).json();
     const approved = await (await decide(id, "approve", h.admin)).json();
 
-    expect(approved.number).toBe(`CN-${YEAR}-000001`);
+    expect(approved.number).toBe(`CN-${year()}-000001`);
     const [row] = await db.select().from(invoiceAdjustments).where(eq(invoiceAdjustments.id, id));
     expect(approved.documentId).toBe(row.documentId);
     const [document] = await db.select().from(documents).where(eq(documents.id, row.documentId!));
-    expect(document).toMatchObject({ kind: "credit_note", number: `CN-${YEAR}-000001` });
+    expect(document).toMatchObject({ kind: "credit_note", number: `CN-${year()}-000001` });
     expect(document.content).toMatchObject({
       title: "Credit note",
       fields: expect.arrayContaining([
         { label: "Bill to", value: "Test Patient" },
-        { label: "Against invoice", value: `INV-${YEAR}-000001` },
+        { label: "Against invoice", value: `INV-${year()}-000001` },
         { label: "Reason", value: "Staff discount" },
       ]),
       totals: [{ label: "Invoice total", value: "KES 508.00" }, { label: "Credited", value: "KES 8.00" }],
@@ -138,7 +139,7 @@ describe("adjustments", () => {
     await decide(decided.id, "approve", h.finance);
 
     const queue = await (await call("GET", "/adjustments?status=pending", h.facility.id, h.finance)).json();
-    expect(queue.adjustments).toMatchObject([{ id, invoiceNumber: `INV-${YEAR}-000001`, status: "pending", amountCents: 800 }]);
+    expect(queue.adjustments).toMatchObject([{ id, invoiceNumber: `INV-${year()}-000001`, status: "pending", amountCents: 800 }]);
     expect((await call("GET", "/adjustments", h.facility.id, h.nurse)).status).toBe(403);
     const [listed] = await db.select().from(auditLog).where(eq(auditLog.action, "adjustment.listed"));
     expect(listed).toMatchObject({ actorId: h.finance.id, detail: { status: "pending", ids: [id] } });
@@ -205,6 +206,8 @@ describe("adjustments", () => {
 
       const again = await (await reverse(id)).json();
       expect(await (await decideReversal(again.id, "reject", h.admin)).json()).toMatchObject({ status: "rejected" });
+      expect(await (await decideReversal(again.id, "approve", h.finance)).json())
+        .toMatchObject({ code: "not_pending", message: "This reversal request has already been decided" });
       expect((await invoice()).balanceCents).toBe(40_800);
 
       const pending = await (await ask({ kind: "waiver", amountCents: 800 })).json();
@@ -218,7 +221,7 @@ describe("adjustments", () => {
 
       const [row] = await db.select().from(invoiceAdjustments).where(eq(invoiceAdjustments.id, id));
       const [document] = await db.select().from(documents).where(eq(documents.id, row.documentId!));
-      expect(document).toMatchObject({ number: `CN-${YEAR}-000001`, voidReason: "Approved in error" });
+      expect(document).toMatchObject({ number: `CN-${year()}-000001`, voidReason: "Approved in error" });
     });
 
     it("are listed for the approver, audited", async () => {
