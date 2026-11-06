@@ -1298,7 +1298,7 @@ export const cashierShifts = pgTable("cashier_shifts", {
   check(
     "cashier_shifts_closing",
     sql`(${t.closedAt} IS NULL AND ${t.declaredCashCents} IS NULL)
-      OR (${t.closedAt} IS NOT NULL AND ${t.declaredCashCents} >= 0 AND ${t.declaredCashCents} % 100 = 0)`,
+      OR (${t.closedAt} IS NOT NULL AND ${t.declaredCashCents} IS NOT NULL AND ${t.declaredCashCents} >= 0 AND ${t.declaredCashCents} % 100 = 0)`,
   ),
 ]);
 

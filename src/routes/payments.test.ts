@@ -309,6 +309,8 @@ describe("in the database", () => {
 
   it("a closed shift never changes", async () => {
     const shift = (await (await call("GET", "/cashier-shifts/current", h.facility.id, h.cashier)).json()).shift;
+    // Closed only with the cash counted.
+    await expect(pool.query("UPDATE cashier_shifts SET closed_at = now() WHERE id = $1", [shift.id])).rejects.toMatchObject({ code: "23514" });
     await call("POST", `/cashier-shifts/${shift.id}/close`, h.facility.id, h.cashier, { declaredCashCents: 500_000 });
 
     await expect(pool.query("UPDATE cashier_shifts SET declared_cash_cents = 0 WHERE id = $1", [shift.id])).rejects.toMatchObject({ code: "23001" });

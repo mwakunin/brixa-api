@@ -190,6 +190,13 @@
       "when": 1793974394685,
       "tag": "0026_open_shift_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1793977020333,
+      "tag": "0027_shift_closing_check",
+      "breakpoints": true
     }
   ]
 }
