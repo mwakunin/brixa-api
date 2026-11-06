@@ -415,6 +415,8 @@ The cross-row invariants live in `lib/billing.ts` and `lib/allocations.ts`, the 
 | **M7** | Σ charges = Σ invoiced + derived allowances + waivers; Σ payments = Σ allocations + Σ refunds + unallocated credit | Reconciliation tests and a daily check |
 | **M8** | Lock order: encounter → charges (by id) → payment → invoices (by id); a payment's refund after the payment | Documented once, followed everywhere (rule 23) |
 
+**As built (P2, slice 7b): the reconciliation check.** `reconcile()` (`src/lib/reconciliation.ts`) runs inside one facility's tenant transaction and returns its totals (charged, invoiced, adjusted, received, allocated, refunded, credit, owed) and every drift: M2 (a payment over-applied), M3 (an invoice over-settled), M4 (a charge over-assigned), the second half of M4 (a live charge not fully billed once its encounter's final bill is out) and M-Pesa (a placed transaction without exactly one live payment of its amount, or one not placed with a payment). With no drift, M7 holds by construction: received = allocated + refunded + credit, and invoiced = allocated + adjusted + owed. The daily job (`POST /internal/jobs/reconciliation`, Cloud Scheduler) runs it for every facility; each finding is a `job_failures` row (`job = 'reconciliation'`, ids and amounts only) until a later run no longer finds it, and is logged as `money identities drifted` for alerting. The P2 exit's six-day admission (`src/lib/reconciliation.test.ts`) ends with no drift and these identities checked against the account view.
+
 "Live" means the row is not reversed **and** neither is the payment behind it. That is derived from the `reversed_at` columns, never copied, exactly as in school-saas.
 
 ---

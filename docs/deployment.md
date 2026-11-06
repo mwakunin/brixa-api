@@ -19,6 +19,9 @@ What the API needs from Google Cloud before it can run in production. The code r
 | `RESEND_API_KEY`, `RESEND_FROM_EMAIL` | Required |
 | `STORAGE_DRIVER`, `STORAGE_BUCKET` | `gcs`, and the bucket in §3 |
 | `TASKS_QUEUE`, `TASKS_INVOKER_EMAIL` | The queue and service account in §2 |
+| `CREDENTIALS_ENCRYPTION_KEY` | Base64 of 32 random bytes, from Secret Manager: encrypts each facility's Daraja credentials. Losing it means every facility re-enters them |
+| `MPESA_ENV` | `production` once a facility goes live; `sandbox` until then |
+| `MPESA_CALLBACK_ALLOWED_IPS` | Optional: Safaricom's published callback addresses. Advisory, never used to refuse |
 
 ## 2. Background jobs
 
@@ -28,10 +31,12 @@ Every external call is an outbox row, drained by `POST /internal/outbox/drain` (
 2. **Cloud Tasks queue** in the service's region, e.g. `projects/PROJECT/locations/REGION/queues/outbox`. Its path is `TASKS_QUEUE`. After each commit that queues a job, the API creates one task named `outbox-{jobId}`, so a duplicate is refused.
 3. **Cloud Scheduler job**, the sweep, every minute: `POST {BETTER_AUTH_URL}/internal/outbox/drain` with an OIDC token for the invoker account, audience set to the API's origin. It retries backed-off jobs and delivers anything a task missed.
 4. **Cloud Scheduler job**, the nightly bed-day run, at 00:15 Africa/Nairobi: `POST {BETTER_AUTH_URL}/internal/jobs/bed-days`, with the same OIDC token and audience. It charges every open admission's nights so far; it is idempotent, so a retry or a second run charges nothing twice.
-5. **IAM for the Cloud Run runtime service account:**
+5. **Cloud Scheduler job**, the daily reconciliation check, at 02:00 Africa/Nairobi: `POST {BETTER_AUTH_URL}/internal/jobs/reconciliation`, same token and audience. It checks every facility's money identities (M2, M3, M4, M-Pesa); a finding stays in `job_failures` until fixed, and is logged as `money identities drifted`, which should alert.
+6. **IAM for the Cloud Run runtime service account:**
    - `roles/cloudtasks.enqueuer` on the queue
    - `roles/iam.serviceAccountUser` on the invoker account, so a task can carry its token
-6. **Alerts** (log-based, on the JSON lines the API writes):
+7. **Alerts** (log-based, on the JSON lines the API writes):
+   - `jsonPayload.msg = "money identities drifted"`: the daily check found money that does not add up. The line names the facility and the ids; `job_failures` holds each finding until it is fixed.
    - `jsonPayload.msg = "outbox job failed permanently"`: a job will not be retried. The line carries `outboxId`, `facilityId` and `operation`; the row's `last_error` says why.
    - `jsonPayload.msg = "outbox nudge failed; the scheduled sweep will deliver"`: Cloud Tasks could not be reached. Worth a look if it persists.
    - `jsonPayload.msg = "job failed for a facility"`: the nightly bed-day run failed for one facility (`facilityId`, `job`). Nights it could not price are listed in that facility's `job_failures` instead.

@@ -62,6 +62,11 @@ const OWNER_ALLOWLIST = new Map([
     + "facility whose run failed, and does each facility's work as that tenant",
   ],
   [
+    "jobs/reconciliation.ts",
+    "the daily check serves every facility; it lists them, and records a "
+    + "facility whose check failed, and checks each facility as that tenant",
+  ],
+  [
     "jobs/outbox-worker.ts",
     "the worker drains every facility's queue; it claims and records jobs by "
     + "id and reads no facility data on this connection",

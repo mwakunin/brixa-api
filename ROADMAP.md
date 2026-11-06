@@ -77,6 +77,8 @@ Patients and patient numbers; the OPD encounter; a thin admission with bed stays
 - **A test bills a dummy insurer account** for part of an encounter. It proves the account and charge-assignment structures carry a payer split, so P7 needs no rework of charges.
 - Concurrency tests on allocation, charge assignment and refund pass, in the style of school-saas's `allocations.test.ts`.
 
+**Done (2026-11-06):** the six-day admission reconciles (`src/lib/reconciliation.test.ts`), the dummy insurer is billed (`src/lib/billing.test.ts`), and the concurrency tests hold one transaction open and confirm in Postgres that the other waits (`src/lib/concurrency.test.ts`). Also built in P2: M-Pesa C2B and STK push, reversing an approved adjustment, and the daily reconciliation check (decisions of 2026-11-06).
+
 ### P3 · OPD clinical and lab
 
 **Size:** M/L.

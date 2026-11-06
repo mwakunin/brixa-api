@@ -1,0 +1,2 @@
+ALTER TABLE "job_failures" DROP CONSTRAINT "job_failures_job_known";--> statement-breakpoint
+ALTER TABLE "job_failures" ADD CONSTRAINT "job_failures_job_known" CHECK ("job_failures"."job" IN ('bed_day_accrual', 'reconciliation'));

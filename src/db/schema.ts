@@ -1073,7 +1073,7 @@ export const charges = pgTable("charges", {
 export const jobFailures = pgTable("job_failures", {
   id: uuid().primaryKey().defaultRandom(),
   facilityId: uuid().notNull().references(() => facilities.id),
-  job: text().$type<"bed_day_accrual">().notNull(),
+  job: text().$type<"bed_day_accrual" | "reconciliation">().notNull(),
   /** What it was working on, e.g. the encounter. Not a foreign key: the log outlives it. */
   subjectId: uuid(),
   /** What is wrong, for whoever fixes it. Ids and codes only (rule 10). */
@@ -1082,7 +1082,7 @@ export const jobFailures = pgTable("job_failures", {
   resolvedAt: timestamp({ withTimezone: true }),
 }, t => [
   uniqueIndex("job_failures_open_once").on(t.facilityId, t.job, t.subjectId, t.error).where(sql`${t.resolvedAt} IS NULL`),
-  oneOf("job_failures_job_known", t.job, ["bed_day_accrual"]),
+  oneOf("job_failures_job_known", t.job, ["bed_day_accrual", "reconciliation"]),
 ]);
 
 // ---------------------------------------------------------------------------
