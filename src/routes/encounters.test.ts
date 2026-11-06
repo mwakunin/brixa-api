@@ -3,8 +3,10 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import app from "@/app";
 import db, { pool } from "@/db";
-import { auditLog } from "@/db/schema";
+import { auditLog, memberships } from "@/db/schema";
+import { runAsFacility } from "@/db/tenant-transaction";
 import { businessDate } from "@/lib/dates";
+import { closeEncounter, openEncounter } from "@/lib/encounters";
 import { facilityHeaders, makeOnboardedFacility, nextIp, resetDb, signedInUserAt } from "@/test/helpers";
 
 type Person = Awaited<ReturnType<typeof signedInUserAt>>;
@@ -137,6 +139,19 @@ describe("visits", () => {
 
     expect((await list.json()).encounters.map((e: { id: string }) => e.id)).toEqual([visit.id]);
     expect(await auditOf("encounter.viewed")).toHaveLength(2);
+  });
+
+  it("start and end by the same clock, so a visit never ends before it began", async () => {
+    const [membership] = await db.select({ id: memberships.id }).from(memberships).where(eq(memberships.userId, clerk.id));
+    const actor = { userId: clerk.id, membershipId: membership.id };
+    const now = Date.now();
+
+    // Opened two seconds ago and closed one second ago, by the app's clock. A
+    // start taken from the database's clock would fall after the close.
+    const visit = await runAsFacility(facility.id, t => openEncounter(t, facility.id, { patientId, kind: "opd" }, actor, new Date(now - 2_000)));
+    const closed = await runAsFacility(facility.id, t => closeEncounter(t, facility.id, visit.id, actor, new Date(now - 1_000)));
+
+    expect(closed.endedAt!.getTime() - closed.startedAt.getTime()).toBe(1_000);
   });
 
   it("are listed a page at a time", async () => {
