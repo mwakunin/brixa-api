@@ -340,13 +340,24 @@ Re-pricing an encounter (for example, coverage confirmed after the charges were 
 
 **As built (P2, slice 5a): shifts, payments, receipts, allocations and deposits.** Decided 2026-11-04: cash and card need an open shift; only finance reverses a payment, never whoever took it; a deposit settles its encounter's bill automatically.
 
-- `cashier_shifts`: the cashier's membership, `opened_at`, `opening_float_cents`, and `closed_at` with `declared_cash_cents` (both or neither). One open shift per cashier (partial unique index). Cash and card taken, the expected cash (float plus cash taken; slice 5b subtracts cash refunds) and the variance are derived. A trigger closes a shift once and freezes the rest.
+- `cashier_shifts`: the cashier's membership, `opened_at`, `opening_float_cents`, and `closed_at` with `declared_cash_cents` (both or neither). One open shift per cashier (partial unique index). Cash and card taken, cash and card refunded, the expected cash (float plus cash taken, less cash refunded) and the variance are derived. A trigger closes a shift once and freezes the rest.
 - `payments`: `account_id`, `method` (cash \| card \| bank; slice 6 adds M-Pesa), `amount_cents` (whole shillings), `reference` (required for card and bank, none for cash), `cashier_shift_id` (required exactly for cash and card, by CHECK), `encounter_id` (what it was paid towards), `document_id` (the receipt, `RCT-`), `received_by`, and reversal columns. The shift foreign key is `(facility_id, cashier_shift_id, received_by)`, so a payment's shift is always its receiver's own. A CHECK forbids reversal by the receiver.
 - **Taking a payment** issues its receipt in the same transaction. Taken against a bill, as much as the bill owes is allocated at once and the rest stays as credit; the receipt prints what was applied and what is still owed. Taken towards a visit or admission, it is a deposit.
 - **Deposits:** finalising an invoice locks the standing payments tagged to its encounter on the same account (before the invoice, M8) and applies their credit, oldest first, up to the total. Untagged credit is applied on request (`POST /payments/{id}/allocations`, by default as much as both have left).
 - `allocations`: `payment_id` and `invoice_id`, each in a three-column FK with `account_id` (M1), `amount_cents`, `allocated_by`, and reversal columns. The service locks the payment, then the invoice, and checks M2 and M3; the `allocations_within_limits` trigger re-checks both for every role, and the adjustment trigger now counts allocations too.
-- **Reversing a payment** voids its receipt; its allocations stop being live, so the bills it settled owe again. Reversing an allocation returns its money to the payment's credit. Both are finance's. An invoice with live allocations cannot be voided.
+- **Reversing a payment** voids its receipt; its allocations stop being live, so the bills it settled owe again. Reversing an allocation returns its money to the payment's credit. Both are finance's. An invoice with live allocations cannot be voided. A payment with a live refund cannot be reversed (5b).
 - **Who:** cashiers, the finance manager and the facility admin take money; billers apply credit; those who read receipts read payments and accounts. `GET /patients/{id}/account` (credit and what each bill owes) writes `account.viewed`.
+- A CHECK's `length(btrim(reference)) > 0` passes when the reference is NULL, so `payments_reference` now says `reference IS NOT NULL` outright (fixed in 5b).
+
+**As built (P2, slice 5b): refunds.** Decided 2026-11-06: billers ask, the finance manager or the facility admin approves, never the asker; payout by cash, card, bank, or M-Pesa sent by hand with its transaction code (no B2C in v1); each refund returns credit from one payment.
+
+- `refunds`: `payment_id` and `account_id` (three-column FK to the payment, M1), `amount_cents` (whole shillings), a one-line `reason`, `status` (pending \| approved \| rejected \| withdrawn), `requested_by`/`requested_at`, `decided_by`/`decided_at` (CHECK: the decider is not the requester, rule 24; only the requester withdraws). Payout columns, all or none and only once approved: `paid_at`, `paid_by`, `method` (cash \| card \| bank \| mpesa), `reference` (none for cash, required otherwise), `cashier_shift_id` (exactly for cash and card; FK `(facility_id, cashier_shift_id, paid_by)`, so it is the payer's own shift), `document_id`. Reversal columns, all or none, only once approved, never by whoever paid it out. "Paid out" is `paid_at`, not a status (rule 17).
+- **Asking** names a payment; the amount defaults to all it has left. A request holds nothing.
+- **Approving** locks the payment, then the refund (M8), and checks that live allocations and live refunds stay within the payment (M2). From approval until it is reversed, the refund holds its share: credit it holds is not applied to bills, and the payment cannot be reversed.
+- **Paying out** is a cashier's (cashier, finance manager, facility admin): cash and card need the payer's open shift, held with a share lock. The refund takes its number then (`RFD-`, yearly, six digits, a fiscal document) and prints who was paid, the receipt it returns, the reason, the method and the amount. Cash paid out lowers the shift's expected cash.
+- **Reversing** is finance's: it cancels an approval not yet paid out, or corrects a payout recorded in error (voiding its document, and its cash returns to the shift's expected cash). Either way the amount returns to the payment's credit.
+- **Trigger** `refunds_lifecycle` (every role, the owner included): written pending; what was asked never changes; decided once; approval locks the payment and checks M2; paid out once; reversed once; a rejected, withdrawn or reversed refund never changes. `allocations_within_limits` now counts live refunds in M2, and `payments_reverse_only` refuses to reverse a payment with a live refund.
+- `GET /refunds?status=` (at most 100, newest first) writes `refund.listed`; `?status=approved` is the cashier's queue. A payment's detail lists its refunds.
 
 ### 7.5 Adjustments: credit notes, waivers, write-offs, disallowances
 
@@ -385,13 +396,13 @@ The cross-row invariants live in `lib/billing.ts` and `lib/allocations.ts`, the 
 | | Invariant | Enforced by |
 |---|---|---|
 | **M1** | Every money row belongs to one account, and rows that reference each other share it | Three-column composite FKs |
-| **M2** | Σ live allocations + Σ live refunds ≤ the payment's amount | Service, payment locked |
+| **M2** | Σ live allocations + Σ live refunds ≤ the payment's amount | Service, payment locked; triggers on allocations and refunds re-check it |
 | **M3** | Σ live allocations + Σ live adjustments ≤ the invoice's total | Service, invoices locked |
 | **M4** | Σ live assignments ≤ the charge's amount; no final bill while a live charge is not fully assigned | Service, charges locked; a trigger re-checks the first half on every assignment |
 | **M5** | Σ rebilled from a disallowance ≤ the disallowance, and zero if its disposition is `absorb`; a disallowance with live rebill lines cannot be reversed | Service |
 | **M6** | A remittance is one payment on the payer's account; its lines become allocations plus disallowance adjustments in one transaction; an unexplained shortfall stays open | Service, one transaction |
 | **M7** | Σ charges = Σ invoiced + derived allowances + waivers; Σ payments = Σ allocations + Σ refunds + unallocated credit | Reconciliation tests and a daily check |
-| **M8** | Lock order: encounter → charges (by id) → payment → invoices (by id) | Documented once, followed everywhere (rule 23) |
+| **M8** | Lock order: encounter → charges (by id) → payment → invoices (by id); a payment's refund after the payment | Documented once, followed everywhere (rule 23) |
 
 "Live" means the row is not reversed **and** neither is the payment behind it. That is derived from the `reversed_at` columns, never copied, exactly as in school-saas.
 

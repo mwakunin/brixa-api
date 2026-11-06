@@ -26,6 +26,9 @@ function shiftJson(shift: ShiftSummary) {
     cashCents: shift.cashCents,
     cardCents: shift.cardCents,
     paymentCount: shift.paymentCount,
+    cashRefundsCents: shift.cashRefundsCents,
+    cardRefundsCents: shift.cardRefundsCents,
+    refundCount: shift.refundCount,
     expectedCashCents: shift.expectedCashCents,
     varianceCents: shift.varianceCents,
   };

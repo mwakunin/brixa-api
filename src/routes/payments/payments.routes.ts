@@ -36,6 +36,16 @@ const AllocationSchema = z.object({
   reversedAt: z.string().nullable(),
 });
 
+const PaymentRefundSchema = z.object({
+  id: z.uuid(),
+  amountCents: z.number().int(),
+  status: z.enum(["pending", "approved", "rejected", "withdrawn"]),
+  /** Its own number, once paid out. */
+  number: z.string().nullable(),
+  paidAt: z.string().nullable(),
+  reversedAt: z.string().nullable(),
+});
+
 const PaymentSchema = z.object({
   id: z.uuid(),
   accountId: z.uuid(),
@@ -50,9 +60,10 @@ const PaymentSchema = z.object({
   receivedBy: z.uuid(),
   reversedAt: z.string().nullable(),
   reversalReason: z.string().nullable(),
-  /** Credit still on the account from this payment. */
+  /** Credit still on the account from this payment: not applied to a bill, nor refunded. */
   unallocatedCents: z.number().int(),
   allocations: z.array(AllocationSchema),
+  refunds: z.array(PaymentRefundSchema),
 });
 
 const RecordBodySchema = z.object({

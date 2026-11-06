@@ -2,7 +2,7 @@ import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 
-import { accounts, admissions, allocations, cashierShifts, documents, encounters, invoices, patients, payments } from "@/db/schema";
+import { accounts, admissions, allocations, cashierShifts, documents, encounters, invoices, patients, payments, refunds } from "@/db/schema";
 
 import type { PrintedContent } from "./document-content";
 import type { PatientActor } from "./patients";
@@ -45,7 +45,8 @@ export class PaymentError extends Error {
     | "other_patient"
     | "payment_not_found"
     | "already_reversed"
-    | "same_person") {
+    | "same_person"
+    | "has_refunds") {
     super({
       shift_open: "You already have a shift open",
       shift_required: "Open a shift before taking cash or card",
@@ -61,6 +62,7 @@ export class PaymentError extends Error {
       payment_not_found: "No such payment",
       already_reversed: "This payment is already reversed",
       same_person: "Someone other than the person who took it must reverse it",
+      has_refunds: "A refund from this payment stands; reverse the refund first",
     }[code]);
     this.name = "PaymentError";
   }
@@ -95,7 +97,7 @@ export async function openShift(tx: AppDb, facilityId: string, openingFloatCents
   }
 }
 
-/** A shift with its takings, derived: cash expected in the drawer, and the variance once closed. */
+/** A shift with its takings and refunds paid out, derived: cash expected in the drawer, and the variance once closed. */
 export async function shiftSummary(tx: AppDb, shiftId: string) {
   const [shift] = await tx.select().from(cashierShifts).where(eq(cashierShifts.id, shiftId)).limit(1);
   if (!shift)
@@ -112,13 +114,27 @@ export async function shiftSummary(tx: AppDb, shiftId: string) {
     .groupBy(payments.method);
   const of = (method: PaymentMethod) => takings.find(t => t.method === method) ?? { cents: 0, count: 0 };
 
-  // Slice 5b subtracts cash refunds paid from the drawer.
-  const expectedCashCents = shift.openingFloatCents + of("cash").cents;
+  // Only a refund paid out has a shift; a reversed one never left the drawer.
+  const paidOut = await tx
+    .select({
+      method: refunds.method,
+      cents: sql<number>`coalesce(sum(${refunds.amountCents}), 0)`.mapWith(Number),
+      count: sql<number>`count(*)`.mapWith(Number),
+    })
+    .from(refunds)
+    .where(and(eq(refunds.cashierShiftId, shiftId), isNull(refunds.reversedAt)))
+    .groupBy(refunds.method);
+  const out = (method: "cash" | "card") => paidOut.find(r => r.method === method) ?? { cents: 0, count: 0 };
+
+  const expectedCashCents = shift.openingFloatCents + of("cash").cents - out("cash").cents;
   return {
     ...shift,
     cashCents: of("cash").cents,
     cardCents: of("card").cents,
     paymentCount: of("cash").count + of("card").count,
+    cashRefundsCents: out("cash").cents,
+    cardRefundsCents: out("card").cents,
+    refundCount: out("cash").count + out("card").count,
     expectedCashCents,
     varianceCents: shift.declaredCashCents === null ? null : shift.declaredCashCents - expectedCashCents,
   };
@@ -310,7 +326,8 @@ export async function recordPayment(tx: AppDb, facilityId: string, input: Paymen
 /**
  * Reverses a payment recorded in error: its receipt is voided, and its
  * allocations stop counting. By finance, never by whoever took it
- * (decided 2026-11-04). Slice 5b refuses it once a refund is paid from it.
+ * (decided 2026-11-04). Refused while a refund from it stands: approved
+ * and not reversed, whether paid out yet or not.
  */
 export async function reversePayment(tx: AppDb, facilityId: string, paymentId: string, reason: string, actor: PatientActor, at = new Date()) {
   const [payment] = await tx.select().from(payments).where(eq(payments.id, paymentId)).for("update").limit(1);
@@ -320,6 +337,13 @@ export async function reversePayment(tx: AppDb, facilityId: string, paymentId: s
     throw new PaymentError("already_reversed");
   if (payment.receivedBy === actor.membershipId)
     throw new PaymentError("same_person");
+  const [standing] = await tx
+    .select({ id: refunds.id })
+    .from(refunds)
+    .where(and(eq(refunds.paymentId, paymentId), eq(refunds.status, "approved"), isNull(refunds.reversedAt)))
+    .limit(1);
+  if (standing)
+    throw new PaymentError("has_refunds");
 
   await voidDocument(tx, { facilityId, documentId: payment.documentId, reason, voidedBy: actor, at });
   await tx.update(payments)
@@ -337,7 +361,7 @@ export async function reversePayment(tx: AppDb, facilityId: string, paymentId: s
   });
 }
 
-/** A payment, its receipt number, where it went, and what is left of it. */
+/** A payment, its receipt number, where it went (bills and refunds), and what is left of it. */
 export async function paymentDetail(tx: AppDb, paymentId: string) {
   const [row] = await tx
     .select({ payment: payments, receiptNumber: documents.number })
@@ -363,11 +387,26 @@ export async function paymentDetail(tx: AppDb, paymentId: string) {
     .where(eq(allocations.paymentId, paymentId))
     .orderBy(asc(allocations.allocatedAt), asc(allocations.id));
 
+  const refunded = await tx
+    .select({
+      id: refunds.id,
+      amountCents: refunds.amountCents,
+      status: refunds.status,
+      number: documents.number,
+      paidAt: refunds.paidAt,
+      reversedAt: refunds.reversedAt,
+    })
+    .from(refunds)
+    .leftJoin(documents, eq(documents.id, refunds.documentId))
+    .where(eq(refunds.paymentId, paymentId))
+    .orderBy(asc(refunds.requestedAt), asc(refunds.id));
+
   return {
     ...row.payment,
     receiptNumber: row.receiptNumber,
     unallocatedCents: row.payment.reversedAt ? 0 : await unallocatedCents(tx, row.payment),
     allocations: applied,
+    refunds: refunded,
   };
 }
 

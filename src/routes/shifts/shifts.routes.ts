@@ -37,7 +37,11 @@ export const ShiftSchema = z.object({
   cashCents: z.number().int(),
   cardCents: z.number().int(),
   paymentCount: z.number().int(),
-  /** The float plus cash taken. */
+  /** Refunds paid out from this shift, less any reversed. */
+  cashRefundsCents: z.number().int(),
+  cardRefundsCents: z.number().int(),
+  refundCount: z.number().int(),
+  /** The float plus cash taken, less cash refunded. */
   expectedCashCents: z.number().int(),
   /** Declared less expected, once closed: negative is a shortage. */
   varianceCents: z.number().int().nullable(),

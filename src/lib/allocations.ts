@@ -2,7 +2,7 @@ import { and, asc, eq, isNull, sql } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 
-import { allocations, invoices, payments } from "@/db/schema";
+import { allocations, invoices, payments, refunds } from "@/db/schema";
 
 import type { PatientActor } from "./patients";
 
@@ -16,8 +16,8 @@ import { formatKes } from "./money";
  *
  * A payment lands as credit on its account; an allocation decides which
  * invoice it settles. Two invariants span rows: a payment's live
- * allocations never exceed it (M2), and an invoice's live allocations and
- * approved adjustments never exceed its total (M3). Both are checked under
+ * allocations and live refunds never exceed it (M2), and an invoice's live
+ * allocations and approved adjustments never exceed its total (M3). Both are checked under
  * the payment's lock and then the invoice's (lock order M8), and a trigger
  * checks them again. "Live" is derived: neither the allocation nor its
  * payment is reversed.
@@ -54,13 +54,21 @@ export class AllocationError extends Error {
   }
 }
 
-/** What is left of a payment to allocate: its amount less its live allocations. Slice 5b subtracts refunds. */
+/**
+ * What is left of a payment to allocate or refund: its amount less its live
+ * allocations and live refunds (M2). A refund is live from approval until
+ * it is reversed.
+ */
 export async function unallocatedCents(tx: AppDb, payment: { id: string; amountCents: number }): Promise<number> {
-  const [row] = await tx
+  const [allocated] = await tx
     .select({ cents: sql<number>`coalesce(sum(${allocations.amountCents}), 0)`.mapWith(Number) })
     .from(allocations)
     .where(and(eq(allocations.paymentId, payment.id), isNull(allocations.reversedAt)));
-  return payment.amountCents - row.cents;
+  const [refunded] = await tx
+    .select({ cents: sql<number>`coalesce(sum(${refunds.amountCents}), 0)`.mapWith(Number) })
+    .from(refunds)
+    .where(and(eq(refunds.paymentId, payment.id), eq(refunds.status, "approved"), isNull(refunds.reversedAt)));
+  return payment.amountCents - allocated.cents - refunded.cents;
 }
 
 async function lockPayment(tx: AppDb, paymentId: string): Promise<PaymentRow> {

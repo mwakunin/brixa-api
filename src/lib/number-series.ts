@@ -29,6 +29,7 @@ export const FISCAL_SERIES = [
   ["receipt", "RCT-"],
   ["invoice", "INV-"],
   ["credit_note", "CN-"],
+  ["refund", "RFD-"],
 ] as const satisfies readonly (readonly [SeriesKind, string])[];
 
 /** A series kind this facility has not registered: a setup error, not a user one. */

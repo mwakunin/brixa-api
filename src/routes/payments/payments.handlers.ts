@@ -44,6 +44,7 @@ function paymentJson(p: PaymentDetail) {
     reversalReason: p.reversalReason,
     unallocatedCents: p.unallocatedCents,
     allocations: p.allocations.map(a => ({ ...a, allocatedAt: a.allocatedAt.toISOString(), reversedAt: iso(a.reversedAt) })),
+    refunds: p.refunds.map(r => ({ ...r, paidAt: iso(r.paidAt), reversedAt: iso(r.reversedAt) })),
   };
 }
 
