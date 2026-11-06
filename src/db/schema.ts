@@ -262,6 +262,11 @@ export const auditLog = pgTable("audit_log", {
     | "mpesa.rejected"
     | "mpesa.listed"
     | "mpesa.stk_requested"
+    | "adjustment.reversal_requested"
+    | "adjustment.reversed"
+    | "adjustment.reversal_rejected"
+    | "adjustment.reversal_withdrawn"
+    | "adjustment.reversals_listed"
   >().notNull(),
   /** What it happened to. Not a foreign key: the log outlives what it names. */
   entityType: text().notNull(),
@@ -337,6 +342,11 @@ export const auditLog = pgTable("audit_log", {
     "mpesa.rejected",
     "mpesa.listed",
     "mpesa.stk_requested",
+    "adjustment.reversal_requested",
+    "adjustment.reversed",
+    "adjustment.reversal_rejected",
+    "adjustment.reversal_withdrawn",
+    "adjustment.reversals_listed",
   ]),
 ]);
 
@@ -1253,7 +1263,20 @@ export const invoiceAdjustments = pgTable("invoice_adjustments", {
   decidedAt: timestamp({ withTimezone: true }),
   /** An approved credit note's printed document, carrying its number. */
   documentId: uuid(),
+  /** Set once, when a second person approves reversing it (`adjustment_reversals`). */
+  reversedAt: timestamp({ withTimezone: true }),
+  reversedBy: uuid(),
+  reversalReason: text(),
 }, t => [
+  unique("invoice_adjustments_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({ name: "invoice_adjustments_reversed_by_fk", columns: [t.facilityId, t.reversedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  // Reversed only once approved, with a reason; each branch says IS NULL or IS NOT NULL outright.
+  check(
+    "invoice_adjustments_reversal",
+    sql`(${t.reversedAt} IS NULL AND ${t.reversedBy} IS NULL AND ${t.reversalReason} IS NULL)
+      OR (${t.status} = 'approved' AND ${t.reversedAt} IS NOT NULL AND ${t.reversedBy} IS NOT NULL
+        AND ${t.reversalReason} IS NOT NULL AND length(btrim(${t.reversalReason})) > 0)`,
+  ),
   foreignKey({
     name: "invoice_adjustments_invoice_fk",
     columns: [t.facilityId, t.invoiceId, t.accountId],
@@ -1279,6 +1302,39 @@ export const invoiceAdjustments = pgTable("invoice_adjustments", {
   check(
     "invoice_adjustments_credit_note_document",
     sql`(${t.kind} = 'credit_note' AND ${t.status} = 'approved') = (${t.documentId} IS NOT NULL)`,
+  ),
+]);
+
+/**
+ * A request to undo an approved adjustment (SCHEMA.md §7.5). Asked by one
+ * person, approved by another (rule 24); approving sets the adjustment's
+ * reversal columns, returning its amount to the invoice's balance, and voids
+ * a credit note's document. At most one is open (pending or approved) per
+ * adjustment.
+ */
+export const adjustmentReversals = pgTable("adjustment_reversals", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  adjustmentId: uuid().notNull(),
+  reason: text().notNull(),
+  status: text().$type<"pending" | "approved" | "rejected" | "withdrawn">().default("pending").notNull(),
+  requestedBy: uuid().notNull(),
+  requestedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  decidedBy: uuid(),
+  decidedAt: timestamp({ withTimezone: true }),
+}, t => [
+  foreignKey({ name: "adjustment_reversals_adjustment_fk", columns: [t.facilityId, t.adjustmentId], foreignColumns: [invoiceAdjustments.facilityId, invoiceAdjustments.id] }),
+  foreignKey({ name: "adjustment_reversals_requested_by_fk", columns: [t.facilityId, t.requestedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "adjustment_reversals_decided_by_fk", columns: [t.facilityId, t.decidedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  uniqueIndex("adjustment_reversals_one_open").on(t.adjustmentId).where(sql`${t.status} IN ('pending', 'approved')`),
+  oneOf("adjustment_reversals_status_known", t.status, ["pending", "approved", "rejected", "withdrawn"]),
+  check("adjustment_reversals_reason_present", sql`length(btrim(${t.reason})) > 0`),
+  check(
+    "adjustment_reversals_decision",
+    sql`(${t.status} = 'pending' AND ${t.decidedBy} IS NULL AND ${t.decidedAt} IS NULL)
+      OR (${t.status} IN ('approved', 'rejected') AND ${t.decidedBy} IS NOT NULL AND ${t.decidedAt} IS NOT NULL
+          AND ${t.decidedBy} <> ${t.requestedBy})
+      OR (${t.status} = 'withdrawn' AND ${t.decidedBy} IS NOT NULL AND ${t.decidedBy} = ${t.requestedBy} AND ${t.decidedAt} IS NOT NULL)`,
   ),
 ]);
 
@@ -1685,6 +1741,7 @@ export const TENANT_TABLES = [
   "invoice_lines",
   "charge_assignments",
   "invoice_adjustments",
+  "adjustment_reversals",
   "cashier_shifts",
   "payments",
   "allocations",

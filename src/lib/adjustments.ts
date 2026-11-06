@@ -3,14 +3,15 @@ import { alias } from "drizzle-orm/pg-core";
 
 import type { AppDb } from "@/db";
 
-import { documents, encounters, invoiceAdjustments, invoices } from "@/db/schema";
+import { adjustmentReversals, documents, encounters, invoiceAdjustments, invoices } from "@/db/schema";
 
 import type { PrintedContent } from "./document-content";
 import type { PatientActor } from "./patients";
 
 import { recordAudit } from "./audit";
 import { billedFields } from "./billing";
-import { issueDocument } from "./documents";
+import { isUniqueViolation } from "./db-errors";
+import { issueDocument, voidDocument } from "./documents";
 import { balanceCents } from "./invoice-balance";
 import { formatKes } from "./money";
 
@@ -37,7 +38,11 @@ export class AdjustmentError extends Error {
     | "not_found"
     | "not_pending"
     | "same_person"
-    | "not_requester") {
+    | "not_requester"
+    | "not_approved"
+    | "already_reversed"
+    | "reversal_open"
+    | "reversal_not_found") {
     super({
       invoice_not_found: "No such invoice",
       not_finalised: "Only a finalised invoice is adjusted",
@@ -46,6 +51,10 @@ export class AdjustmentError extends Error {
       not_pending: "This adjustment has already been decided",
       same_person: "Someone other than the requester must decide this",
       not_requester: "Only the person who asked can withdraw it",
+      not_approved: "Only an approved adjustment is reversed",
+      already_reversed: "This adjustment is already reversed",
+      reversal_open: "A request to reverse this adjustment is already open",
+      reversal_not_found: "No such reversal request",
     }[code]);
     this.name = "AdjustmentError";
   }
@@ -216,6 +225,8 @@ export async function listAdjustments(tx: AppDb, filter: { status?: AdjustmentSt
       requestedAt: invoiceAdjustments.requestedAt,
       decidedBy: invoiceAdjustments.decidedBy,
       decidedAt: invoiceAdjustments.decidedAt,
+      reversedAt: invoiceAdjustments.reversedAt,
+      reversalReason: invoiceAdjustments.reversalReason,
     })
     .from(invoiceAdjustments)
     .innerJoin(invoices, eq(invoices.id, invoiceAdjustments.invoiceId))
@@ -226,5 +237,150 @@ export async function listAdjustments(tx: AppDb, filter: { status?: AdjustmentSt
       filter.id ? eq(invoiceAdjustments.id, filter.id) : undefined,
     ))
     .orderBy(desc(invoiceAdjustments.requestedAt), desc(invoiceAdjustments.id))
+    .limit(100);
+}
+
+// ---------------------------------------------------------------------------
+// Reversing an approved adjustment (SCHEMA.md §7.5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Asks to undo an approved adjustment. A second person approves (rule 24);
+ * until then nothing changes. At most one request is open per adjustment.
+ */
+export async function requestReversal(tx: AppDb, facilityId: string, adjustmentId: string, reason: string, actor: PatientActor): Promise<string> {
+  const [adjustment] = await tx.select().from(invoiceAdjustments).where(eq(invoiceAdjustments.id, adjustmentId)).limit(1);
+  if (!adjustment)
+    throw new AdjustmentError("not_found");
+  if (adjustment.status !== "approved")
+    throw new AdjustmentError("not_approved");
+  if (adjustment.reversedAt)
+    throw new AdjustmentError("already_reversed");
+
+  let id: string;
+  try {
+    // A savepoint, so a second open request leaves the transaction usable.
+    id = await tx.transaction(async (sp) => {
+      const [row] = await sp.insert(adjustmentReversals)
+        .values({ facilityId, adjustmentId, reason, requestedBy: actor.membershipId })
+        .returning({ id: adjustmentReversals.id });
+      return row.id;
+    });
+  }
+  catch (err) {
+    if (isUniqueViolation(err))
+      throw new AdjustmentError("reversal_open");
+    throw err;
+  }
+  await recordAudit(tx, {
+    facilityId,
+    actorId: actor.userId,
+    action: "adjustment.reversal_requested",
+    entityType: "invoice_adjustment",
+    entityId: adjustmentId,
+    summary: `Asked to reverse a ${LABELS[adjustment.kind].toLowerCase()} of ${formatKes(adjustment.amountCents)}`,
+    detail: { reversalId: id, invoiceId: adjustment.invoiceId, reason },
+  });
+  return id;
+}
+
+async function lockPendingReversal(tx: AppDb, id: string) {
+  const [reversal] = await tx.select().from(adjustmentReversals).where(eq(adjustmentReversals.id, id)).for("update").limit(1);
+  if (!reversal)
+    throw new AdjustmentError("reversal_not_found");
+  if (reversal.status !== "pending")
+    throw new AdjustmentError("not_pending");
+  return reversal;
+}
+
+/**
+ * Approves a reversal: the adjustment stops counting, so its amount owes
+ * again, and a credit note's document is voided (it keeps its number).
+ * Locks the adjustment, then the request (M8: adjustments after invoices).
+ */
+export async function approveReversal(tx: AppDb, facilityId: string, id: string, actor: PatientActor, at = new Date()) {
+  const [found] = await tx.select({ adjustmentId: adjustmentReversals.adjustmentId }).from(adjustmentReversals).where(eq(adjustmentReversals.id, id)).limit(1);
+  if (!found)
+    throw new AdjustmentError("reversal_not_found");
+  const [adjustment] = await tx.select().from(invoiceAdjustments).where(eq(invoiceAdjustments.id, found.adjustmentId)).for("update").limit(1);
+  const reversal = await lockPendingReversal(tx, id);
+  if (reversal.requestedBy === actor.membershipId)
+    throw new AdjustmentError("same_person");
+  if (adjustment.reversedAt)
+    throw new AdjustmentError("already_reversed");
+
+  await tx.update(adjustmentReversals).set({ status: "approved", decidedBy: actor.membershipId, decidedAt: at }).where(eq(adjustmentReversals.id, id));
+  await tx.update(invoiceAdjustments)
+    .set({ reversedAt: at, reversedBy: actor.membershipId, reversalReason: reversal.reason })
+    .where(eq(invoiceAdjustments.id, adjustment.id));
+  if (adjustment.documentId)
+    await voidDocument(tx, { facilityId, documentId: adjustment.documentId, reason: reversal.reason, voidedBy: actor, at });
+
+  await recordAudit(tx, {
+    facilityId,
+    actorId: actor.userId,
+    action: "adjustment.reversed",
+    entityType: "invoice_adjustment",
+    entityId: adjustment.id,
+    summary: `Reversed a ${LABELS[adjustment.kind].toLowerCase()} of ${formatKes(adjustment.amountCents)}: ${reversal.reason}`,
+    detail: { reversalId: id, invoiceId: adjustment.invoiceId, amountCents: adjustment.amountCents },
+  });
+}
+
+export async function rejectReversal(tx: AppDb, facilityId: string, id: string, actor: PatientActor) {
+  const reversal = await lockPendingReversal(tx, id);
+  if (reversal.requestedBy === actor.membershipId)
+    throw new AdjustmentError("same_person");
+  await tx.update(adjustmentReversals).set({ status: "rejected", decidedBy: actor.membershipId, decidedAt: new Date() }).where(eq(adjustmentReversals.id, id));
+  await recordAudit(tx, {
+    facilityId,
+    actorId: actor.userId,
+    action: "adjustment.reversal_rejected",
+    entityType: "invoice_adjustment",
+    entityId: reversal.adjustmentId,
+    summary: "Rejected reversing an adjustment",
+    detail: { reversalId: id },
+  });
+}
+
+export async function withdrawReversal(tx: AppDb, facilityId: string, id: string, actor: PatientActor) {
+  const reversal = await lockPendingReversal(tx, id);
+  if (reversal.requestedBy !== actor.membershipId)
+    throw new AdjustmentError("not_requester");
+  await tx.update(adjustmentReversals).set({ status: "withdrawn", decidedBy: actor.membershipId, decidedAt: new Date() }).where(eq(adjustmentReversals.id, id));
+  await recordAudit(tx, {
+    facilityId,
+    actorId: actor.userId,
+    action: "adjustment.reversal_withdrawn",
+    entityType: "invoice_adjustment",
+    entityId: reversal.adjustmentId,
+    summary: "Withdrew a request to reverse an adjustment",
+    detail: { reversalId: id },
+  });
+}
+
+/** Reversal requests, newest first: the approver's queue at `pending`. At most 100. Names no patient. */
+export async function listReversals(tx: AppDb, filter: { status?: AdjustmentStatus; id?: string } = {}) {
+  return tx
+    .select({
+      id: adjustmentReversals.id,
+      adjustmentId: adjustmentReversals.adjustmentId,
+      invoiceId: invoiceAdjustments.invoiceId,
+      kind: invoiceAdjustments.kind,
+      amountCents: invoiceAdjustments.amountCents,
+      reason: adjustmentReversals.reason,
+      status: adjustmentReversals.status,
+      requestedBy: adjustmentReversals.requestedBy,
+      requestedAt: adjustmentReversals.requestedAt,
+      decidedBy: adjustmentReversals.decidedBy,
+      decidedAt: adjustmentReversals.decidedAt,
+    })
+    .from(adjustmentReversals)
+    .innerJoin(invoiceAdjustments, eq(invoiceAdjustments.id, adjustmentReversals.adjustmentId))
+    .where(and(
+      filter.status ? eq(adjustmentReversals.status, filter.status) : undefined,
+      filter.id ? eq(adjustmentReversals.id, filter.id) : undefined,
+    ))
+    .orderBy(desc(adjustmentReversals.requestedAt), desc(adjustmentReversals.id))
     .limit(100);
 }

@@ -522,6 +522,7 @@ export async function invoiceDetail(tx: AppDb, invoiceId: string) {
       number: documents.number,
       requestedAt: invoiceAdjustments.requestedAt,
       decidedAt: invoiceAdjustments.decidedAt,
+      reversedAt: invoiceAdjustments.reversedAt,
     })
     .from(invoiceAdjustments)
     .leftJoin(documents, eq(documents.id, invoiceAdjustments.documentId))
@@ -529,7 +530,7 @@ export async function invoiceDetail(tx: AppDb, invoiceId: string) {
     .orderBy(asc(invoiceAdjustments.requestedAt), asc(invoiceAdjustments.id));
 
   const totalCents = row.invoice.totalCents ?? lines.reduce((sum, l) => sum + l.amountCents, 0);
-  const adjusted = adjustments.filter(a => a.status === "approved").reduce((sum, a) => sum + a.amountCents, 0);
+  const adjusted = adjustments.filter(a => a.status === "approved" && !a.reversedAt).reduce((sum, a) => sum + a.amountCents, 0);
   const paidCents = await allocatedCents(tx, invoiceId);
   return {
     ...row.invoice,

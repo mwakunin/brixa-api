@@ -6,16 +6,16 @@ import { allocations, invoiceAdjustments, payments } from "@/db/schema";
 
 /**
  * What has been taken off an invoice, derived and never stored (rule 4):
- * approved adjustments and live allocations share its total (M3). An
+ * approved adjustments not reversed and live allocations share its total (M3). An
  * allocation is live while neither it nor its payment is reversed.
  */
 
-/** Σ approved adjustments of an invoice. */
+/** Σ approved adjustments of an invoice that are not reversed. */
 export async function adjustedCents(tx: AppDb, invoiceId: string): Promise<number> {
   const [row] = await tx
     .select({ cents: sql<number>`coalesce(sum(${invoiceAdjustments.amountCents}), 0)`.mapWith(Number) })
     .from(invoiceAdjustments)
-    .where(and(eq(invoiceAdjustments.invoiceId, invoiceId), eq(invoiceAdjustments.status, "approved")));
+    .where(and(eq(invoiceAdjustments.invoiceId, invoiceId), eq(invoiceAdjustments.status, "approved"), isNull(invoiceAdjustments.reversedAt)));
   return row.cents;
 }
 

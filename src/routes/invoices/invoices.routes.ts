@@ -43,6 +43,8 @@ const AdjustmentSummarySchema = z.object({
   number: z.string().nullable(),
   requestedAt: z.string(),
   decidedAt: z.string().nullable(),
+  /** Set once a second person approves reversing it; it then counts for nothing. */
+  reversedAt: z.string().nullable(),
 });
 
 const InvoiceSchema = z.object({

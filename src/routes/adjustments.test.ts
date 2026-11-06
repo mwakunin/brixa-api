@@ -163,6 +163,100 @@ describe("adjustments", () => {
     expect((await ask({ kind: "waiver", amountCents: 800 }, elsewhere.cashier)).status).toBe(404);
   });
 
+  describe("reversed", () => {
+    async function approved(kind = "waiver", amountCents = 10_000) {
+      const { id } = await (await ask({ kind, amountCents })).json();
+      await decide(id, "approve", h.finance);
+      return id as string;
+    }
+    const reverse = (id: string, as: Person = h.clerk) =>
+      call("POST", `/adjustments/${id}/reversals`, h.facility.id, as, { reason: "Approved in error" });
+    const decideReversal = (id: string, decision: "approve" | "reject" | "withdraw", as: Person) =>
+      call("POST", `/adjustment-reversals/${id}/${decision}`, h.facility.id, as);
+
+    it("only once a second person approves, and the amount owes again", async () => {
+      const id = await approved();
+      expect((await invoice()).balanceCents).toBe(40_800);
+
+      const asked = await reverse(id);
+      expect(asked.status).toBe(201);
+      const reversal = await asked.json();
+      expect(reversal).toMatchObject({ adjustmentId: id, status: "pending", amountCents: 10_000 });
+      expect((await invoice()).balanceCents).toBe(40_800);
+      expect(await refusal(await decideReversal(reversal.id, "approve", h.clerk))).toEqual([403, undefined]);
+
+      expect(await (await decideReversal(reversal.id, "approve", h.finance)).json()).toMatchObject({ status: "approved" });
+      const after = await invoice();
+      expect(after.balanceCents).toBe(50_800);
+      expect(after.adjustments).toMatchObject([{ id, status: "approved", reversedAt: expect.any(String) }]);
+      expect(await refusal(await reverse(id))).toEqual([409, "already_reversed"]);
+      const [entry] = await db.select().from(auditLog).where(eq(auditLog.action, "adjustment.reversed"));
+      expect(entry).toMatchObject({ actorId: h.finance.id, entityId: id });
+    });
+
+    it("never by the person who asked, and one request at a time", async () => {
+      const id = await approved();
+      const own = await (await reverse(id, h.finance)).json();
+
+      expect(await refusal(await decideReversal(own.id, "approve", h.finance))).toEqual([409, "same_person"]);
+      expect(await refusal(await reverse(id))).toEqual([409, "reversal_open"]);
+      expect(await refusal(await decideReversal(own.id, "withdraw", h.clerk))).toEqual([409, "not_requester"]);
+      expect(await (await decideReversal(own.id, "withdraw", h.finance)).json()).toMatchObject({ status: "withdrawn" });
+
+      const again = await (await reverse(id)).json();
+      expect(await (await decideReversal(again.id, "reject", h.admin)).json()).toMatchObject({ status: "rejected" });
+      expect((await invoice()).balanceCents).toBe(40_800);
+
+      const pending = await (await ask({ kind: "waiver", amountCents: 800 })).json();
+      expect(await refusal(await reverse(pending.id))).toEqual([409, "not_approved"]);
+    });
+
+    it("void a credit note's document, which keeps its number", async () => {
+      const id = await approved("credit_note", 800);
+      const reversal = await (await reverse(id)).json();
+      await decideReversal(reversal.id, "approve", h.finance);
+
+      const [row] = await db.select().from(invoiceAdjustments).where(eq(invoiceAdjustments.id, id));
+      const [document] = await db.select().from(documents).where(eq(documents.id, row.documentId!));
+      expect(document).toMatchObject({ number: `CN-${YEAR}-000001`, voidReason: "Approved in error" });
+    });
+
+    it("are listed for the approver, audited", async () => {
+      const id = await approved();
+      const reversal = await (await reverse(id)).json();
+
+      const listed = await (await call("GET", "/adjustment-reversals?status=pending", h.facility.id, h.finance)).json();
+      expect(listed.reversals.map((r: { id: string }) => r.id)).toEqual([reversal.id]);
+      expect(await db.select().from(auditLog).where(eq(auditLog.action, "adjustment.reversals_listed"))).toHaveLength(1);
+      expect((await call("GET", "/adjustment-reversals", h.facility.id, h.nurse)).status).toBe(403);
+    });
+
+    it("free the invoice's room for payments and for voiding", async () => {
+      const id = await approved("waiver", 50_800);
+      const reversal = await (await reverse(id)).json();
+      expect(await refusal(await call("POST", `/invoices/${invoiceId}/void`, h.facility.id, h.finance, { reason: "Wrong patient" }))).toEqual([409, "has_adjustments"]);
+      await decideReversal(reversal.id, "approve", h.finance);
+
+      expect((await call("POST", `/invoices/${invoiceId}/void`, h.facility.id, h.finance, { reason: "Wrong patient" })).status).toBe(200);
+    });
+
+    it("in the database: once, with a reason, and decided by someone else", async () => {
+      const id = await approved();
+      await expect(pool.query("UPDATE invoice_adjustments SET reversed_at = now(), reversed_by = decided_by WHERE id = $1", [id]))
+        .rejects
+        .toMatchObject({ code: "23514" });
+      const reversal = await (await reverse(id)).json();
+      await expect(pool.query("UPDATE adjustment_reversals SET status = 'approved', decided_by = requested_by, decided_at = now() WHERE id = $1", [reversal.id]))
+        .rejects
+        .toMatchObject({ code: "23514" });
+      await expect(pool.query("UPDATE adjustment_reversals SET reason = 'x' WHERE id = $1", [reversal.id])).rejects.toMatchObject({ code: "23001" });
+      await decideReversal(reversal.id, "approve", h.finance);
+
+      await expect(pool.query("UPDATE invoice_adjustments SET reversal_reason = 'Other' WHERE id = $1", [id])).rejects.toMatchObject({ code: "23001" });
+      await expect(pool.query("DELETE FROM adjustment_reversals WHERE id = $1", [reversal.id])).rejects.toMatchObject({ code: "23001" });
+    });
+  });
+
   describe("in the database", () => {
     async function pendingRow() {
       const { id } = await (await ask({ kind: "waiver", amountCents: 800 })).json();
