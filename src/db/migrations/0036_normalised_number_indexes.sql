@@ -1,0 +1,3 @@
+CREATE INDEX "admissions_normalised_number_index" ON "admissions" USING btree ("facility_id",upper(regexp_replace("admission_number", '[\s/\-_.]', '', 'g')));--> statement-breakpoint
+CREATE INDEX "documents_normalised_invoice_number_index" ON "documents" USING btree ("facility_id",upper(regexp_replace("number", '[\s/\-_.]', '', 'g'))) WHERE "documents"."kind" = 'invoice';--> statement-breakpoint
+CREATE INDEX "patient_numbers_normalised_number_index" ON "patient_numbers" USING btree ("facility_id",upper(regexp_replace("number", '[\s/\-_.]', '', 'g')));

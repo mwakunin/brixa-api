@@ -4,7 +4,7 @@ import { and, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 
-import { accounts, admissions, documents, encounters, gatewayExchanges, invoices, mpesaSettings, mpesaTransactions, patientNumbers, payments } from "@/db/schema";
+import { accounts, admissions, documents, encounters, gatewayExchanges, invoices, mpesaSettings, mpesaTransactions, normalisedNumber, patientNumbers, payments } from "@/db/schema";
 import { runAsFacility } from "@/db/tenant-transaction";
 import env from "@/env";
 
@@ -175,9 +175,9 @@ export function normaliseReference(value: string): string {
   return value.toUpperCase().replace(/[\s/\-_.]/g, "");
 }
 
-/** The same normalisation in SQL; the two must agree. */
+/** The same normalisation in SQL, shared with the indexes that serve it (schema.ts). */
 function normalised(column: AnyColumn) {
-  return sql`upper(regexp_replace(${column}, '[\\s/\\-_.]', '', 'g'))`;
+  return normalisedNumber(column);
 }
 
 export interface PaymentTarget {

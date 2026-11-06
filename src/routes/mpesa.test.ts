@@ -1,11 +1,11 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Hospital, Person } from "@/test/hospital";
 
 import app from "@/app";
 import db, { pool } from "@/db";
-import { auditLog, documents, gatewayExchanges, mpesaSettings, mpesaTransactions, outbox, payments } from "@/db/schema";
+import { admissions, auditLog, documents, gatewayExchanges, mpesaSettings, mpesaTransactions, normalisedNumber, outbox, patientNumbers, payments } from "@/db/schema";
 import { drainOutbox } from "@/jobs/outbox-worker";
 import { darajaTimestamp, resetDarajaTokens } from "@/lib/daraja";
 import { resetDb } from "@/test/helpers";
@@ -404,6 +404,29 @@ describe("m-Pesa prompts", () => {
 });
 
 describe("in the database", () => {
+  it("matching a typed number uses its index, query and index sharing one expression", async () => {
+    const lookups = [
+      ["documents_normalised_invoice_number_index", db.select({ id: documents.id }).from(documents).where(sql`${documents.facilityId} = ${h.facility.id} AND ${documents.kind} = 'invoice' AND ${normalisedNumber(documents.number)} = ${"INV2026000001"}`)],
+      ["admissions_normalised_number_index", db.select({ id: admissions.id }).from(admissions).where(sql`${admissions.facilityId} = ${h.facility.id} AND ${normalisedNumber(admissions.admissionNumber)} = ${"ADM20260001"}`)],
+      ["patient_numbers_normalised_number_index", db.select({ id: patientNumbers.id }).from(patientNumbers).where(sql`${patientNumbers.facilityId} = ${h.facility.id} AND ${normalisedNumber(patientNumbers.number)} = ${"OPD1201"}`)],
+    ] as const;
+
+    const client = await pool.connect();
+    try {
+      // The tables are tiny here, so a scan would win on cost; this asks whether the index can serve the query at all.
+      await client.query("SET enable_seqscan = off");
+      for (const [index, query] of lookups) {
+        const { sql: text, params } = query.toSQL();
+        const { rows } = await client.query<{ "QUERY PLAN": string }>(`EXPLAIN ${text}`, params);
+        expect(rows.map(r => r["QUERY PLAN"]).join("\n")).toContain(index);
+      }
+    }
+    finally {
+      await client.query("RESET enable_seqscan");
+      client.release();
+    }
+  });
+
   it("m-Pesa transactions keep what Safaricom said, and exchanges are append-only", async () => {
     await setUp();
     await post("/c2b/confirmation", confirmation({ TransID: "SKGUARD001" }));

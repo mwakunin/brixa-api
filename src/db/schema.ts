@@ -79,6 +79,17 @@ export function oneOf(name: string, column: unknown, values: readonly string[]) 
 }
 
 /**
+ * A number as an M-Pesa payer might type it, made comparable: uppercased,
+ * spaces and separators dropped (`inv-2026 000123` reads as `INV2026000123`).
+ * One definition for the matching queries (`lib/mpesa.ts`) and the indexes
+ * that serve them: Postgres uses an expression index only for the very same
+ * expression.
+ */
+export function normalisedNumber(column: unknown) {
+  return sql`upper(regexp_replace(${column}, '[\\s/\\-_.]', '', 'g'))`;
+}
+
+/**
  * The array form of `oneOf`: every element of a `text[]` column is a known
  * value. An empty array passes `<@`, so "at least one" is a separate CHECK
  * where it matters.
@@ -569,6 +580,8 @@ export const documents = pgTable("documents", {
 }, t => [
   unique("documents_facility_id_id_key").on(t.facilityId, t.id),
   unique("documents_facility_id_kind_number_key").on(t.facilityId, t.kind, t.number),
+  // M-Pesa matching: an invoice number as a payer typed it.
+  index("documents_normalised_invoice_number_index").on(t.facilityId, normalisedNumber(t.number)).where(sql`${t.kind} = 'invoice'`),
   foreignKey({
     name: "documents_issued_by_fk",
     columns: [t.facilityId, t.issuedBy],
@@ -659,6 +672,8 @@ export const patientNumbers = pgTable("patient_numbers", {
   issuedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
 }, t => [
   unique("patient_numbers_facility_id_number_key").on(t.facilityId, t.number),
+  // M-Pesa matching: an OP or IP number as a payer typed it.
+  index("patient_numbers_normalised_number_index").on(t.facilityId, normalisedNumber(t.number)),
   // At most one OP and one IP number per patient.
   unique("patient_numbers_patient_id_kind_key").on(t.patientId, t.kind),
   index("patient_numbers_number_search_index").on(t.facilityId, sql`upper(${t.number})`),
@@ -958,6 +973,8 @@ export const admissions = pgTable("admissions", {
   unique("admissions_facility_id_id_key").on(t.facilityId, t.id),
   unique("admissions_encounter_id_key").on(t.encounterId),
   unique("admissions_facility_id_admission_number_key").on(t.facilityId, t.admissionNumber),
+  // M-Pesa matching: an admission number as a payer typed it.
+  index("admissions_normalised_number_index").on(t.facilityId, normalisedNumber(t.admissionNumber)),
   foreignKey({ name: "admissions_encounter_fk", columns: [t.facilityId, t.encounterId], foreignColumns: [encounters.facilityId, encounters.id] }),
   foreignKey({ name: "admissions_admitted_by_fk", columns: [t.facilityId, t.admittedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
   foreignKey({ name: "admissions_discharged_by_fk", columns: [t.facilityId, t.dischargedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
