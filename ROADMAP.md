@@ -1,6 +1,6 @@
 # Roadmap
 
-Status: proposed · Last updated: 2026-11-03
+Status: proposed · Last updated: 2026-11-06
 
 `SPEC.md` is the source of truth for decisions and open questions; `CLAUDE.md` holds the conventions code must follow; `SCHEMA.md` holds the data model. This document orders the work. It names phases, not dates: the one external date that matters is the pilot hospital's planned SHA date, and the largest dependency (DHA certification) runs on someone else's clock.
 
@@ -23,6 +23,16 @@ Status: proposed · Last updated: 2026-11-03
 3. **Every phase keeps a certification pack current**: self-attestation answers, security evidence, test scripts. P8 then submits a pack rather than starting one.
 
 The lesson carried from the school SaaS is that nothing tests a design like a real user. The pilot goes live in P6 as a **complete cash hospital system** (decision D8 in `SPEC.md`), and every later phase is built with live staff using the product.
+
+**The frontend runs as its own track, designed before it is built (decided 2026-11-06).** An outpatient visit is one journey across service points (registration, triage, consultation, lab, pharmacy, cashier), so its screens are built once every step's API exists, and come out as one flow rather than being retrofitted as each module lands.
+
+| When | Frontend work |
+|---|---|
+| During P3 and P4 | Settle the stack (`SPEC.md` proposes Next.js as a PWA) and set up its repo. Sketch the whole outpatient journey, screen by screen for each role, and walk the pilot's staff through it: the cheapest test of simplicity (`SPEC.md` §7.9). Where a sketch needs something the API cannot give, or asks for something it could derive, the API changes while that is still cheap. |
+| From P5 | Build the outpatient screens against the finished P2–P4 API, then the inpatient screens as P5 lands. |
+| P6 | Reports, offline support at the service points that need it, and the timed simplicity test with real staff before go-live. |
+
+The risk is a crowded P5 and P6. If P5 slips, the inpatient screens start alongside it rather than waiting for it.
 
 ---
 
