@@ -1,0 +1,14 @@
+ALTER TABLE "audit_log" DROP CONSTRAINT "audit_log_action_known";--> statement-breakpoint
+ALTER TABLE "charges" DROP CONSTRAINT "charges_cancellation_complete";--> statement-breakpoint
+ALTER TABLE "invoices" DROP CONSTRAINT "invoices_lifecycle";--> statement-breakpoint
+ALTER TABLE "audit_log" ADD CONSTRAINT "audit_log_action_known" CHECK ("audit_log"."action" IN ('facility.created', 'invitation.created', 'invitation.revoked', 'membership.granted', 'membership.roles_changed', 'membership.revoked', 'document.issued', 'document.voided', 'document.viewed', 'document.verified', 'patient.registered', 'patient.updated', 'patient.identifier_added', 'patient.viewed', 'patient.searched', 'encounter.opened', 'encounter.closed', 'encounter.cancelled', 'encounter.viewed', 'patient.admitted', 'patient.transferred', 'patient.discharged', 'ward.created', 'bed.created', 'billable_item.created', 'price_change.requested', 'price_change.approved', 'price_change.rejected', 'price_change.withdrawn', 'ward.bed_day_item_set', 'charge.posted', 'charge.accrued', 'charge.cancelled', 'invoice.drafted', 'invoice.finalised', 'invoice.voided', 'invoice.viewed', 'adjustment.requested', 'adjustment.approved', 'adjustment.rejected', 'adjustment.withdrawn', 'adjustment.listed'));--> statement-breakpoint
+ALTER TABLE "charges" ADD CONSTRAINT "charges_cancellation_complete" CHECK (("charges"."cancelled_at" IS NULL AND "charges"."cancelled_by" IS NULL AND "charges"."cancellation_reason" IS NULL)
+      OR ("charges"."cancelled_at" IS NOT NULL AND "charges"."cancelled_by" IS NOT NULL
+          AND "charges"."cancellation_reason" IS NOT NULL AND length(btrim("charges"."cancellation_reason")) > 0));--> statement-breakpoint
+ALTER TABLE "invoices" ADD CONSTRAINT "invoices_lifecycle" CHECK (("invoices"."status" = 'draft' AND "invoices"."total_cents" IS NULL AND "invoices"."document_id" IS NULL AND "invoices"."finalised_at" IS NULL
+          AND "invoices"."finalised_by" IS NULL AND "invoices"."voided_at" IS NULL AND "invoices"."voided_by" IS NULL AND "invoices"."void_reason" IS NULL)
+      OR ("invoices"."status" = 'finalised' AND "invoices"."total_cents" IS NOT NULL AND "invoices"."document_id" IS NOT NULL
+          AND "invoices"."finalised_at" IS NOT NULL AND "invoices"."finalised_by" IS NOT NULL
+          AND "invoices"."voided_at" IS NULL AND "invoices"."voided_by" IS NULL AND "invoices"."void_reason" IS NULL)
+      OR ("invoices"."status" = 'void' AND "invoices"."voided_at" IS NOT NULL AND "invoices"."voided_by" IS NOT NULL
+          AND "invoices"."void_reason" IS NOT NULL AND length(btrim("invoices"."void_reason")) > 0));

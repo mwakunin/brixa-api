@@ -39,6 +39,41 @@ export function businessDate(at: Date = new Date()): string {
   return `${value("year")}-${value("month")}-${value("day")}`;
 }
 
+/** The Kenyan day `days` after (or before, if negative) `date`. */
+export function addDays(date: string, days: number): string {
+  const [y, m, d] = date.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
+}
+
+/**
+ * The instant a Kenyan day begins: its midnight in Nairobi. Kenya has kept
+ * UTC+3 without daylight saving since 1942, so the offset is fixed; the
+ * tests check this against the zone database through `businessDate`.
+ */
+export function startOfBusinessDay(date: string): Date {
+  return new Date(`${date}T00:00:00+03:00`);
+}
+
+/** Whole years from `dateOfBirth` (`YYYY-MM-DD`) to `today`, both Kenyan days. */
+export function ageInYears(dateOfBirth: string, today: string = businessDate()): number {
+  const [by, bm, bd] = dateOfBirth.split("-").map(Number);
+  const [ty, tm, td] = today.split("-").map(Number);
+  const hadBirthday = tm > bm || (tm === bm && td >= bd);
+  return ty - by - (hadBirthday ? 0 : 1);
+}
+
+/**
+ * The date of birth a stated age implies: today's Kenyan date, `years`
+ * earlier. 29 February falls back to the 28th in a year without it.
+ */
+export function dateOfBirthForAge(years: number, today: string = businessDate()): string {
+  const [ty, tm, td] = today.split("-").map(Number);
+  const year = ty - years;
+  const lastDay = new Date(Date.UTC(year, tm, 0)).getUTCDate();
+  const day = Math.min(td, lastDay);
+  return `${String(year).padStart(4, "0")}-${String(tm).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
 const printedParts = new Intl.DateTimeFormat("en-GB", {
   timeZone: BUSINESS_TIME_ZONE,
   calendar: "gregory",
@@ -50,6 +85,23 @@ const printedParts = new Intl.DateTimeFormat("en-GB", {
   minute: "2-digit",
   hourCycle: "h23",
 });
+
+const printedDayParts = new Intl.DateTimeFormat("en-GB", {
+  timeZone: BUSINESS_TIME_ZONE,
+  calendar: "gregory",
+  numberingSystem: "latn",
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+});
+
+/** A business date as printed on a document: `2026-11-04` → `4 Nov 2026`. */
+export function printedDate(date: string): string {
+  const parts = printedDayParts.formatToParts(startOfBusinessDay(date));
+  const value = (type: string) => parts.find(p => p.type === type)?.value ?? "";
+
+  return `${value("day")} ${value("month")} ${value("year")}`;
+}
 
 /**
  * `at` as printed on a document, in Kenyan time: `4 Nov 2026, 14:05`.

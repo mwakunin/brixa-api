@@ -36,6 +36,8 @@ export interface DocumentActor {
  */
 export const DOCUMENT_READERS: Record<DocumentKind, readonly MembershipRole[]> = {
   receipt: ["cashier", "billing_clerk", "finance_manager", "facility_admin", "auditor"],
+  invoice: ["cashier", "billing_clerk", "claims_officer", "finance_manager", "facility_admin", "auditor"],
+  credit_note: ["cashier", "billing_clerk", "claims_officer", "finance_manager", "facility_admin", "auditor"],
 };
 
 export function mayRead(roles: readonly MembershipRole[], kind: DocumentKind): boolean {

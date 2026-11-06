@@ -22,8 +22,8 @@ Status: proposed · Last updated: 2026-11-03
 - The OP number is issued at registration. The IP number is issued at the patient's first admission.
 - The zero-padded width is configurable per series, default 4 (`OP0001`).
 - A facility may change its prefix later. The change applies to newly issued numbers only.
-- The `sex` option set (currently `male` / `female`) needs confirming.
-- The bed-day counting rule (midnight census, 24-hour blocks, or admission day counts) — a pilot question (`SPEC.md` §9).
+- ~~The `sex` option set needs confirming.~~ **Confirmed 2026-11-04:** `male`, `female`, `intersex`; blank only for an unidentified patient (§5.1).
+- ~~The bed-day counting rule.~~ **Decided 2026-11-04:** midnight census, minimum one day (§7.2). To confirm with the pilot.
 
 ---
 
@@ -119,6 +119,22 @@ export const patientIdentifiers = pgTable('patient_identifiers', {
 ```
 
 `client_registry_id` is the national Client Registry identifier. Its name and format are to be verified with DHA (`SPEC.md` §10).
+
+### 5.1 As built (P2, slice 1)
+
+Decided 2026-11-04 with the product owner:
+
+- **Required at registration:** given and family names, sex, a date of birth or an estimated age, a phone number, and an identity document (`national_id`, `passport`, `birth_certificate`, `alien_id` or `refugee_id`; an SHA number alone does not count).
+  - A phone or a document may be missing only with a stated reason: `no_phone_reason` (`no_phone` | `unidentified`), `no_id_reason` (`none_held` | `not_carried` | `unidentified`). The database enforces "a phone or a reason, never neither, never both". Records with a reason are the follow-up list.
+  - An **unidentified** emergency patient (`unidentified = true`) carries placeholder names and may have no sex recorded until identified. `unidentified` reasons are allowed only on such a patient, and identifying them requires the reasons to be replaced in the same edit.
+- **Sex** is `male` | `female` | `intersex`.
+- **An estimated age** is stored as the date of birth it implies (today's Kenyan date, that many years earlier), with `dob_is_estimated`.
+- **Identifier types** add `alien_id` and `refugee_id` to the sketch above. Values are stored uppercase without spaces or dots. Identifiers are insert-only for the runtime role; marking one entered in error is a follow-up.
+- **Duplicates warn, never block.** Registration (and adding an ID) answers 409 with the likely matches: the same identity number, the same family name and phone, or the same names and date of birth. The clerk opens the existing record or confirms it is someone else (`confirmNotDuplicate`, recorded in the audit entry). Merging is a later slice.
+- **Search** matches an OP or IP number (exact, any case), a phone in any format, an ID number, or names (each word typed matches the start of one of the patient's names). It returns at most 20 matches and is rate limited per person. Looking up a number without its prefix is still the open question in §11.
+- **Reads are audited** (rule 9): every search (with its query) and every opening of a record. Corrections record each changed field's old and new value.
+- **Roles:** `records_clerk`, `nurse` and `facility_admin` register and correct; every member may search and open a record.
+- The runtime role holds `SELECT`, `INSERT` and a column-level `UPDATE` on demographics only; `patient_numbers` and `patient_identifiers` are insert-only.
 
 ---
 
@@ -261,6 +277,25 @@ Captured at source by the module that did the work, never typed in at the cashie
 
 Re-pricing an encounter (for example, coverage confirmed after the charges were captured) is an explicit, audited act. It applies only to unassigned charges.
 
+**As built (P2, slice 3): the catalogue and prices.**
+
+- `billable_items`: the facility's own `code` (uppercase, never changes, printed on bills), `name`, `category` (consultation \| bed_day \| lab \| imaging \| procedure \| drug \| consumable \| service \| other). Identity only.
+- `price_lists`: one `cash` list per facility (created at onboarding, backfilled for existing facilities). Payers' lists join it in P7.
+- `price_list_items`: one item's price on one list from `valid_from` until `valid_to` (exclusive, open when null). An exclusion constraint forbids two overlapping prices for one item on one list. A trigger lets `valid_to` only move earlier and never reopens it, and no other column changes.
+- **Price changes need a second person (rule 24).** `price_changes` (pending \| approved \| rejected \| withdrawn) carry `price_change_lines`; a CHECK requires the approver or rejecter to differ from the requester, and only the requester may withdraw. A decided change is frozen by a trigger. One request may carry a whole tariff, so a facility's first prices are one approval.
+- **Applying a change** from day E: the price running into E ends on E; a price already approved to start on or after E ends on its own start, so it never applies; the new price runs from E. E must be today or later at request and at approval. The approval's audit entry records each item's old and new price.
+- **`resolvePrice(item, list, serviceDate)`** (`src/lib/prices.ts`) is the only lookup. In P2 the list is the cash list; P7 adds the scheme and payer lists in front of it, and keeps "not covered" as the answer when none has the item.
+- The facility admin and the finance manager keep the catalogue and request and approve changes; every member reads prices.
+
+**As built (P2, slice 3): charges and bed-days.**
+
+- `charges`: `encounter_id`, `billable_item_id`, `quantity` (numeric, 3 decimals), `unit_price_cents` and `amount_cents` copied at capture, `price_list_item_id`, `service_date`, one typed source (`bed_stay_id` so far) or a `manual_reason`, `captured_by` (null for a system capture), and cancellation columns (all-or-none, with a reason). `amount_cents` is a whole number of shillings (CHECK), computed once by `chargeAmountCents` (`src/lib/money.ts`, exact, half up). A trigger lets a charge change only by being cancelled, once. An encounter with live charges cannot be cancelled.
+- **Manual postings** need a reason, are priced from the cash list for the service date (which must fall within the encounter, not in the future), and are audited. Billing clerks, finance managers and the facility admin post and cancel.
+- **Bed-days, by the midnight rule (decided 2026-11-04):** one bed-day for each Nairobi midnight the patient is in a bed, at the rate of the bed-day item of the ward they are in at that midnight, with `service_date` the day the night began. A stay that ended before its first midnight is one day, dated the admission day. A unique index allows one bed-day per encounter per night, and inserts use `ON CONFLICT DO NOTHING`, so `accrueBedDays` is idempotent under repeats and concurrency. Discharge calls it, and so does the nightly run (`POST /internal/jobs/bed-days`, `src/jobs/bed-days.ts`).
+- `wards.bed_day_item_id` names the bed-day item a night in the ward is charged as; its price comes from the price list on each night's date. The item is read when the night is charged, not kept per night, so changing a ward's item affects only nights not yet charged: normally the current night, since the run is nightly.
+- A night with no item or no price is not charged: it is recorded once in **`job_failures`** (`job`, `subject_id`, `error`, unique while unresolved). The nightly run retries every encounter with an unresolved failure, discharged or not, and marks the failure resolved once nothing it named is missing.
+- **Prices are never backdated**, so a night before its item's first price can never be charged, and its failure stays open for a person to see. Each ward's bed-day item and price are therefore set before the first admission (the P6 cutover, `ROADMAP.md`).
+
 **Bed-days** are derived from `bed_stays` time ranges and turned into charges by one idempotent function. A partial unique index on `(encounter_id, charge_date)` for bed-day charges makes a second run a no-op. The nightly job, the running bill and discharge all call that function, so a missed night is caught up rather than lost.
 
 ### 7.3 Invoices: who is asked to pay
@@ -274,6 +309,19 @@ Re-pricing an encounter (for example, coverage confirmed after the charges were 
 - **The running bill** for a long admission is a derived, unnumbered view of charges and their likely split, plus deposit top-up requests. Numbered interim invoices exist only where a payer requires them (pilot question).
 - **Package lines absorb charges.** A SHA package line (for example per-diem × days) is linked to the charges it covers through `absorbed` assignments. The contractual allowance (absorbed charges minus the package amount) is **derived, never stored**. Whether the remainder may be billed to a secondary payer or the patient depends on SHA's top-up rules (verify, `SPEC.md` §10).
 - An encounter cannot be final-billed while any live charge is not fully assigned (M4).
+
+**As built (P2, slice 4a): accounts and invoices.**
+
+- `payers` is a thin P2 table (name, active), so a payer split can be stored and tested; the app role only reads it until P7 builds payers out. `accounts` is created on first billing (`ensureAccount`, `src/lib/billing.ts`).
+- `invoices` carries no `number` column: the number lives on its printed document (`document_id`, §6.2), issued at finalisation from the `invoice` series (`INV-2026-000123`, yearly, six digits). `receipt` (`RCT-`) and `credit_note` (`CN-`) series are registered with it, at onboarding and by backfill.
+- `invoice_lines` (`itemised` only in P2) and `charge_assignments` (`itemised` mode) are insert-only. An assignment is **live** while its invoice is not void.
+- **Drafting** (`draftInvoice`) locks the encounter, then its standing charges by id, and puts on one draft every charge's unbilled remainder, or the given `portions` (charge id → whole shillings) for a split. A draft has no number. One live `final` per encounter and account; `interim` is refused once a final exists; `supplementary` needs a finalised final.
+- **Finalising** (`finaliseInvoice`) freezes `total_cents` from the lines and issues the invoice document in the same transaction. A `final` invoice is refused while any standing charge of the encounter has an unbilled remainder. The printed invoice names who is billed, the patient and OP number, the visit or admission, and each line.
+- **Voiding** releases the invoice's charges to be billed again. A draft is discarded by any biller; a finalised invoice is voided only by the finance manager or the facility admin, keeps its number, and voids its document. Slice 5 refuses it while money is allocated to it.
+- **Who:** cashiers, billing clerks, the finance manager and the facility admin draft and finalise; those plus claims officers and auditors read. Opening an invoice writes `invoice.viewed`; listing an encounter's invoices writes `encounter.viewed`.
+- **Triggers** (every role, the owner included): `invoices_lifecycle` allows draft → finalised, draft → void and finalised → void only, and freezes everything else; `invoice_lines_draft_only` adds lines to drafts only and never changes or removes one; `charge_assignments_within_charge` assigns on drafts only, never a cancelled charge, and never beyond the charge's amount (M4).
+- A charge on a live invoice cannot be cancelled; void the invoice first.
+- **Payer invoices are not offered over the API in P2.** The cash list prices every charge, and rule 21 forbids billing a payer at cash prices; P7 adds payers' lists. The split is proven by a library test (`src/lib/billing.test.ts`), the dummy-insurer check of `ROADMAP.md` P2.
 
 ### 7.4 Payments, allocations, deposits and refunds
 
@@ -308,6 +356,16 @@ Adjustments **share an invoice's capacity with allocations** (M3). An invoice ca
 
 **Reversing an adjustment** changes only its reversal columns, needs a second person's approval like the original, and returns the amount to the invoice's balance. A disallowance cannot be reversed while a live rebill line points at it; credit the supplementary invoice first.
 
+**As built (P2, slice 4b): credit notes, waivers and write-offs.**
+
+- `invoice_adjustments`: `invoice_id` and `account_id` (three-column FK to the invoice, M1), `kind` (credit_note \| waiver \| write_off; P7 adds `payer_disallowance` and `disposition`), `amount_cents` (whole shillings), a one-line `reason`, `status` (pending \| approved \| rejected \| withdrawn), `requested_by`/`requested_at`, `decided_by`/`decided_at`, and `document_id` for an approved credit note. P2 has no reason codes; a code list waits for the pilot's answer on waivers (`SPEC.md` §9, question 8) and P7's disallowance policy (D4).
+- **Who (decided 2026-11-04):** billers (cashier, billing clerk, finance manager, facility admin) ask; the finance manager or the facility admin approves or rejects; only the requester withdraws. A CHECK requires the decider to differ from the requester (rule 24).
+- **Only against a finalised invoice, and within what is left (M3).** Approving locks the invoice, then the adjustment, and re-checks that approved adjustments stay within the total. The invoice's balance is its total less approved adjustments (slice 5 subtracts allocations).
+- **A credit note takes its number when approved** (`CN-2026-000001`), and its printed document names the invoice it credits, the reason and the amount. Waivers and write-offs are not printed.
+- An invoice with an approved adjustment cannot be voided.
+- **Trigger** `invoice_adjustments_lifecycle` (every role, the owner included): written pending; decided once; what it asks for never changes; never removed; approval locks the invoice and refuses one that is not finalised or that would take off more than the total.
+- **Not yet:** reversing an approved adjustment (with a second person, as above). It follows as its own slice.
+
 Resubmitting a claim does **not** raise a credit note. It creates a new claim version (§9), and money moves only at final adjudication.
 
 ### 7.6 Invariants
@@ -319,7 +377,7 @@ The cross-row invariants live in `lib/billing.ts` and `lib/allocations.ts`, the 
 | **M1** | Every money row belongs to one account, and rows that reference each other share it | Three-column composite FKs |
 | **M2** | Σ live allocations + Σ live refunds ≤ the payment's amount | Service, payment locked |
 | **M3** | Σ live allocations + Σ live adjustments ≤ the invoice's total | Service, invoices locked |
-| **M4** | Σ live assignments ≤ the charge's amount; no final bill while a live charge is not fully assigned | Service, charges locked |
+| **M4** | Σ live assignments ≤ the charge's amount; no final bill while a live charge is not fully assigned | Service, charges locked; a trigger re-checks the first half on every assignment |
 | **M5** | Σ rebilled from a disallowance ≤ the disallowance, and zero if its disposition is `absorb`; a disallowance with live rebill lines cannot be reversed | Service |
 | **M6** | A remittance is one payment on the payer's account; its lines become allocations plus disallowance adjustments in one transaction; an unexplained shortfall stays open | Service, one transaction |
 | **M7** | Σ charges = Σ invoiced + derived allowances + waivers; Σ payments = Σ allocations + Σ refunds + unallocated credit | Reconciliation tests and a daily check |
@@ -334,6 +392,15 @@ The cross-row invariants live in `lib/billing.ts` and `lib/allocations.ts`, the 
 Designed to the level of key rules. Detailed sketches come with their phase (`ROADMAP.md`).
 
 **Encounters.** `encounters` has `kind` (opd \| ipd \| emergency), a lifecycle status, `started_at` / `ended_at`, the department, and the attending membership. `parent_encounter_id` links a casualty encounter to the admission it led to; whether casualty charges roll into the inpatient bill is a pilot question. `queue_entries` tracks a patient through service points (triage → consultation → lab → pharmacy → cashier). `appointments` drive reminders (`CLAUDE.md` §7).
+
+**As built (P2, slice 2).** A thin version of the above, enough to bill:
+
+- `encounters`: `kind` (opd \| emergency \| ipd), `status` (open \| closed \| cancelled, lifecycle only), `started_at`, `ended_at`, `opened_by` and `closed_by` (memberships), `cancel_reason`, `parent_encounter_id`. A CHECK ties the columns to the status. A partial unique index allows **one open encounter of each kind per patient**. Departments and the attending clinician arrive with P3's queues.
+- `admissions`: 1:1 with an ipd encounter; `admission_number` from a new yearly series `admission` (`ADM-2026-0001`, registered at onboarding and backfilled for existing facilities); `discharge_disposition` (home \| referred \| died \| absconded \| against_advice) for MOH 717. The **IP number** is issued at the patient's first admission and reused for every later one.
+- `wards`, `beds`: created by the facility admin, renamed or retired, never removed. Occupancy is derived from open stays.
+- `bed_stays`: `started_at`, `ended_at`, and a generated `during` tstzrange carrying the two exclusion constraints (no bed holds two patients at once; no admission is in two beds at once), with `btree_gist`. A transfer ends one stay and starts the next at the same instant; discharge or cancellation ends the last. A trigger refuses any change to a stay that has ended.
+- Reading an encounter, or a patient's list of encounters, is audited as `encounter.viewed`.
+- Roles: visits are opened and closed by records clerks, nurses, doctors, clinical officers and the facility admin; ward nurses can also admit, transfer and discharge. Every member may read.
 
 **Clinical record.** `observations` (vitals and charted values, with `entered_in_error` instead of deletion), `diagnoses` (ICD code, provisional \| final \| secondary), `clinical_notes` (`signed_at`, `addendum_of`: a signed note is corrected only by an addendum), `orders` and `order_items` (lab, imaging, procedure, medication, service; medication items carry dose, route, frequency and duration). Every clinical act records the acting membership, whose licence details live on `memberships` (rule 25).
 

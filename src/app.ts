@@ -3,17 +3,24 @@ import type { AppOpenAPI } from "@/lib/types";
 import env from "@/env";
 import configureOpenAPI from "@/lib/configure-open-api";
 import createApp from "@/lib/create-app";
+import adjustments from "@/routes/adjustments/adjustments.index";
+import charges from "@/routes/charges/charges.index";
 import documents from "@/routes/documents/documents.index";
+import encounters from "@/routes/encounters/encounters.index";
 import facility from "@/routes/facility/facility.index";
 import health from "@/routes/health.route";
 import index from "@/routes/index.route";
 import internal from "@/routes/internal.route";
 import invitations from "@/routes/invitations/invitations.index";
+import invoices from "@/routes/invoices/invoices.index";
 import localFiles from "@/routes/local-files.route";
 import me from "@/routes/me/me.index";
+import patients from "@/routes/patients/patients.index";
+import prices from "@/routes/prices/prices.index";
 import staff from "@/routes/staff/staff.index";
 import superadmin from "@/routes/superadmin/superadmin.index";
 import verify from "@/routes/verify/verify.index";
+import wards from "@/routes/wards/wards.index";
 
 const app = createApp();
 
@@ -62,6 +69,13 @@ const tenantRoutes = [
   facility,
   staff,
   documents,
+  patients,
+  encounters,
+  wards,
+  prices,
+  charges,
+  invoices,
+  adjustments,
 ] as unknown as readonly AppOpenAPI[];
 
 [...unscopedRoutes, ...developmentRoutes, ...tenantRoutes].forEach((route) => {

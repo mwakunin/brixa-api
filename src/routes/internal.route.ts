@@ -6,6 +6,7 @@ import type { InvokerVerifier } from "@/lib/invoker-auth";
 import type { AppBindings } from "@/lib/types";
 
 import env from "@/env";
+import { accrueAllBedDays } from "@/jobs/bed-days";
 import { drainOutbox } from "@/jobs/outbox-worker";
 import { DRAIN_PATH, INVOKER_AUDIENCE } from "@/lib/cloud-tasks";
 import { createRouter } from "@/lib/create-app";
@@ -21,10 +22,17 @@ import { googleInvokerVerifier } from "@/lib/invoker-auth";
  *                                 Scheduler sweep every minute for retries
  *                                 and anything a nudge missed.
  *
- * Delivery is at least once and the drain is idempotent, so a duplicate
+ *   POST /internal/jobs/bed-days  charges every open admission's nights so
+ *                                 far. Cloud Scheduler, shortly after
+ *                                 midnight in Nairobi.
+ *
+ * Delivery is at least once and both are idempotent, so a duplicate
  * call does nothing harmful. A 500 makes Cloud Tasks retry; a job that
  * failed is already recorded for backoff, so the drain still answers 200.
  */
+/** The nightly bed-day run. */
+export const BED_DAYS_PATH = "/internal/jobs/bed-days";
+
 export function createInternalRouter(verifier: InvokerVerifier) {
   const router = createRouter();
 
@@ -37,6 +45,7 @@ export function createInternalRouter(verifier: InvokerVerifier) {
   }));
 
   router.post(DRAIN_PATH, async c => c.json(await drainOutbox(), HttpStatusCodes.OK));
+  router.post(BED_DAYS_PATH, async c => c.json(await accrueAllBedDays(), HttpStatusCodes.OK));
 
   return router;
 }

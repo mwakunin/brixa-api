@@ -50,6 +50,104 @@
       "when": 1793792278883,
       "tag": "0006_documents_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1793815364821,
+      "tag": "0007_patients",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1793815367722,
+      "tag": "0008_patients_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1793816355937,
+      "tag": "0009_encounters",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1793816358346,
+      "tag": "0010_encounters_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1793817960804,
+      "tag": "0011_prices",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1793817963585,
+      "tag": "0012_prices_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1793818747563,
+      "tag": "0013_charges",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1793818749794,
+      "tag": "0014_charges_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1793820344846,
+      "tag": "0015_invoices",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1793820347124,
+      "tag": "0016_invoices_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1793822037827,
+      "tag": "0017_adjustments",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1793822039488,
+      "tag": "0018_adjustments_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1793825606418,
+      "tag": "0019_review_fixes",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1793825609572,
+      "tag": "0020_review_fixes_triggers",
+      "breakpoints": true
     }
   ]
 }

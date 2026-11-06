@@ -4,11 +4,11 @@ import * as HttpStatusCodes from "stoker/http-status-codes";
 import type { AppRouteHandler } from "@/lib/types";
 
 import db from "@/db";
-import { facilities } from "@/db/schema";
+import { facilities, priceLists } from "@/db/schema";
 import { recordAudit } from "@/lib/audit";
 import { isUniqueViolation, pgConstraintName } from "@/lib/db-errors";
 import { createInvitation } from "@/lib/invitations";
-import { registerSeries } from "@/lib/number-series";
+import { FISCAL_SERIES, registerSeries } from "@/lib/number-series";
 import { nudgingAfterCommit } from "@/lib/outbox-nudge";
 
 import type { CreateFacilityRoute, ListFacilitiesRoute } from "./superadmin.routes";
@@ -52,6 +52,18 @@ export const createFacility: AppRouteHandler<CreateFacilityRoute> = async (c) =>
         resetPeriod: "never",
         startAt: body.numbering.nextInpatientNumber,
       });
+      // Each admission's own number, restarting every year: ADM-2026-0001.
+      await registerSeries(tx, {
+        facilityId: facility.id,
+        kind: "admission",
+        prefix: "ADM-",
+        resetPeriod: "yearly",
+      });
+      // Fiscal documents, numbered at finalisation (rule 20): INV-2026-000123.
+      for (const [kind, prefix] of FISCAL_SERIES)
+        await registerSeries(tx, { facilityId: facility.id, kind, prefix, padding: 6, resetPeriod: "yearly" });
+      // The list that prices the patient account; payers' lists come later.
+      await tx.insert(priceLists).values({ facilityId: facility.id, name: "Cash", kind: "cash" });
 
       await recordAudit(tx, {
         facilityId: facility.id,
