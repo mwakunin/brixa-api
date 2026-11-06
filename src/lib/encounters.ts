@@ -113,12 +113,17 @@ async function endOpenStay(tx: AppDb, admissionId: string, at: Date, actor: Pati
 // Visits
 // ---------------------------------------------------------------------------
 
-/** Opens an outpatient visit or an emergency attendance. */
+/**
+ * Opens an outpatient visit or an emergency attendance. Its start comes from
+ * the app's clock, as its end will: a start from the database's clock could
+ * fall after an end taken moments later if the two clocks differ.
+ */
 export async function openEncounter(
   tx: AppDb,
   facilityId: string,
   input: { patientId: string; kind: "opd" | "emergency" },
   actor: PatientActor,
+  at = new Date(),
 ): Promise<EncounterRow> {
   await patientExists(tx, input.patientId);
 
@@ -128,6 +133,7 @@ export async function openEncounter(
       facilityId,
       patientId: input.patientId,
       kind: input.kind,
+      startedAt: at,
       openedBy: actor.membershipId,
     }).returning();
   }

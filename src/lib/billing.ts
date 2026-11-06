@@ -22,9 +22,11 @@ import {
 import type { PrintedContent } from "./document-content";
 import type { PatientActor } from "./patients";
 
+import { applyCredit, lockEncounterCredit } from "./allocations";
 import { recordAudit } from "./audit";
 import { businessDate, printedDate } from "./dates";
 import { issueDocument, voidDocument } from "./documents";
+import { adjustedCents, allocatedCents } from "./invoice-balance";
 import { formatKes, printedQuantity } from "./money";
 
 /**
@@ -59,7 +61,8 @@ export class BillingError extends Error {
     | "charges_unbilled"
     | "other_patient"
     | "void_needs_finance"
-    | "has_adjustments") {
+    | "has_adjustments"
+    | "has_payments") {
     super({
       encounter_not_found: "No such encounter",
       encounter_cancelled: "A cancelled encounter is not billed",
@@ -74,6 +77,7 @@ export class BillingError extends Error {
       other_patient: "That is another patient's account",
       void_needs_finance: "Only a finance manager or the facility admin voids a finalised invoice",
       has_adjustments: "This invoice has approved adjustments; it stands as adjusted",
+      has_payments: "Money is applied to this invoice; reverse those allocations first",
     }[code]);
     this.name = "BillingError";
   }
@@ -310,12 +314,15 @@ type Line = Awaited<ReturnType<typeof linesOf>>[number];
 /**
  * Finalises a draft: freezes its total and issues its number and printed
  * document. A final invoice needs every standing charge of the encounter on
- * a live invoice (M4), so nothing done for the patient goes unbilled.
+ * a live invoice (M4), so nothing done for the patient goes unbilled. Credit
+ * paid towards the encounter (a deposit) is then applied to it.
  */
 export async function finaliseInvoice(tx: AppDb, facilityId: string, invoiceId: string, actor: PatientActor, at = new Date()) {
-  const { encounterId } = await invoiceById(tx, invoiceId);
+  const { encounterId, accountId } = await invoiceById(tx, invoiceId);
   const encounter = await lockEncounter(tx, encounterId);
   const live = await lockLiveCharges(tx, encounterId);
+  // M8: the payments before the invoice.
+  const credit = await lockEncounterCredit(tx, encounterId, accountId);
   const invoice = await invoiceById(tx, invoiceId, true);
   if (invoice.status !== "draft")
     throw new BillingError("not_draft");
@@ -336,6 +343,7 @@ export async function finaliseInvoice(tx: AppDb, facilityId: string, invoiceId: 
     .set({ status: "finalised", totalCents, documentId: document.id, finalisedAt: at, finalisedBy: actor.membershipId })
     .where(eq(invoices.id, invoice.id))
     .returning();
+  const creditAppliedCents = await applyCredit(tx, facilityId, credit, { id: invoice.id, accountId, totalCents }, actor);
 
   await recordAudit(tx, {
     facilityId,
@@ -344,16 +352,16 @@ export async function finaliseInvoice(tx: AppDb, facilityId: string, invoiceId: 
     entityType: "invoice",
     entityId: invoice.id,
     summary: `Finalised invoice ${document.number} for ${formatKes(totalCents)}`,
-    detail: { encounterId, number: document.number, totalCents },
+    detail: { encounterId, number: document.number, totalCents, creditAppliedCents },
   });
-  return { invoice: finalised, number: document.number };
+  return { invoice: finalised, number: document.number, creditAppliedCents };
 }
 
 /**
  * Voids an invoice, releasing its charges to be billed again. A finalised
  * one keeps its number, and its document is voided with it; only finance
  * may void one (`mayVoidFinalised`), and not while an approved adjustment
- * stands against it. Slice 5 adds: nor while money is allocated to it.
+ * stands against it or money is allocated to it.
  */
 export async function voidInvoice(
   tx: AppDb,
@@ -371,6 +379,8 @@ export async function voidInvoice(
     throw new BillingError("void_needs_finance");
   if (await adjustedCents(tx, invoice.id) > 0)
     throw new BillingError("has_adjustments");
+  if (await allocatedCents(tx, invoice.id) > 0)
+    throw new BillingError("has_payments");
 
   if (invoice.documentId)
     await voidDocument(tx, { facilityId, documentId: invoice.documentId, reason: input.reason, voidedBy: actor, at });
@@ -519,27 +529,20 @@ export async function invoiceDetail(tx: AppDb, invoiceId: string) {
     .orderBy(asc(invoiceAdjustments.requestedAt), asc(invoiceAdjustments.id));
 
   const totalCents = row.invoice.totalCents ?? lines.reduce((sum, l) => sum + l.amountCents, 0);
-  const adjustedCents = adjustments.filter(a => a.status === "approved").reduce((sum, a) => sum + a.amountCents, 0);
+  const adjusted = adjustments.filter(a => a.status === "approved").reduce((sum, a) => sum + a.amountCents, 0);
+  const paidCents = await allocatedCents(tx, invoiceId);
   return {
     ...row.invoice,
     number: row.number,
     accountKind: row.accountKind,
     payerName: row.payerName,
     totalCents,
-    // Slice 5 subtracts live allocations too.
-    balanceCents: row.invoice.status === "finalised" ? totalCents - adjustedCents : null,
+    /** Σ live allocations. */
+    paidCents,
+    balanceCents: row.invoice.status === "finalised" ? totalCents - adjusted - paidCents : null,
     lines,
     adjustments,
   };
-}
-
-/** Σ approved adjustments of an invoice: what M3 counts besides allocations. */
-export async function adjustedCents(tx: AppDb, invoiceId: string): Promise<number> {
-  const [row] = await tx
-    .select({ cents: sql<number>`coalesce(sum(${invoiceAdjustments.amountCents}), 0)`.mapWith(Number) })
-    .from(invoiceAdjustments)
-    .where(and(eq(invoiceAdjustments.invoiceId, invoiceId), eq(invoiceAdjustments.status, "approved")));
-  return row.cents;
 }
 
 export type InvoiceDetail = Awaited<ReturnType<typeof invoiceDetail>>;

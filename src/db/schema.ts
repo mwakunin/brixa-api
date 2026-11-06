@@ -241,6 +241,21 @@ export const auditLog = pgTable("audit_log", {
     | "adjustment.rejected"
     | "adjustment.withdrawn"
     | "adjustment.listed"
+    | "shift.opened"
+    | "shift.closed"
+    | "payment.recorded"
+    | "payment.reversed"
+    | "allocation.recorded"
+    | "allocation.reversed"
+    | "account.viewed"
+    | "payment.viewed"
+    | "refund.requested"
+    | "refund.approved"
+    | "refund.rejected"
+    | "refund.withdrawn"
+    | "refund.paid"
+    | "refund.reversed"
+    | "refund.listed"
   >().notNull(),
   /** What it happened to. Not a foreign key: the log outlives what it names. */
   entityType: text().notNull(),
@@ -295,6 +310,21 @@ export const auditLog = pgTable("audit_log", {
     "adjustment.rejected",
     "adjustment.withdrawn",
     "adjustment.listed",
+    "shift.opened",
+    "shift.closed",
+    "payment.recorded",
+    "payment.reversed",
+    "allocation.recorded",
+    "allocation.reversed",
+    "account.viewed",
+    "payment.viewed",
+    "refund.requested",
+    "refund.approved",
+    "refund.rejected",
+    "refund.withdrawn",
+    "refund.paid",
+    "refund.reversed",
+    "refund.listed",
   ]),
 ]);
 
@@ -315,7 +345,7 @@ export const auditLog = pgTable("audit_log", {
 export const numberSeries = pgTable("number_series", {
   id: uuid().primaryKey().defaultRandom(),
   facilityId: uuid().notNull().references(() => facilities.id),
-  kind: text().$type<"outpatient" | "inpatient" | "admission" | "receipt" | "invoice" | "credit_note">().notNull(),
+  kind: text().$type<"outpatient" | "inpatient" | "admission" | "receipt" | "invoice" | "credit_note" | "refund">().notNull(),
   /** Facility-chosen, e.g. `OP`. Applies to numbers issued from now on. */
   prefix: text().notNull(),
   /** Zero-padded width: 4 gives OP0001. A number grows past it, never truncates. */
@@ -326,7 +356,7 @@ export const numberSeries = pgTable("number_series", {
 }, t => [
   unique("number_series_facility_id_kind_key").on(t.facilityId, t.kind),
   unique("number_series_facility_id_id_key").on(t.facilityId, t.id),
-  oneOf("number_series_kind_known", t.kind, ["outpatient", "inpatient", "admission", "receipt", "invoice", "credit_note"]),
+  oneOf("number_series_kind_known", t.kind, ["outpatient", "inpatient", "admission", "receipt", "invoice", "credit_note", "refund"]),
   oneOf("number_series_reset_period_known", t.resetPeriod, ["never", "yearly", "daily"]),
   check("number_series_prefix_shape", sql`${t.prefix} ~ '^[A-Za-z0-9/-]{1,12}$'`),
   check("number_series_padding_range", sql`${t.padding} BETWEEN 1 AND 12`),
@@ -498,7 +528,7 @@ export const invitations = pgTable("invitations", {
 export const documents = pgTable("documents", {
   id: uuid().primaryKey().defaultRandom(),
   facilityId: uuid().notNull().references(() => facilities.id),
-  kind: text().$type<"receipt" | "invoice" | "credit_note">().notNull(),
+  kind: text().$type<"receipt" | "invoice" | "credit_note" | "refund">().notNull(),
   /** From this facility's number series of the same kind. */
   number: text().notNull(),
   /**
@@ -522,7 +552,7 @@ export const documents = pgTable("documents", {
     columns: [t.facilityId, t.issuedBy],
     foreignColumns: [memberships.facilityId, memberships.id],
   }),
-  oneOf("documents_kind_known", t.kind, ["receipt", "invoice", "credit_note"]),
+  oneOf("documents_kind_known", t.kind, ["receipt", "invoice", "credit_note", "refund"]),
   // 20 bytes of base64url: a shorter code typed in by hand would be guessable.
   check("documents_verification_code_shape", sql`${t.verificationCode} ~ '^[A-Za-z0-9_-]{27}$'`),
   // Voided means at some time, for a stated reason; otherwise neither. The
@@ -751,7 +781,7 @@ export const priceChanges = pgTable("price_changes", {
     sql`(${t.status} = 'pending' AND ${t.decidedBy} IS NULL AND ${t.decidedAt} IS NULL)
       OR (${t.status} IN ('approved', 'rejected') AND ${t.decidedBy} IS NOT NULL AND ${t.decidedAt} IS NOT NULL
           AND ${t.decidedBy} <> ${t.requestedBy})
-      OR (${t.status} = 'withdrawn' AND ${t.decidedBy} = ${t.requestedBy} AND ${t.decidedAt} IS NOT NULL)`,
+      OR (${t.status} = 'withdrawn' AND ${t.decidedBy} IS NOT NULL AND ${t.decidedBy} = ${t.requestedBy} AND ${t.decidedAt} IS NOT NULL)`,
   ),
 ]);
 
@@ -1232,11 +1262,229 @@ export const invoiceAdjustments = pgTable("invoice_adjustments", {
     sql`(${t.status} = 'pending' AND ${t.decidedBy} IS NULL AND ${t.decidedAt} IS NULL)
       OR (${t.status} IN ('approved', 'rejected') AND ${t.decidedBy} IS NOT NULL AND ${t.decidedAt} IS NOT NULL
           AND ${t.decidedBy} <> ${t.requestedBy})
-      OR (${t.status} = 'withdrawn' AND ${t.decidedBy} = ${t.requestedBy} AND ${t.decidedAt} IS NOT NULL)`,
+      OR (${t.status} = 'withdrawn' AND ${t.decidedBy} IS NOT NULL AND ${t.decidedBy} = ${t.requestedBy} AND ${t.decidedAt} IS NOT NULL)`,
   ),
   check(
     "invoice_adjustments_credit_note_document",
     sql`(${t.kind} = 'credit_note' AND ${t.status} = 'approved') = (${t.documentId} IS NOT NULL)`,
+  ),
+]);
+
+// ---------------------------------------------------------------------------
+// Payments (SCHEMA.md §7.4)
+// ---------------------------------------------------------------------------
+
+/**
+ * A cashier's turn at the counter. Cash and card are taken inside one
+ * (decided 2026-11-04). At close the cashier declares the cash counted;
+ * what was expected, and the variance, are derived from the shift's payments.
+ */
+export const cashierShifts = pgTable("cashier_shifts", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  /** The cashier's membership. */
+  cashierId: uuid().notNull(),
+  openedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  openingFloatCents: integer().default(0).notNull(),
+  closedAt: timestamp({ withTimezone: true }),
+  declaredCashCents: integer(),
+}, t => [
+  unique("cashier_shifts_facility_id_id_key").on(t.facilityId, t.id),
+  // A payment's shift names its cashier too, so it is always the receiver's own.
+  unique("cashier_shifts_facility_id_id_cashier_id_key").on(t.facilityId, t.id, t.cashierId),
+  foreignKey({ name: "cashier_shifts_cashier_fk", columns: [t.facilityId, t.cashierId], foreignColumns: [memberships.facilityId, memberships.id] }),
+  uniqueIndex("cashier_shifts_one_open").on(t.facilityId, t.cashierId).where(sql`${t.closedAt} IS NULL`),
+  check("cashier_shifts_float_whole_shillings", sql`${t.openingFloatCents} >= 0 AND ${t.openingFloatCents} % 100 = 0`),
+  check(
+    "cashier_shifts_closing",
+    sql`(${t.closedAt} IS NULL AND ${t.declaredCashCents} IS NULL)
+      OR (${t.closedAt} IS NOT NULL AND ${t.declaredCashCents} IS NOT NULL AND ${t.declaredCashCents} >= 0 AND ${t.declaredCashCents} % 100 = 0)`,
+  ),
+]);
+
+/**
+ * Money received, as credit on one account. Allocations decide which bills
+ * it settles; what is not allocated is the account's credit (a deposit).
+ * Every payment has its receipt, issued in the same transaction (rule 20).
+ * Reversed, never edited (SCHEMA.md §10). Slice 6 adds the M-Pesa methods.
+ */
+export const payments = pgTable("payments", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  accountId: uuid().notNull(),
+  method: text().$type<"cash" | "card" | "bank">().notNull(),
+  amountCents: integer().notNull(),
+  /** The card slip's or bank transfer's reference; cash has none. */
+  reference: text(),
+  /** Required for cash and card. */
+  cashierShiftId: uuid(),
+  /** The visit or admission it was paid towards, e.g. an admission deposit. */
+  encounterId: uuid(),
+  /** The receipt, carrying its number. */
+  documentId: uuid().notNull(),
+  receivedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  receivedBy: uuid().notNull(),
+  reversedAt: timestamp({ withTimezone: true }),
+  reversedBy: uuid(),
+  reversalReason: text(),
+}, t => [
+  unique("payments_facility_id_id_key").on(t.facilityId, t.id),
+  // M1: what refers to a payment names its account too.
+  unique("payments_facility_id_id_account_id_key").on(t.facilityId, t.id, t.accountId),
+  foreignKey({ name: "payments_account_fk", columns: [t.facilityId, t.accountId], foreignColumns: [accounts.facilityId, accounts.id] }),
+  foreignKey({
+    name: "payments_shift_fk",
+    columns: [t.facilityId, t.cashierShiftId, t.receivedBy],
+    foreignColumns: [cashierShifts.facilityId, cashierShifts.id, cashierShifts.cashierId],
+  }),
+  foreignKey({ name: "payments_encounter_fk", columns: [t.facilityId, t.encounterId], foreignColumns: [encounters.facilityId, encounters.id] }),
+  foreignKey({ name: "payments_document_fk", columns: [t.facilityId, t.documentId], foreignColumns: [documents.facilityId, documents.id] }),
+  foreignKey({ name: "payments_received_by_fk", columns: [t.facilityId, t.receivedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "payments_reversed_by_fk", columns: [t.facilityId, t.reversedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  index("payments_account_index").on(t.accountId),
+  index("payments_shift_index").on(t.cashierShiftId),
+  index("payments_encounter_index").on(t.encounterId),
+  oneOf("payments_method_known", t.method, ["cash", "card", "bank"]),
+  check("payments_amount_whole_shillings", sql`${t.amountCents} > 0 AND ${t.amountCents} % 100 = 0`),
+  check(
+    "payments_reference",
+    sql`(${t.method} = 'cash' AND ${t.reference} IS NULL)
+      OR (${t.method} <> 'cash' AND ${t.reference} IS NOT NULL AND length(btrim(${t.reference})) > 0)`,
+  ),
+  check("payments_counter_shift", sql`(${t.method} IN ('cash', 'card')) = (${t.cashierShiftId} IS NOT NULL)`),
+  // Reversed with a reason, and never by the person who took it (decided 2026-11-04).
+  check(
+    "payments_reversal",
+    sql`(${t.reversedAt} IS NULL AND ${t.reversedBy} IS NULL AND ${t.reversalReason} IS NULL)
+      OR (${t.reversedAt} IS NOT NULL AND ${t.reversedBy} IS NOT NULL AND ${t.reversalReason} IS NOT NULL AND length(btrim(${t.reversalReason})) > 0
+          AND ${t.reversedBy} <> ${t.receivedBy})`,
+  ),
+]);
+
+/**
+ * How much of a payment settles one invoice. Live while neither it nor its
+ * payment is reversed. Σ live allocations of a payment never exceed it (M2);
+ * of an invoice, together with approved adjustments, never its total (M3).
+ */
+export const allocations = pgTable("allocations", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  paymentId: uuid().notNull(),
+  invoiceId: uuid().notNull(),
+  accountId: uuid().notNull(),
+  amountCents: integer().notNull(),
+  allocatedBy: uuid().notNull(),
+  allocatedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  reversedAt: timestamp({ withTimezone: true }),
+  reversedBy: uuid(),
+  reversalReason: text(),
+}, t => [
+  foreignKey({
+    name: "allocations_payment_fk",
+    columns: [t.facilityId, t.paymentId, t.accountId],
+    foreignColumns: [payments.facilityId, payments.id, payments.accountId],
+  }),
+  foreignKey({
+    name: "allocations_invoice_fk",
+    columns: [t.facilityId, t.invoiceId, t.accountId],
+    foreignColumns: [invoices.facilityId, invoices.id, invoices.accountId],
+  }),
+  foreignKey({ name: "allocations_allocated_by_fk", columns: [t.facilityId, t.allocatedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "allocations_reversed_by_fk", columns: [t.facilityId, t.reversedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  index("allocations_payment_index").on(t.paymentId),
+  index("allocations_invoice_index").on(t.invoiceId),
+  check("allocations_amount_whole_shillings", sql`${t.amountCents} > 0 AND ${t.amountCents} % 100 = 0`),
+  check(
+    "allocations_reversal",
+    sql`(${t.reversedAt} IS NULL AND ${t.reversedBy} IS NULL AND ${t.reversalReason} IS NULL)
+      OR (${t.reversedAt} IS NOT NULL AND ${t.reversedBy} IS NOT NULL AND ${t.reversalReason} IS NOT NULL AND length(btrim(${t.reversalReason})) > 0)`,
+  ),
+]);
+
+/**
+ * Unused credit paid back from one payment (SCHEMA.md §7.4). A biller asks,
+ * the finance manager or the facility admin approves, never the person who
+ * asked (rule 24); a cashier then pays it out, and only then does it take its
+ * number (rule 20). From approval until it is reversed it holds its share of
+ * the payment: Σ live allocations + Σ live refunds ≤ the payment (M2).
+ * Reversal cancels an approval not yet paid out, or corrects a payout
+ * recorded in error; never by whoever paid it out.
+ */
+export const refunds = pgTable("refunds", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  paymentId: uuid().notNull(),
+  accountId: uuid().notNull(),
+  amountCents: integer().notNull(),
+  reason: text().notNull(),
+  status: text().$type<"pending" | "approved" | "rejected" | "withdrawn">().default("pending").notNull(),
+  requestedBy: uuid().notNull(),
+  requestedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  decidedBy: uuid(),
+  decidedAt: timestamp({ withTimezone: true }),
+  /** Set together when the money is paid out. */
+  paidAt: timestamp({ withTimezone: true }),
+  paidBy: uuid(),
+  method: text().$type<"cash" | "card" | "bank" | "mpesa">(),
+  /** The card slip's, bank transfer's or M-Pesa transaction's reference; cash has none. */
+  reference: text(),
+  /** Required for cash and card: the drawer the money came from. */
+  cashierShiftId: uuid(),
+  /** The refund's printed document, carrying its number. */
+  documentId: uuid(),
+  reversedAt: timestamp({ withTimezone: true }),
+  reversedBy: uuid(),
+  reversalReason: text(),
+}, t => [
+  // M1: the refund's account is its payment's.
+  foreignKey({
+    name: "refunds_payment_fk",
+    columns: [t.facilityId, t.paymentId, t.accountId],
+    foreignColumns: [payments.facilityId, payments.id, payments.accountId],
+  }),
+  foreignKey({
+    name: "refunds_shift_fk",
+    columns: [t.facilityId, t.cashierShiftId, t.paidBy],
+    foreignColumns: [cashierShifts.facilityId, cashierShifts.id, cashierShifts.cashierId],
+  }),
+  foreignKey({ name: "refunds_document_fk", columns: [t.facilityId, t.documentId], foreignColumns: [documents.facilityId, documents.id] }),
+  foreignKey({ name: "refunds_requested_by_fk", columns: [t.facilityId, t.requestedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "refunds_decided_by_fk", columns: [t.facilityId, t.decidedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "refunds_paid_by_fk", columns: [t.facilityId, t.paidBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "refunds_reversed_by_fk", columns: [t.facilityId, t.reversedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  index("refunds_payment_index").on(t.paymentId),
+  index("refunds_shift_index").on(t.cashierShiftId),
+  oneOf("refunds_status_known", t.status, ["pending", "approved", "rejected", "withdrawn"]),
+  oneOf("refunds_method_known", t.method, ["cash", "card", "bank", "mpesa"]),
+  check("refunds_amount_whole_shillings", sql`${t.amountCents} > 0 AND ${t.amountCents} % 100 = 0`),
+  check("refunds_reason_present", sql`length(btrim(${t.reason})) > 0`),
+  // Approved or rejected by someone else; withdrawn only by the requester.
+  check(
+    "refunds_decision",
+    sql`(${t.status} = 'pending' AND ${t.decidedBy} IS NULL AND ${t.decidedAt} IS NULL)
+      OR (${t.status} IN ('approved', 'rejected') AND ${t.decidedBy} IS NOT NULL AND ${t.decidedAt} IS NOT NULL
+          AND ${t.decidedBy} <> ${t.requestedBy})
+      OR (${t.status} = 'withdrawn' AND ${t.decidedBy} IS NOT NULL AND ${t.decidedBy} = ${t.requestedBy} AND ${t.decidedAt} IS NOT NULL)`,
+  ),
+  // Paid out only once approved, with every payout detail, or none of them.
+  // Each branch says IS NULL or IS NOT NULL outright: a CHECK passes on NULL.
+  check(
+    "refunds_payout",
+    sql`(${t.paidAt} IS NULL AND ${t.paidBy} IS NULL AND ${t.method} IS NULL AND ${t.reference} IS NULL
+        AND ${t.cashierShiftId} IS NULL AND ${t.documentId} IS NULL)
+      OR (${t.status} = 'approved' AND ${t.paidAt} IS NOT NULL AND ${t.paidBy} IS NOT NULL AND ${t.documentId} IS NOT NULL
+        AND ${t.method} IS NOT NULL
+        AND ((${t.method} = 'cash' AND ${t.reference} IS NULL AND ${t.cashierShiftId} IS NOT NULL)
+          OR (${t.method} = 'card' AND ${t.reference} IS NOT NULL AND length(btrim(${t.reference})) > 0 AND ${t.cashierShiftId} IS NOT NULL)
+          OR (${t.method} IN ('bank', 'mpesa') AND ${t.reference} IS NOT NULL AND length(btrim(${t.reference})) > 0 AND ${t.cashierShiftId} IS NULL)))`,
+  ),
+  // Reversed only once approved, with a reason, and never by whoever paid it out.
+  check(
+    "refunds_reversal",
+    sql`(${t.reversedAt} IS NULL AND ${t.reversedBy} IS NULL AND ${t.reversalReason} IS NULL)
+      OR (${t.status} = 'approved' AND ${t.reversedAt} IS NOT NULL AND ${t.reversedBy} IS NOT NULL
+        AND ${t.reversalReason} IS NOT NULL AND length(btrim(${t.reversalReason})) > 0
+        AND (${t.paidBy} IS NULL OR ${t.reversedBy} <> ${t.paidBy}))`,
   ),
 ]);
 
@@ -1279,4 +1527,8 @@ export const TENANT_TABLES = [
   "invoice_lines",
   "charge_assignments",
   "invoice_adjustments",
+  "cashier_shifts",
+  "payments",
+  "allocations",
+  "refunds",
 ] as const;

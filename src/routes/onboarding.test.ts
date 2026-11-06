@@ -76,6 +76,7 @@ describe("onboarding a facility", () => {
       ["invoice", "INV-", "yearly", 6],
       ["outpatient", "OPD", "never", 4],
       ["receipt", "RCT-", "yearly", 6],
+      ["refund", "RFD-", "yearly", 6],
     ]);
     const { rows: counters } = await pool.query<{ kind: string; next_value: number }>(`
       SELECT s.kind, c.next_value FROM number_series_counters c
@@ -89,6 +90,7 @@ describe("onboarding a facility", () => {
       { kind: "invoice", next_value: 1 },
       { kind: "outpatient", next_value: 1201 },
       { kind: "receipt", next_value: 1 },
+      { kind: "refund", next_value: 1 },
     ]);
 
     const [invitation] = await db.select().from(invitations).where(eq(invitations.facilityId, created.id));

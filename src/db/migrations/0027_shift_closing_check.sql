@@ -1,0 +1,3 @@
+ALTER TABLE "cashier_shifts" DROP CONSTRAINT "cashier_shifts_closing";--> statement-breakpoint
+ALTER TABLE "cashier_shifts" ADD CONSTRAINT "cashier_shifts_closing" CHECK (("cashier_shifts"."closed_at" IS NULL AND "cashier_shifts"."declared_cash_cents" IS NULL)
+      OR ("cashier_shifts"."closed_at" IS NOT NULL AND "cashier_shifts"."declared_cash_cents" IS NOT NULL AND "cashier_shifts"."declared_cash_cents" >= 0 AND "cashier_shifts"."declared_cash_cents" % 100 = 0));

@@ -9,8 +9,9 @@ import type { PrintedContent } from "./document-content";
 import type { PatientActor } from "./patients";
 
 import { recordAudit } from "./audit";
-import { adjustedCents, billedFields } from "./billing";
+import { billedFields } from "./billing";
 import { issueDocument } from "./documents";
+import { balanceCents } from "./invoice-balance";
 import { formatKes } from "./money";
 
 /**
@@ -19,8 +20,8 @@ import { formatKes } from "./money";
  * facility admin approves, and never the same person (rule 24).
  *
  * Approving takes the invoice's lock before the adjustment's, so two
- * approvals on one invoice queue and M3 holds: approved adjustments (and,
- * from slice 5, allocations) never exceed the total. An approved credit note
+ * approvals on one invoice queue and M3 holds: approved adjustments and
+ * allocations never exceed the total. An approved credit note
  * is a numbered fiscal document, issued in the approving transaction.
  */
 
@@ -56,9 +57,9 @@ const LABELS: Record<AdjustmentKind, string> = {
   write_off: "Write-off",
 };
 
-/** What is left on an invoice for an adjustment: its total less what is already approved. */
+/** What is left on an invoice for an adjustment: its total less approved adjustments and live allocations (M3). */
 async function roomOn(tx: AppDb, invoice: typeof invoices.$inferSelect): Promise<number> {
-  return (invoice.totalCents ?? 0) - await adjustedCents(tx, invoice.id);
+  return balanceCents(tx, invoice);
 }
 
 /** Asks for an amount to come off a finalised invoice. */
@@ -204,7 +205,8 @@ export async function listAdjustments(tx: AppDb, filter: { status?: AdjustmentSt
       id: invoiceAdjustments.id,
       invoiceId: invoiceAdjustments.invoiceId,
       invoiceNumber: invoiceDocument.number,
-      /** An approved credit note's own number. */
+      /** An approved credit note's own document and number. */
+      documentId: invoiceAdjustments.documentId,
       number: documents.number,
       kind: invoiceAdjustments.kind,
       amountCents: invoiceAdjustments.amountCents,

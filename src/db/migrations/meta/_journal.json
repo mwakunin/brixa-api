@@ -148,6 +148,55 @@
       "when": 1793825609572,
       "tag": "0020_review_fixes_triggers",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1793966757309,
+      "tag": "0021_payments",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1793966761921,
+      "tag": "0022_payments_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1793968227023,
+      "tag": "0023_refunds",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1793968261134,
+      "tag": "0024_refunds_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1793974371544,
+      "tag": "0025_review_fixes_5",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1793974394685,
+      "tag": "0026_open_shift_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1793977020333,
+      "tag": "0027_shift_closing_check",
+      "breakpoints": true
     }
   ]
 }
