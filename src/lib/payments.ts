@@ -2,7 +2,7 @@ import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 
-import { accounts, admissions, allocations, cashierShifts, documents, encounters, invoices, patients, payments, refunds } from "@/db/schema";
+import { accounts, admissions, allocations, cashierShifts, documents, encounters, invoices, mpesaTransactions, patients, payments, refunds } from "@/db/schema";
 
 import type { PrintedContent } from "./document-content";
 import type { PatientActor } from "./patients";
@@ -186,13 +186,16 @@ export async function listShifts(tx: AppDb) {
 // Payments
 // ---------------------------------------------------------------------------
 
-const METHODS: Record<PaymentMethod, string> = { cash: "Cash", card: "Card", bank: "Bank transfer" };
+const METHODS: Record<PaymentMethod, string> = { cash: "Cash", card: "Card", bank: "Bank transfer", mpesa_c2b: "M-Pesa", mpesa_stk: "M-Pesa" };
 
 export interface PaymentInput {
   patientId: string;
   method: PaymentMethod;
   amountCents: number;
+  /** The card slip's or bank transfer's reference, or the M-Pesa receipt number. */
   reference?: string;
+  /** The M-Pesa transaction this records, for the M-Pesa methods. */
+  mpesaTransactionId?: string;
   /** Paid towards this visit or admission: a deposit. */
   encounterId?: string;
   /** Paid against this bill: as much as it owes is applied at once. */
@@ -289,14 +292,20 @@ async function printedReceipt(
   };
 }
 
-/** Records money received from a patient, issues its receipt, and applies it to the bill named. */
-export async function recordPayment(tx: AppDb, facilityId: string, input: PaymentInput, actor: PatientActor, at = new Date()): Promise<string> {
+/**
+ * Records money received from a patient, issues its receipt, and applies it
+ * to the bill named. `actor` is null only for M-Pesa the system matched by
+ * itself; the receipt then has no issuer and the payment no receiver.
+ */
+export async function recordPayment(tx: AppDb, facilityId: string, input: PaymentInput, actor: PatientActor | null, at = new Date()): Promise<string> {
   const [patient] = await tx.select({ id: patients.id }).from(patients).where(eq(patients.id, input.patientId)).limit(1);
   if (!patient)
     throw new PaymentError("patient_not_found");
 
   let shiftId: string | null = null;
   if (input.method === "cash" || input.method === "card") {
+    if (!actor)
+      throw new PaymentError("shift_required");
     // A share lock, so the shift cannot close under this payment.
     const [shift] = await tx
       .select({ id: cashierShifts.id })
@@ -330,12 +339,13 @@ export async function recordPayment(tx: AppDb, facilityId: string, input: Paymen
     encounterId: target.encounterId,
     documentId: receipt.id,
     receivedAt: at,
-    receivedBy: actor.membershipId,
+    receivedBy: actor?.membershipId ?? null,
+    mpesaTransactionId: input.mpesaTransactionId ?? null,
   }).returning({ id: payments.id });
 
   await recordAudit(tx, {
     facilityId,
-    actorId: actor.userId,
+    actorId: actor?.userId ?? null,
     action: "payment.recorded",
     entityType: "payment",
     entityId: payment.id,
@@ -374,6 +384,12 @@ export async function reversePayment(tx: AppDb, facilityId: string, paymentId: s
   await tx.update(payments)
     .set({ reversedAt: at, reversedBy: actor.membershipId, reversalReason: reason })
     .where(eq(payments.id, paymentId));
+  // Its M-Pesa money is still real: back to the queue, to be put where it belongs.
+  if (payment.mpesaTransactionId) {
+    await tx.update(mpesaTransactions)
+      .set({ status: "unmatched", statusReason: "Returned to the queue when its payment was reversed" })
+      .where(eq(mpesaTransactions.id, payment.mpesaTransactionId));
+  }
 
   await recordAudit(tx, {
     facilityId,

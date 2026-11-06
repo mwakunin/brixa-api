@@ -13,7 +13,8 @@ import { recordPayment } from "@/lib/payments";
 import { resetDb } from "@/test/helpers";
 import { at, call, hospital, TODAY } from "@/test/hospital";
 
-const YEAR = TODAY.slice(0, 4);
+/** The Kenyan year now: read when used, since TODAY is re-read for each test. */
+const year = () => TODAY.slice(0, 4);
 
 let h: Hospital;
 
@@ -103,8 +104,8 @@ describe("payments", () => {
     const res = await pay({ patientId, method: "cash", amountCents: 60_000, invoiceId });
     expect(res.status).toBe(201);
     const payment = await res.json();
-    expect(payment).toMatchObject({ receiptNumber: `RCT-${YEAR}-000001`, amountCents: 60_000, unallocatedCents: 9_200 });
-    expect(payment.allocations).toMatchObject([{ invoiceId, invoiceNumber: `INV-${YEAR}-000001`, amountCents: 50_800 }]);
+    expect(payment).toMatchObject({ receiptNumber: `RCT-${year()}-000001`, amountCents: 60_000, unallocatedCents: 9_200 });
+    expect(payment.allocations).toMatchObject([{ invoiceId, invoiceNumber: `INV-${year()}-000001`, amountCents: 50_800 }]);
     expect(await invoice(invoiceId)).toMatchObject({ paidCents: 50_800, balanceCents: 0 });
 
     const [receipt] = await db.select().from(documents).where(eq(documents.id, payment.documentId));
@@ -112,7 +113,7 @@ describe("payments", () => {
       title: "Receipt",
       fields: expect.arrayContaining([
         { label: "Received from", value: "Test Patient" },
-        { label: "For", value: `Invoice INV-${YEAR}-000001` },
+        { label: "For", value: `Invoice INV-${year()}-000001` },
         { label: "Paid by", value: "Cash" },
       ]),
       totals: [
@@ -153,7 +154,7 @@ describe("payments", () => {
     const deposit = await (await pay({ patientId, method: "cash", amountCents: 600_000, encounterId })).json();
     const topUp = await (await pay({ patientId, method: "cash", amountCents: 1_000, encounterId })).json();
     const [receipt] = await db.select().from(documents).where(eq(documents.id, deposit.documentId));
-    expect(receipt.content.fields).toContainEqual({ label: "For", value: `Deposit, admission ADM-${YEAR}-0001` });
+    expect(receipt.content.fields).toContainEqual({ label: "For", value: `Deposit, admission ADM-${year()}-0001` });
 
     // Two nights at KES 2,500.
     await tx(t => dischargePatient(t, h.facility.id, encounterId, "home", h.nurse.actor, at(2, 9)));
@@ -177,7 +178,7 @@ describe("payments", () => {
     expect(payment).toMatchObject({ unallocatedCents: 9_200, allocations: [{ invoiceId, amountCents: 50_800 }] });
     expect(await invoice(invoiceId)).toMatchObject({ balanceCents: 0 });
     const [receipt] = await db.select().from(documents).where(eq(documents.id, payment.documentId));
-    expect(receipt.content.fields).toContainEqual({ label: "For", value: `Invoice INV-${YEAR}-000001` });
+    expect(receipt.content.fields).toContainEqual({ label: "For", value: `Invoice INV-${year()}-000001` });
 
     // Once it owes nothing, more money towards the visit stays as its credit.
     const more = await (await pay({ patientId, method: "cash", amountCents: 1_000, encounterId })).json();

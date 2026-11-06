@@ -49,7 +49,7 @@ const PaymentRefundSchema = z.object({
 const PaymentSchema = z.object({
   id: z.uuid(),
   accountId: z.uuid(),
-  method: z.enum(["cash", "card", "bank"]),
+  method: z.enum(["cash", "card", "bank", "mpesa_c2b", "mpesa_stk"]),
   amountCents: z.number().int(),
   reference: z.string().nullable(),
   cashierShiftId: z.uuid().nullable(),
@@ -57,7 +57,8 @@ const PaymentSchema = z.object({
   receiptNumber: z.string(),
   documentId: z.uuid(),
   receivedAt: z.string(),
-  receivedBy: z.uuid(),
+  /** Null for M-Pesa the system matched by itself. */
+  receivedBy: z.uuid().nullable(),
   reversedAt: z.string().nullable(),
   reversalReason: z.string().nullable(),
   /** Credit still on the account from this payment: not applied to a bill, nor refunded. */

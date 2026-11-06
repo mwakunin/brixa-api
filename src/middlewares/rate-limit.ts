@@ -65,7 +65,10 @@ const trustedProxies = new Set(
  * as far as TRUST_PROXY_HOPS allows (lib/client-ip.ts), with an IPv6 address
  * counted by its /64.
  */
-export const byAddress: KeySource = (c) => {
+export const byAddress: KeySource = c => `ip:${digest("ip", rateLimitBucket(callerAddress(c) ?? "unknown"))}`;
+
+/** The caller's address, as far as the configured proxies can be trusted to report it. */
+export function callerAddress(c: Context<AppBindings>): string | undefined {
   let socketAddress: string | undefined;
   try {
     socketAddress = getConnInfo(c).remote.address;
@@ -74,14 +77,12 @@ export const byAddress: KeySource = (c) => {
     // No socket behind this request, e.g. app.request() in tests.
   }
 
-  const ip = resolveClientIp(
+  return resolveClientIp(
     { socketAddress, xForwardedFor: c.req.header("x-forwarded-for") },
     env.TRUST_PROXY_HOPS,
     trustedProxies,
-  ) ?? "unknown";
-
-  return `ip:${digest("ip", rateLimitBucket(ip))}`;
-};
+  ) ?? undefined;
+}
 
 /** The signed-in user, else the address: one person behind a shared hospital connection cannot exhaust everyone's budget. */
 export const byUserOrAddress: KeySource = c => c.var.user?.id ? `user:${c.var.user.id}` : byAddress(c);

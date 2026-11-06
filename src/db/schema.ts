@@ -79,6 +79,17 @@ export function oneOf(name: string, column: unknown, values: readonly string[]) 
 }
 
 /**
+ * A number as an M-Pesa payer might type it, made comparable: uppercased,
+ * spaces and separators dropped (`inv-2026 000123` reads as `INV2026000123`).
+ * One definition for the matching queries (`lib/mpesa.ts`) and the indexes
+ * that serve them: Postgres uses an expression index only for the very same
+ * expression.
+ */
+export function normalisedNumber(column: unknown) {
+  return sql`upper(regexp_replace(${column}, '[\\s/\\-_.]', '', 'g'))`;
+}
+
+/**
  * The array form of `oneOf`: every element of a `text[]` column is a known
  * value. An empty array passes `<@`, so "at least one" is a separate CHECK
  * where it matters.
@@ -256,6 +267,17 @@ export const auditLog = pgTable("audit_log", {
     | "refund.paid"
     | "refund.reversed"
     | "refund.listed"
+    | "mpesa.settings_changed"
+    | "mpesa.received"
+    | "mpesa.assigned"
+    | "mpesa.rejected"
+    | "mpesa.listed"
+    | "mpesa.stk_requested"
+    | "adjustment.reversal_requested"
+    | "adjustment.reversed"
+    | "adjustment.reversal_rejected"
+    | "adjustment.reversal_withdrawn"
+    | "adjustment.reversals_listed"
   >().notNull(),
   /** What it happened to. Not a foreign key: the log outlives what it names. */
   entityType: text().notNull(),
@@ -325,6 +347,17 @@ export const auditLog = pgTable("audit_log", {
     "refund.paid",
     "refund.reversed",
     "refund.listed",
+    "mpesa.settings_changed",
+    "mpesa.received",
+    "mpesa.assigned",
+    "mpesa.rejected",
+    "mpesa.listed",
+    "mpesa.stk_requested",
+    "adjustment.reversal_requested",
+    "adjustment.reversed",
+    "adjustment.reversal_rejected",
+    "adjustment.reversal_withdrawn",
+    "adjustment.reversals_listed",
   ]),
 ]);
 
@@ -409,7 +442,7 @@ export const numberSeriesCounters = pgTable("number_series_counters", {
 export const outbox = pgTable("outbox", {
   id: uuid().primaryKey().defaultRandom(),
   facilityId: uuid().notNull().references(() => facilities.id),
-  operation: text().$type<"invitation.send">().notNull(),
+  operation: text().$type<"invitation.send" | "mpesa.register_urls" | "mpesa.stk_push">().notNull(),
   subjectId: uuid().notNull(),
   status: text().$type<"pending" | "done" | "skipped" | "failed">().default("pending").notNull(),
   attempts: integer().default(0).notNull(),
@@ -422,7 +455,7 @@ export const outbox = pgTable("outbox", {
 }, t => [
   index("outbox_pending_index").on(t.availableAt).where(sql`${t.status} = 'pending'`),
   index().on(t.facilityId, t.operation, t.subjectId),
-  oneOf("outbox_operation_known", t.operation, ["invitation.send"]),
+  oneOf("outbox_operation_known", t.operation, ["invitation.send", "mpesa.register_urls", "mpesa.stk_push"]),
   oneOf("outbox_status_known", t.status, ["pending", "done", "skipped", "failed"]),
   check("outbox_attempts_nonnegative", sql`${t.attempts} >= 0`),
 ]);
@@ -547,6 +580,8 @@ export const documents = pgTable("documents", {
 }, t => [
   unique("documents_facility_id_id_key").on(t.facilityId, t.id),
   unique("documents_facility_id_kind_number_key").on(t.facilityId, t.kind, t.number),
+  // M-Pesa matching: an invoice number as a payer typed it.
+  index("documents_normalised_invoice_number_index").on(t.facilityId, normalisedNumber(t.number)).where(sql`${t.kind} = 'invoice'`),
   foreignKey({
     name: "documents_issued_by_fk",
     columns: [t.facilityId, t.issuedBy],
@@ -637,6 +672,8 @@ export const patientNumbers = pgTable("patient_numbers", {
   issuedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
 }, t => [
   unique("patient_numbers_facility_id_number_key").on(t.facilityId, t.number),
+  // M-Pesa matching: an OP or IP number as a payer typed it.
+  index("patient_numbers_normalised_number_index").on(t.facilityId, normalisedNumber(t.number)),
   // At most one OP and one IP number per patient.
   unique("patient_numbers_patient_id_kind_key").on(t.patientId, t.kind),
   index("patient_numbers_number_search_index").on(t.facilityId, sql`upper(${t.number})`),
@@ -936,6 +973,8 @@ export const admissions = pgTable("admissions", {
   unique("admissions_facility_id_id_key").on(t.facilityId, t.id),
   unique("admissions_encounter_id_key").on(t.encounterId),
   unique("admissions_facility_id_admission_number_key").on(t.facilityId, t.admissionNumber),
+  // M-Pesa matching: an admission number as a payer typed it.
+  index("admissions_normalised_number_index").on(t.facilityId, normalisedNumber(t.admissionNumber)),
   foreignKey({ name: "admissions_encounter_fk", columns: [t.facilityId, t.encounterId], foreignColumns: [encounters.facilityId, encounters.id] }),
   foreignKey({ name: "admissions_admitted_by_fk", columns: [t.facilityId, t.admittedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
   foreignKey({ name: "admissions_discharged_by_fk", columns: [t.facilityId, t.dischargedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
@@ -1051,7 +1090,7 @@ export const charges = pgTable("charges", {
 export const jobFailures = pgTable("job_failures", {
   id: uuid().primaryKey().defaultRandom(),
   facilityId: uuid().notNull().references(() => facilities.id),
-  job: text().$type<"bed_day_accrual">().notNull(),
+  job: text().$type<"bed_day_accrual" | "reconciliation">().notNull(),
   /** What it was working on, e.g. the encounter. Not a foreign key: the log outlives it. */
   subjectId: uuid(),
   /** What is wrong, for whoever fixes it. Ids and codes only (rule 10). */
@@ -1059,8 +1098,11 @@ export const jobFailures = pgTable("job_failures", {
   failedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
   resolvedAt: timestamp({ withTimezone: true }),
 }, t => [
-  uniqueIndex("job_failures_open_once").on(t.facilityId, t.job, t.subjectId, t.error).where(sql`${t.resolvedAt} IS NULL`),
-  oneOf("job_failures_job_known", t.job, ["bed_day_accrual"]),
+  // A facility-level failure has no subject; coalesced, so it too is open once.
+  uniqueIndex("job_failures_open_once")
+    .on(t.facilityId, t.job, sql`coalesce(${t.subjectId}, '00000000-0000-0000-0000-000000000000'::uuid)`, t.error)
+    .where(sql`${t.resolvedAt} IS NULL`),
+  oneOf("job_failures_job_known", t.job, ["bed_day_accrual", "reconciliation"]),
 ]);
 
 // ---------------------------------------------------------------------------
@@ -1241,7 +1283,20 @@ export const invoiceAdjustments = pgTable("invoice_adjustments", {
   decidedAt: timestamp({ withTimezone: true }),
   /** An approved credit note's printed document, carrying its number. */
   documentId: uuid(),
+  /** Set once, when a second person approves reversing it (`adjustment_reversals`). */
+  reversedAt: timestamp({ withTimezone: true }),
+  reversedBy: uuid(),
+  reversalReason: text(),
 }, t => [
+  unique("invoice_adjustments_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({ name: "invoice_adjustments_reversed_by_fk", columns: [t.facilityId, t.reversedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  // Reversed only once approved, with a reason; each branch says IS NULL or IS NOT NULL outright.
+  check(
+    "invoice_adjustments_reversal",
+    sql`(${t.reversedAt} IS NULL AND ${t.reversedBy} IS NULL AND ${t.reversalReason} IS NULL)
+      OR (${t.status} = 'approved' AND ${t.reversedAt} IS NOT NULL AND ${t.reversedBy} IS NOT NULL
+        AND ${t.reversalReason} IS NOT NULL AND length(btrim(${t.reversalReason})) > 0)`,
+  ),
   foreignKey({
     name: "invoice_adjustments_invoice_fk",
     columns: [t.facilityId, t.invoiceId, t.accountId],
@@ -1267,6 +1322,39 @@ export const invoiceAdjustments = pgTable("invoice_adjustments", {
   check(
     "invoice_adjustments_credit_note_document",
     sql`(${t.kind} = 'credit_note' AND ${t.status} = 'approved') = (${t.documentId} IS NOT NULL)`,
+  ),
+]);
+
+/**
+ * A request to undo an approved adjustment (SCHEMA.md §7.5). Asked by one
+ * person, approved by another (rule 24); approving sets the adjustment's
+ * reversal columns, returning its amount to the invoice's balance, and voids
+ * a credit note's document. At most one is open (pending or approved) per
+ * adjustment.
+ */
+export const adjustmentReversals = pgTable("adjustment_reversals", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  adjustmentId: uuid().notNull(),
+  reason: text().notNull(),
+  status: text().$type<"pending" | "approved" | "rejected" | "withdrawn">().default("pending").notNull(),
+  requestedBy: uuid().notNull(),
+  requestedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  decidedBy: uuid(),
+  decidedAt: timestamp({ withTimezone: true }),
+}, t => [
+  foreignKey({ name: "adjustment_reversals_adjustment_fk", columns: [t.facilityId, t.adjustmentId], foreignColumns: [invoiceAdjustments.facilityId, invoiceAdjustments.id] }),
+  foreignKey({ name: "adjustment_reversals_requested_by_fk", columns: [t.facilityId, t.requestedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "adjustment_reversals_decided_by_fk", columns: [t.facilityId, t.decidedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  uniqueIndex("adjustment_reversals_one_open").on(t.adjustmentId).where(sql`${t.status} IN ('pending', 'approved')`),
+  oneOf("adjustment_reversals_status_known", t.status, ["pending", "approved", "rejected", "withdrawn"]),
+  check("adjustment_reversals_reason_present", sql`length(btrim(${t.reason})) > 0`),
+  check(
+    "adjustment_reversals_decision",
+    sql`(${t.status} = 'pending' AND ${t.decidedBy} IS NULL AND ${t.decidedAt} IS NULL)
+      OR (${t.status} IN ('approved', 'rejected') AND ${t.decidedBy} IS NOT NULL AND ${t.decidedAt} IS NOT NULL
+          AND ${t.decidedBy} <> ${t.requestedBy})
+      OR (${t.status} = 'withdrawn' AND ${t.decidedBy} IS NOT NULL AND ${t.decidedBy} = ${t.requestedBy} AND ${t.decidedAt} IS NOT NULL)`,
   ),
 ]);
 
@@ -1302,6 +1390,144 @@ export const cashierShifts = pgTable("cashier_shifts", {
   ),
 ]);
 
+// ---------------------------------------------------------------------------
+// M-Pesa (SCHEMA.md §7.4, P2 slice 6)
+// ---------------------------------------------------------------------------
+
+/**
+ * A facility's paybill and Daraja credentials, set by its admin (decided
+ * 2026-11-06). The consumer key, secret and STK passkey are stored as one
+ * value encrypted with CREDENTIALS_ENCRYPTION_KEY and never returned. The
+ * callback token is the secret in this facility's callback URLs: a call
+ * from Safaricom carries no session, and the token is what names the
+ * facility (the shortcode in its body is caller-supplied and decides
+ * nothing).
+ */
+export const mpesaSettings = pgTable("mpesa_settings", {
+  facilityId: uuid().primaryKey().references(() => facilities.id),
+  shortcode: text().notNull(),
+  credentials: text().notNull(),
+  callbackToken: text().notNull().unique(),
+  /** When Safaricom last accepted this paybill's C2B callback URLs. */
+  urlsRegisteredAt: timestamp({ withTimezone: true }),
+  updatedBy: uuid().notNull(),
+  updatedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+}, t => [
+  foreignKey({ name: "mpesa_settings_updated_by_fk", columns: [t.facilityId, t.updatedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  check("mpesa_settings_shortcode_shape", sql`${t.shortcode} ~ '^[0-9]{5,7}$'`),
+  check("mpesa_settings_callback_token_shape", sql`${t.callbackToken} ~ '^[A-Za-z0-9_-]{43}$'`),
+]);
+
+/**
+ * Money Safaricom says arrived, exactly as it said it: a paybill (C2B)
+ * confirmation or a successful STK push. Append-only but for its status
+ * (unmatched → allocated, or rejected; back to unmatched if its payment is
+ * reversed), so "where did this money go" always has the original evidence.
+ * A payment points here; the receipt number is unique per facility, which is
+ * what makes a Safaricom retry harmless.
+ */
+export const mpesaTransactions = pgTable("mpesa_transactions", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  source: text().$type<"c2b" | "stk">().notNull(),
+  /** Safaricom's receipt number, e.g. `SKL4H7XQ2P`. */
+  transactionId: text().notNull(),
+  shortcode: text().notNull(),
+  /** What the payer typed as the account number (C2B only). */
+  accountReference: text(),
+  /** The paying phone: E.164 when Safaricom sends it whole, else as sent (often masked). */
+  msisdn: text().notNull(),
+  payerName: text(),
+  amountCents: integer().notNull(),
+  transactedAt: timestamp({ withTimezone: true }).notNull(),
+  rawPayload: jsonb().notNull(),
+  status: text().$type<"unmatched" | "allocated" | "rejected">().default("unmatched").notNull(),
+  statusReason: text(),
+  receivedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+}, t => [
+  unique("mpesa_transactions_facility_id_id_key").on(t.facilityId, t.id),
+  unique("mpesa_transactions_facility_id_transaction_id_key").on(t.facilityId, t.transactionId),
+  index("mpesa_transactions_status_index").on(t.facilityId, t.status),
+  oneOf("mpesa_transactions_source_known", t.source, ["c2b", "stk"]),
+  oneOf("mpesa_transactions_status_known", t.status, ["unmatched", "allocated", "rejected"]),
+  check("mpesa_transactions_amount_whole_shillings", sql`${t.amountCents} > 0 AND ${t.amountCents} % 100 = 0`),
+  check(
+    "mpesa_transactions_rejected_reason",
+    sql`${t.status} <> 'rejected' OR (${t.statusReason} IS NOT NULL AND length(btrim(${t.statusReason})) > 0)`,
+  ),
+]);
+
+/**
+ * A prompt sent to a patient's phone to pay the paybill, asked for at the
+ * counter and sent through the outbox (rule 18). Its outcome comes back on
+ * Safaricom's callback: `completed` names the transaction that paid it.
+ */
+export const mpesaStkRequests = pgTable("mpesa_stk_requests", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  patientId: uuid().notNull(),
+  /** What it pays: a bill, a visit or admission (a deposit), or neither (credit). */
+  invoiceId: uuid(),
+  encounterId: uuid(),
+  /** The phone prompted, E.164 (rule 13). */
+  phone: text().notNull(),
+  amountCents: integer().notNull(),
+  requestedBy: uuid().notNull(),
+  requestedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  /** `sending` is set before Safaricom is called and never sent from again: a crash there must not prompt twice. */
+  status: text().$type<"queued" | "sending" | "sent" | "completed" | "failed">().default("queued").notNull(),
+  checkoutRequestId: text(),
+  resultCode: integer(),
+  resultDesc: text(),
+  mpesaTransactionId: uuid(),
+  completedAt: timestamp({ withTimezone: true }),
+}, t => [
+  unique("mpesa_stk_requests_facility_id_id_key").on(t.facilityId, t.id),
+  uniqueIndex("mpesa_stk_requests_checkout_index").on(t.facilityId, t.checkoutRequestId).where(sql`${t.checkoutRequestId} IS NOT NULL`),
+  foreignKey({ name: "mpesa_stk_requests_patient_fk", columns: [t.facilityId, t.patientId], foreignColumns: [patients.facilityId, patients.id] }),
+  foreignKey({ name: "mpesa_stk_requests_invoice_fk", columns: [t.facilityId, t.invoiceId], foreignColumns: [invoices.facilityId, invoices.id] }),
+  foreignKey({ name: "mpesa_stk_requests_encounter_fk", columns: [t.facilityId, t.encounterId], foreignColumns: [encounters.facilityId, encounters.id] }),
+  foreignKey({ name: "mpesa_stk_requests_requested_by_fk", columns: [t.facilityId, t.requestedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "mpesa_stk_requests_transaction_fk", columns: [t.facilityId, t.mpesaTransactionId], foreignColumns: [mpesaTransactions.facilityId, mpesaTransactions.id] }),
+  oneOf("mpesa_stk_requests_status_known", t.status, ["queued", "sending", "sent", "completed", "failed"]),
+  check("mpesa_stk_requests_phone_e164", sql`${t.phone} ~ '^\\+254[0-9]{9}$'`),
+  check("mpesa_stk_requests_amount_whole_shillings", sql`${t.amountCents} > 0 AND ${t.amountCents} % 100 = 0`),
+  check("mpesa_stk_requests_one_target", sql`${t.invoiceId} IS NULL OR ${t.encounterId} IS NULL`),
+  // Each branch says IS NULL or IS NOT NULL outright: a CHECK passes on NULL.
+  check(
+    "mpesa_stk_requests_lifecycle",
+    sql`(${t.status} IN ('queued', 'sending') AND ${t.checkoutRequestId} IS NULL AND ${t.mpesaTransactionId} IS NULL AND ${t.completedAt} IS NULL)
+      OR (${t.status} = 'sent' AND ${t.checkoutRequestId} IS NOT NULL AND ${t.mpesaTransactionId} IS NULL AND ${t.completedAt} IS NULL)
+      OR (${t.status} = 'completed' AND ${t.checkoutRequestId} IS NOT NULL AND ${t.mpesaTransactionId} IS NOT NULL AND ${t.completedAt} IS NOT NULL)
+      OR (${t.status} = 'failed' AND ${t.mpesaTransactionId} IS NULL AND ${t.completedAt} IS NOT NULL)`,
+  ),
+]);
+
+/**
+ * Each call to or from Safaricom that is not a C2B confirmation (those are
+ * `mpesa_transactions`): what was sent, without secrets, and what came back.
+ * Append-only (rule 18). Payloads live here, never in logs (rule 10).
+ */
+export const gatewayExchanges = pgTable("gateway_exchanges", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  gateway: text().$type<"daraja">().notNull(),
+  operation: text().$type<"register_urls" | "stk_push" | "stk_callback" | "c2b_confirmation">().notNull(),
+  /** The STK request an `stk_*` exchange belongs to, when it is known. */
+  stkRequestId: uuid(),
+  request: jsonb(),
+  response: jsonb(),
+  httpStatus: integer(),
+  error: text(),
+  createdAt: createdAt(),
+}, t => [
+  foreignKey({ name: "gateway_exchanges_stk_request_fk", columns: [t.facilityId, t.stkRequestId], foreignColumns: [mpesaStkRequests.facilityId, mpesaStkRequests.id] }),
+  index("gateway_exchanges_stk_request_index").on(t.stkRequestId),
+  oneOf("gateway_exchanges_gateway_known", t.gateway, ["daraja"]),
+  oneOf("gateway_exchanges_operation_known", t.operation, ["register_urls", "stk_push", "stk_callback", "c2b_confirmation"]),
+  check("gateway_exchanges_register_has_no_request", sql`${t.operation} NOT IN ('register_urls', 'c2b_confirmation') OR ${t.stkRequestId} IS NULL`),
+]);
+
 /**
  * Money received, as credit on one account. Allocations decide which bills
  * it settles; what is not allocated is the account's credit (a deposit).
@@ -1312,9 +1538,9 @@ export const payments = pgTable("payments", {
   id: uuid().primaryKey().defaultRandom(),
   facilityId: uuid().notNull().references(() => facilities.id),
   accountId: uuid().notNull(),
-  method: text().$type<"cash" | "card" | "bank">().notNull(),
+  method: text().$type<"cash" | "card" | "bank" | "mpesa_c2b" | "mpesa_stk">().notNull(),
   amountCents: integer().notNull(),
-  /** The card slip's or bank transfer's reference; cash has none. */
+  /** The card slip's or bank transfer's reference, or the M-Pesa receipt number; cash has none. */
   reference: text(),
   /** Required for cash and card. */
   cashierShiftId: uuid(),
@@ -1323,12 +1549,20 @@ export const payments = pgTable("payments", {
   /** The receipt, carrying its number. */
   documentId: uuid().notNull(),
   receivedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
-  receivedBy: uuid().notNull(),
+  /** Who took it; null for M-Pesa the system matched by itself. */
+  receivedBy: uuid(),
+  /** The M-Pesa transaction it records, for the M-Pesa methods. */
+  mpesaTransactionId: uuid(),
   reversedAt: timestamp({ withTimezone: true }),
   reversedBy: uuid(),
   reversalReason: text(),
 }, t => [
   unique("payments_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({ name: "payments_mpesa_transaction_fk", columns: [t.facilityId, t.mpesaTransactionId], foreignColumns: [mpesaTransactions.facilityId, mpesaTransactions.id] }),
+  // One live payment per M-Pesa transaction: a retry or a race cannot pay twice.
+  uniqueIndex("payments_one_live_per_mpesa_transaction").on(t.mpesaTransactionId).where(sql`${t.reversedAt} IS NULL`),
+  check("payments_mpesa_transaction", sql`(${t.method} IN ('mpesa_c2b', 'mpesa_stk')) = (${t.mpesaTransactionId} IS NOT NULL)`),
+  check("payments_received_by", sql`${t.receivedBy} IS NOT NULL OR ${t.method} IN ('mpesa_c2b', 'mpesa_stk')`),
   // M1: what refers to a payment names its account too.
   unique("payments_facility_id_id_account_id_key").on(t.facilityId, t.id, t.accountId),
   foreignKey({ name: "payments_account_fk", columns: [t.facilityId, t.accountId], foreignColumns: [accounts.facilityId, accounts.id] }),
@@ -1344,7 +1578,7 @@ export const payments = pgTable("payments", {
   index("payments_account_index").on(t.accountId),
   index("payments_shift_index").on(t.cashierShiftId),
   index("payments_encounter_index").on(t.encounterId),
-  oneOf("payments_method_known", t.method, ["cash", "card", "bank"]),
+  oneOf("payments_method_known", t.method, ["cash", "card", "bank", "mpesa_c2b", "mpesa_stk"]),
   check("payments_amount_whole_shillings", sql`${t.amountCents} > 0 AND ${t.amountCents} % 100 = 0`),
   check(
     "payments_reference",
@@ -1357,7 +1591,7 @@ export const payments = pgTable("payments", {
     "payments_reversal",
     sql`(${t.reversedAt} IS NULL AND ${t.reversedBy} IS NULL AND ${t.reversalReason} IS NULL)
       OR (${t.reversedAt} IS NOT NULL AND ${t.reversedBy} IS NOT NULL AND ${t.reversalReason} IS NOT NULL AND length(btrim(${t.reversalReason})) > 0
-          AND ${t.reversedBy} <> ${t.receivedBy})`,
+          AND (${t.receivedBy} IS NULL OR ${t.reversedBy} <> ${t.receivedBy}))`,
   ),
 ]);
 
@@ -1373,7 +1607,8 @@ export const allocations = pgTable("allocations", {
   invoiceId: uuid().notNull(),
   accountId: uuid().notNull(),
   amountCents: integer().notNull(),
-  allocatedBy: uuid().notNull(),
+  /** Null when the system applied it: a matched M-Pesa payment. */
+  allocatedBy: uuid(),
   allocatedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
   reversedAt: timestamp({ withTimezone: true }),
   reversedBy: uuid(),
@@ -1527,8 +1762,13 @@ export const TENANT_TABLES = [
   "invoice_lines",
   "charge_assignments",
   "invoice_adjustments",
+  "adjustment_reversals",
   "cashier_shifts",
   "payments",
   "allocations",
   "refunds",
+  "mpesa_settings",
+  "mpesa_transactions",
+  "mpesa_stk_requests",
+  "gateway_exchanges",
 ] as const;

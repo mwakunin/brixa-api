@@ -45,6 +45,12 @@ const OWNER_ALLOWLIST = new Map([
     + "the invitation it names, after which the work runs as that tenant",
   ],
   [
+    "lib/mpesa-callbacks.ts",
+    "Safaricom calls back with no session and no facility; the secret token "
+    + "in the callback path is the whole lookup and yields only the facility "
+    + "whose URLs carry it, after which the work runs as that tenant",
+  ],
+  [
     "lib/verify-document.ts",
     "checking a printed document arrives from its QR code with no session and "
     + "no facility; the code is the whole lookup and yields only the facility "
@@ -54,6 +60,11 @@ const OWNER_ALLOWLIST = new Map([
     "jobs/bed-days.ts",
     "the nightly run serves every facility; it lists them, and records a "
     + "facility whose run failed, and does each facility's work as that tenant",
+  ],
+  [
+    "jobs/reconciliation.ts",
+    "the daily check serves every facility; it lists them, and records a "
+    + "facility whose check failed, and checks each facility as that tenant",
   ],
   [
     "jobs/outbox-worker.ts",

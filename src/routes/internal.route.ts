@@ -8,6 +8,7 @@ import type { AppBindings } from "@/lib/types";
 import env from "@/env";
 import { accrueAllBedDays } from "@/jobs/bed-days";
 import { drainOutbox } from "@/jobs/outbox-worker";
+import { reconcileAll } from "@/jobs/reconciliation";
 import { DRAIN_PATH, INVOKER_AUDIENCE } from "@/lib/cloud-tasks";
 import { createRouter } from "@/lib/create-app";
 import { googleInvokerVerifier } from "@/lib/invoker-auth";
@@ -32,6 +33,7 @@ import { googleInvokerVerifier } from "@/lib/invoker-auth";
  */
 /** The nightly bed-day run. */
 export const BED_DAYS_PATH = "/internal/jobs/bed-days";
+export const RECONCILIATION_PATH = "/internal/jobs/reconciliation";
 
 export function createInternalRouter(verifier: InvokerVerifier) {
   const router = createRouter();
@@ -46,6 +48,7 @@ export function createInternalRouter(verifier: InvokerVerifier) {
 
   router.post(DRAIN_PATH, async c => c.json(await drainOutbox(), HttpStatusCodes.OK));
   router.post(BED_DAYS_PATH, async c => c.json(await accrueAllBedDays(), HttpStatusCodes.OK));
+  router.post(RECONCILIATION_PATH, async c => c.json(await reconcileAll(), HttpStatusCodes.OK));
 
   return router;
 }

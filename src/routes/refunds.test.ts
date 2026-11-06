@@ -12,7 +12,8 @@ import { approveRefund, requestRefund } from "@/lib/refunds";
 import { resetDb } from "@/test/helpers";
 import { call, hospital, TODAY } from "@/test/hospital";
 
-const YEAR = TODAY.slice(0, 4);
+/** The Kenyan year now: read when used, since TODAY is re-read for each test. */
+const year = () => TODAY.slice(0, 4);
 
 let h: Hospital;
 
@@ -77,7 +78,7 @@ describe("refunds", () => {
     const asked = await ask(credit.id);
     expect(asked.status).toBe(201);
     const refund = await asked.json();
-    expect(refund).toMatchObject({ amountCents: 60_000, status: "pending", number: null, receiptNumber: `RCT-${YEAR}-000001` });
+    expect(refund).toMatchObject({ amountCents: 60_000, status: "pending", number: null, receiptNumber: `RCT-${year()}-000001` });
     expect((await decide(refund.id, "approve", h.clerk)).status).toBe(403);
     expect(await (await decide(refund.id, "approve")).json()).toMatchObject({ status: "approved", decidedBy: h.finance.actor.membershipId });
     expect(await payment(credit.id)).toMatchObject({ unallocatedCents: 0, refunds: [{ id: refund.id, status: "approved", number: null }] });
@@ -85,7 +86,7 @@ describe("refunds", () => {
     const paid = await payOut(refund.id);
     expect(paid.status).toBe(200);
     const done = await paid.json();
-    expect(done).toMatchObject({ number: `RFD-${YEAR}-000001`, method: "cash", reference: null, paidBy: h.cashier.actor.membershipId });
+    expect(done).toMatchObject({ number: `RFD-${year()}-000001`, method: "cash", reference: null, paidBy: h.cashier.actor.membershipId });
     expect(done.documentId).toEqual(expect.any(String));
     expect(await refusal(await payOut(refund.id))).toEqual([409, "already_paid"]);
 
@@ -93,12 +94,12 @@ describe("refunds", () => {
     const [row] = await db.select().from(refunds).where(eq(refunds.id, refund.id));
     expect(row.documentId).toBe(done.documentId);
     const [printed] = await db.select().from(documents).where(eq(documents.id, row.documentId!));
-    expect(printed).toMatchObject({ kind: "refund", number: `RFD-${YEAR}-000001` });
+    expect(printed).toMatchObject({ kind: "refund", number: `RFD-${year()}-000001` });
     expect(printed.content).toMatchObject({
       title: "Refund",
       fields: expect.arrayContaining([
         { label: "Paid to", value: "Test Patient" },
-        { label: "Refund of", value: `Receipt RCT-${YEAR}-000001` },
+        { label: "Refund of", value: `Receipt RCT-${year()}-000001` },
         { label: "Reason", value: "Cover came through" },
         { label: "Paid by", value: "Cash" },
       ]),
@@ -162,12 +163,12 @@ describe("refunds", () => {
     expect((await payOut(cash.id, { method: "cash", reference: "X123" })).status).toBe(422);
 
     const sent = await (await payOut(mpesa.id, { method: "mpesa", reference: "SKL4H7XQ2P" }, h.finance)).json();
-    expect(sent).toMatchObject({ method: "mpesa", reference: "SKL4H7XQ2P", number: `RFD-${YEAR}-000001` });
+    expect(sent).toMatchObject({ method: "mpesa", reference: "SKL4H7XQ2P", number: `RFD-${year()}-000001` });
 
     expect(await refusal(await payOut(card.id, { method: "card", reference: "AUTH 4455" }, h.finance))).toEqual([409, "shift_required"]);
     expect((await payOut(card.id, { method: "card" })).status).toBe(422);
     const swiped = await (await payOut(card.id, { method: "card", reference: "AUTH 4455" })).json();
-    expect(swiped).toMatchObject({ method: "card", reference: "AUTH 4455", number: `RFD-${YEAR}-000002` });
+    expect(swiped).toMatchObject({ method: "card", reference: "AUTH 4455", number: `RFD-${year()}-000002` });
     const [row] = await db.select().from(refunds).where(eq(refunds.id, card.id));
     expect(row.cashierShiftId).toBe((await shift()).id);
     expect(await shift()).toMatchObject({ cashRefundsCents: 0, cardRefundsCents: 20_000, refundCount: 1, expectedCashCents: 560_000 });

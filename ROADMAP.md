@@ -1,6 +1,6 @@
 # Roadmap
 
-Status: proposed · Last updated: 2026-11-03
+Status: proposed · Last updated: 2026-11-06
 
 `SPEC.md` is the source of truth for decisions and open questions; `CLAUDE.md` holds the conventions code must follow; `SCHEMA.md` holds the data model. This document orders the work. It names phases, not dates: the one external date that matters is the pilot hospital's planned SHA date, and the largest dependency (DHA certification) runs on someone else's clock.
 
@@ -23,6 +23,16 @@ Status: proposed · Last updated: 2026-11-03
 3. **Every phase keeps a certification pack current**: self-attestation answers, security evidence, test scripts. P8 then submits a pack rather than starting one.
 
 The lesson carried from the school SaaS is that nothing tests a design like a real user. The pilot goes live in P6 as a **complete cash hospital system** (decision D8 in `SPEC.md`), and every later phase is built with live staff using the product.
+
+**The frontend runs as its own track, designed before it is built (decided 2026-11-06).** An outpatient visit is one journey across service points (registration, triage, consultation, lab, pharmacy, cashier), so its screens are built once every step's API exists, and come out as one flow rather than being retrofitted as each module lands.
+
+| When | Frontend work |
+|---|---|
+| During P3 and P4 | Settle the stack (`SPEC.md` proposes Next.js as a PWA) and set up its repo. Sketch the whole outpatient journey, screen by screen for each role, and walk the pilot's staff through it: the cheapest test of simplicity (`SPEC.md` §7.9). Where a sketch needs something the API cannot give, or asks for something it could derive, the API changes while that is still cheap. |
+| From P5 | Build the outpatient screens against the finished P2–P4 API, then the inpatient screens as P5 lands. |
+| P6 | Reports, offline support at the service points that need it, and the timed simplicity test with real staff before go-live. |
+
+The risk is a crowded P5 and P6. If P5 slips, the inpatient screens start alongside it rather than waiting for it.
 
 ---
 
@@ -76,6 +86,8 @@ Patients and patient numbers; the OPD encounter; a thin admission with bed stays
 - A scripted six-day admission (deposit, running bill, top-up, final bill, partial refund) reconciles against identities M7 (`SCHEMA.md` §7.6).
 - **A test bills a dummy insurer account** for part of an encounter. It proves the account and charge-assignment structures carry a payer split, so P7 needs no rework of charges.
 - Concurrency tests on allocation, charge assignment and refund pass, in the style of school-saas's `allocations.test.ts`.
+
+**Done (2026-11-06):** the six-day admission reconciles (`src/lib/reconciliation.test.ts`), the dummy insurer is billed (`src/lib/billing.test.ts`), and the concurrency tests hold one transaction open and confirm in Postgres that the other waits (`src/lib/concurrency.test.ts`). Also built in P2: M-Pesa C2B and STK push, reversing an approved adjustment, and the daily reconciliation check (decisions of 2026-11-06).
 
 ### P3 · OPD clinical and lab
 

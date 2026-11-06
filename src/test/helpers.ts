@@ -15,12 +15,31 @@ import { FISCAL_SERIES } from "@/lib/number-series";
 import { redis } from "@/lib/redis";
 
 /**
+ * Waits for the shared Redis connection. It connects eagerly, but with its
+ * offline queue off (on purpose: the API must not queue behind a reconnect)
+ * a command sent before it is ready is refused; under a full suite's load a
+ * fresh worker's first reset can get there first.
+ */
+async function redisReady() {
+  if (redis.status === "ready")
+    return;
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Redis not ready (${redis.status})`)), 10_000);
+    redis.once("ready", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
+/**
  * Wipes every table between tests. Discovered dynamically, so a new table
  * cannot silently start leaking state across tests.
  */
 export async function resetDb() {
   // Captured mail and rate-limit counters are per-test state like anything else.
   sentEmails.length = 0;
+  await redisReady();
   const keys = await redis.keys("rl:*");
   if (keys.length > 0)
     await redis.del(...keys);

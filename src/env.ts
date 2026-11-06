@@ -128,6 +128,21 @@ const EnvSchema = z.object({
    * tokens as: the only caller the internal routes accept.
    */
   TASKS_INVOKER_EMAIL: unsetIfBlank(z.email().optional()),
+
+  // --- M-Pesa (Daraja) ---
+  /** Which Daraja host every facility's calls go to. */
+  MPESA_ENV: z.enum(["sandbox", "production"]).default("sandbox"),
+  /**
+   * Comma-separated addresses Safaricom calls back from. Advisory only: an
+   * unlisted source is logged, never refused, since the list changes and
+   * nothing is signed. The token in the callback path is the control.
+   */
+  MPESA_CALLBACK_ALLOWED_IPS: unsetIfBlank(z.string().optional()),
+  /**
+   * Base64 of 32 random bytes: encrypts each facility's Daraja credentials
+   * at rest (AES-256-GCM). Without it, M-Pesa cannot be set up.
+   */
+  CREDENTIALS_ENCRYPTION_KEY: unsetIfBlank(z.string().regex(/^[A-Z0-9+/]{43}=$/i, "Must be base64 of 32 random bytes (44 characters)").optional()),
 })
   .superRefine((input, ctx) => {
     if (input.NODE_ENV === "production") {
@@ -147,6 +162,12 @@ const EnvSchema = z.object({
        * of 0 every caller shares one address: one person's eleven sign-in
        * attempts would lock every member of staff out.
        */
+      // Defaulting to the sandbox would send live facilities' prompts to Safaricom's test host.
+      if (process.env.MPESA_ENV === undefined)
+        ctx.addIssue({ code: "custom", path: ["MPESA_ENV"], message: "Must be set explicitly in production: sandbox or production" });
+      // Without it no facility can set up M-Pesa, and the admin would learn so from a 500.
+      if (!input.CREDENTIALS_ENCRYPTION_KEY)
+        ctx.addIssue({ code: "custom", path: ["CREDENTIALS_ENCRYPTION_KEY"], message: "Must be set when NODE_ENV is 'production'" });
       if (process.env.TRUST_PROXY_HOPS === undefined) {
         ctx.addIssue({
           code: "custom",
