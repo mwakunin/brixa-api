@@ -319,15 +319,13 @@ export async function accrueBedDays(
   }
 
   for (const gap of missing) {
+    // An open failure is recorded once (job_failures_open_once, an expression index no target can name).
     await tx.insert(jobFailures).values({
       facilityId,
       job: "bed_day_accrual",
       subjectId: encounterId,
       error: gap.error,
-    }).onConflictDoNothing({
-      target: [jobFailures.facilityId, jobFailures.job, jobFailures.subjectId, jobFailures.error],
-      where: sql`${jobFailures.resolvedAt} IS NULL`,
-    });
+    }).onConflictDoNothing();
   }
 
   await resolveFailures(tx, encounterId, missing.map(m => m.error));

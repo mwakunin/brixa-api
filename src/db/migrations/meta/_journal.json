@@ -232,6 +232,20 @@
       "when": 1793980374714,
       "tag": "0032_reconciliation_job",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1793983475974,
+      "tag": "0033_mpesa_review_fixes",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1793983684169,
+      "tag": "0034_reversal_needs_approval",
+      "breakpoints": true
     }
   ]
 }

@@ -121,7 +121,7 @@ export async function settingsView(tx: AppDb) {
 export async function recordExchange(
   tx: AppDb,
   facilityId: string,
-  row: { operation: "register_urls" | "stk_push" | "stk_callback"; stkRequestId?: string | null; error?: string } & Partial<Exchange>,
+  row: { operation: typeof gatewayExchanges.$inferInsert["operation"]; stkRequestId?: string | null; error?: string } & Partial<Exchange>,
 ) {
   await tx.insert(gatewayExchanges).values({
     facilityId,

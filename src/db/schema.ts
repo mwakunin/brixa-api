@@ -1081,7 +1081,10 @@ export const jobFailures = pgTable("job_failures", {
   failedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
   resolvedAt: timestamp({ withTimezone: true }),
 }, t => [
-  uniqueIndex("job_failures_open_once").on(t.facilityId, t.job, t.subjectId, t.error).where(sql`${t.resolvedAt} IS NULL`),
+  // A facility-level failure has no subject; coalesced, so it too is open once.
+  uniqueIndex("job_failures_open_once")
+    .on(t.facilityId, t.job, sql`coalesce(${t.subjectId}, '00000000-0000-0000-0000-000000000000'::uuid)`, t.error)
+    .where(sql`${t.resolvedAt} IS NULL`),
   oneOf("job_failures_job_known", t.job, ["bed_day_accrual", "reconciliation"]),
 ]);
 
@@ -1454,7 +1457,8 @@ export const mpesaStkRequests = pgTable("mpesa_stk_requests", {
   amountCents: integer().notNull(),
   requestedBy: uuid().notNull(),
   requestedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
-  status: text().$type<"queued" | "sent" | "completed" | "failed">().default("queued").notNull(),
+  /** `sending` is set before Safaricom is called and never sent from again: a crash there must not prompt twice. */
+  status: text().$type<"queued" | "sending" | "sent" | "completed" | "failed">().default("queued").notNull(),
   checkoutRequestId: text(),
   resultCode: integer(),
   resultDesc: text(),
@@ -1468,14 +1472,14 @@ export const mpesaStkRequests = pgTable("mpesa_stk_requests", {
   foreignKey({ name: "mpesa_stk_requests_encounter_fk", columns: [t.facilityId, t.encounterId], foreignColumns: [encounters.facilityId, encounters.id] }),
   foreignKey({ name: "mpesa_stk_requests_requested_by_fk", columns: [t.facilityId, t.requestedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
   foreignKey({ name: "mpesa_stk_requests_transaction_fk", columns: [t.facilityId, t.mpesaTransactionId], foreignColumns: [mpesaTransactions.facilityId, mpesaTransactions.id] }),
-  oneOf("mpesa_stk_requests_status_known", t.status, ["queued", "sent", "completed", "failed"]),
+  oneOf("mpesa_stk_requests_status_known", t.status, ["queued", "sending", "sent", "completed", "failed"]),
   check("mpesa_stk_requests_phone_e164", sql`${t.phone} ~ '^\\+254[0-9]{9}$'`),
   check("mpesa_stk_requests_amount_whole_shillings", sql`${t.amountCents} > 0 AND ${t.amountCents} % 100 = 0`),
   check("mpesa_stk_requests_one_target", sql`${t.invoiceId} IS NULL OR ${t.encounterId} IS NULL`),
   // Each branch says IS NULL or IS NOT NULL outright: a CHECK passes on NULL.
   check(
     "mpesa_stk_requests_lifecycle",
-    sql`(${t.status} = 'queued' AND ${t.checkoutRequestId} IS NULL AND ${t.mpesaTransactionId} IS NULL AND ${t.completedAt} IS NULL)
+    sql`(${t.status} IN ('queued', 'sending') AND ${t.checkoutRequestId} IS NULL AND ${t.mpesaTransactionId} IS NULL AND ${t.completedAt} IS NULL)
       OR (${t.status} = 'sent' AND ${t.checkoutRequestId} IS NOT NULL AND ${t.mpesaTransactionId} IS NULL AND ${t.completedAt} IS NULL)
       OR (${t.status} = 'completed' AND ${t.checkoutRequestId} IS NOT NULL AND ${t.mpesaTransactionId} IS NOT NULL AND ${t.completedAt} IS NOT NULL)
       OR (${t.status} = 'failed' AND ${t.mpesaTransactionId} IS NULL AND ${t.completedAt} IS NOT NULL)`,
@@ -1491,7 +1495,7 @@ export const gatewayExchanges = pgTable("gateway_exchanges", {
   id: uuid().primaryKey().defaultRandom(),
   facilityId: uuid().notNull().references(() => facilities.id),
   gateway: text().$type<"daraja">().notNull(),
-  operation: text().$type<"register_urls" | "stk_push" | "stk_callback">().notNull(),
+  operation: text().$type<"register_urls" | "stk_push" | "stk_callback" | "c2b_confirmation">().notNull(),
   /** The STK request an `stk_*` exchange belongs to, when it is known. */
   stkRequestId: uuid(),
   request: jsonb(),
@@ -1503,8 +1507,8 @@ export const gatewayExchanges = pgTable("gateway_exchanges", {
   foreignKey({ name: "gateway_exchanges_stk_request_fk", columns: [t.facilityId, t.stkRequestId], foreignColumns: [mpesaStkRequests.facilityId, mpesaStkRequests.id] }),
   index("gateway_exchanges_stk_request_index").on(t.stkRequestId),
   oneOf("gateway_exchanges_gateway_known", t.gateway, ["daraja"]),
-  oneOf("gateway_exchanges_operation_known", t.operation, ["register_urls", "stk_push", "stk_callback"]),
-  check("gateway_exchanges_register_has_no_request", sql`${t.operation} <> 'register_urls' OR ${t.stkRequestId} IS NULL`),
+  oneOf("gateway_exchanges_operation_known", t.operation, ["register_urls", "stk_push", "stk_callback", "c2b_confirmation"]),
+  check("gateway_exchanges_register_has_no_request", sql`${t.operation} NOT IN ('register_urls', 'c2b_confirmation') OR ${t.stkRequestId} IS NULL`),
 ]);
 
 /**

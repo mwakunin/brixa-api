@@ -11,7 +11,8 @@ import { createErrorSchema } from "stoker/openapi/schemas";
 const tags = ["M-Pesa callbacks"];
 
 const TokenParamsSchema = z.object({ token: z.string().regex(/^[\w-]{43}$/) });
-const PayloadSchema = z.record(z.string(), z.unknown());
+/** Any JSON: what Safaricom sent is kept and judged by the handler, never refused here. */
+const PayloadSchema = z.unknown();
 const AnswerSchema = z.object({ ResultCode: z.number().int(), ResultDesc: z.string() });
 
 function callback(path: string, summary: string, description: string) {
@@ -30,13 +31,30 @@ function callback(path: string, summary: string, description: string) {
   });
 }
 
+/** Validation reads nothing from the body, so none is required: refusing here would decline the payment. */
+function bodiless(path: string, summary: string, description: string) {
+  return createRoute({
+    tags,
+    method: "post",
+    path,
+    summary,
+    description,
+    request: { params: TokenParamsSchema },
+    responses: {
+      [HttpStatusCodes.OK]: jsonContent(AnswerSchema, "Accepted"),
+      [HttpStatusCodes.NOT_FOUND]: jsonContent(AnswerSchema, "No facility has this token"),
+      [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(TokenParamsSchema), "Not a callback token"),
+    },
+  });
+}
+
 export const c2bConfirmation = callback(
   "/webhooks/mpesa/{token}/c2b/confirmation",
   "A paybill payment, confirmed",
   "Stored exactly as sent, then matched by its account number to a bill, an admission or a patient; otherwise it waits in the M-Pesa queue.",
 );
 
-export const c2bValidation = callback(
+export const c2bValidation = bodiless(
   "/webhooks/mpesa/{token}/c2b/validation",
   "A paybill payment, before it completes",
   "Always accepted: refusing would fail the payer's payment at the till.",

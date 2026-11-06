@@ -124,6 +124,16 @@ export function darajaTimestamp(now: Date = new Date()): string {
   return `${p(eat.getUTCFullYear(), 4)}${p(eat.getUTCMonth() + 1)}${p(eat.getUTCDate())}${p(eat.getUTCHours())}${p(eat.getUTCMinutes())}${p(eat.getUTCSeconds())}`;
 }
 
+/**
+ * What the payer's phone shows as the account: at most 12 characters, as
+ * Daraja allows. Separators are dropped and the end is kept, where numbers
+ * differ: `INV-2026-000123` becomes `NV2026000123`, not a prefix every bill shares.
+ */
+export function accountReferenceFor(value: string): string {
+  const compact = value.toUpperCase().replace(/[\s/\-_.]/g, "");
+  return compact.length <= 12 ? compact : compact.slice(-12);
+}
+
 export function stkPassword(shortcode: string, passkey: string, timestamp: string): string {
   return Buffer.from(`${shortcode}${passkey}${timestamp}`).toString("base64");
 }
@@ -156,7 +166,7 @@ export async function stkPush(input: {
     PartyB: input.shortcode,
     PhoneNumber: msisdn,
     CallBackURL: input.callbackUrl,
-    AccountReference: input.accountReference.slice(0, 12),
+    AccountReference: accountReferenceFor(input.accountReference),
     TransactionDesc: input.description.slice(0, 13),
   };
   const { res, response } = await post("/mpesa/stkpush/v1/processrequest", input.credentials, {
@@ -165,6 +175,12 @@ export async function stkPush(input: {
   });
   if (!res.ok || String(response.ResponseCode ?? "") !== "0")
     throw Object.assign(refused("STK push", res, response), { exchange: { request, response, httpStatus: res.status } });
+  // Without its checkout id the callback cannot be matched to the prompt.
+  if (typeof response.CheckoutRequestID !== "string" || response.CheckoutRequestID === "") {
+    throw Object.assign(new DarajaError("STK push accepted without a checkout id", res.status, response), {
+      exchange: { request, response, httpStatus: res.status },
+    });
+  }
   return {
     request,
     response,
@@ -254,7 +270,8 @@ export function parseC2bConfirmation(payload: unknown): C2bConfirmation | null {
 
 /** An STK push's outcome, as Safaricom calls back with it. */
 export interface StkCallback {
-  checkoutRequestId: string;
+  /** Null if Safaricom left it out: the money, if any, still has to be kept. */
+  checkoutRequestId: string | null;
   resultCode: number;
   resultDesc: string;
   receiptNumber: string | null;
@@ -265,7 +282,7 @@ export interface StkCallback {
 
 export function parseStkCallback(payload: unknown): StkCallback | null {
   const stk = (payload as { Body?: { stkCallback?: Record<string, unknown> } })?.Body?.stkCallback;
-  if (!stk || typeof stk !== "object" || typeof stk.CheckoutRequestID !== "string" || stk.CheckoutRequestID === "")
+  if (!stk || typeof stk !== "object")
     return null;
   const items = (stk.CallbackMetadata as { Item?: { Name?: unknown; Value?: unknown }[] } | undefined)?.Item;
   const pick = (name: string) => (Array.isArray(items) ? items.find(i => i.Name === name)?.Value : undefined);
@@ -274,7 +291,7 @@ export function parseStkCallback(payload: unknown): StkCallback | null {
   const phone = pick("PhoneNumber");
   const when = pick("TransactionDate");
   return {
-    checkoutRequestId: stk.CheckoutRequestID,
+    checkoutRequestId: typeof stk.CheckoutRequestID === "string" && stk.CheckoutRequestID !== "" ? stk.CheckoutRequestID : null,
     resultCode: Number(stk.ResultCode ?? -1),
     resultDesc: typeof stk.ResultDesc === "string" ? stk.ResultDesc : "",
     receiptNumber: typeof receipt === "string" && receipt !== "" ? receipt : null,

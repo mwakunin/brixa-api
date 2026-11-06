@@ -49,7 +49,10 @@ export async function reconcileAll() {
       tally.failed += 1;
       const error = errorLine(err);
       logger.error({ facilityId: facility.id, job: "reconciliation", error }, "job failed for a facility");
-      await db.insert(jobFailures).values({ facilityId: facility.id, job: "reconciliation", error }).onConflictDoNothing();
+      // Recording it must not stop the other facilities' checks; the log line above is the alert.
+      await db.insert(jobFailures).values({ facilityId: facility.id, job: "reconciliation", error }).onConflictDoNothing().catch((recordErr: unknown) => {
+        logger.error({ facilityId: facility.id, job: "reconciliation", error: errorLine(recordErr) }, "could not record a job failure");
+      });
     }
   }
   return tally;

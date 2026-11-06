@@ -125,6 +125,59 @@ describe("the daily reconciliation check", () => {
     expect(fixed.resolvedAt).not.toBeNull();
   });
 
+  it("finds each identity broken, as a bypassed guard would leave it", async () => {
+    const patientId = await h.patient();
+    const { id: encounterId } = await (await call("POST", "/encounters", h.facility.id, h.nurse, { patientId, kind: "opd" })).json();
+    for (const [item, quantity] of [[h.items.consultation, "1"], [h.items.tablet, "3"]])
+      await call("POST", `/encounters/${encounterId}/charges`, h.facility.id, h.clerk, { billableItemId: item, quantity, reason: "Before P3" });
+    const { id: invoiceId } = await (await call("POST", `/encounters/${encounterId}/invoices`, h.facility.id, h.clerk, { kind: "final" })).json();
+    await call("POST", `/invoices/${invoiceId}/finalise`, h.facility.id, h.clerk);
+    const payment = await (await call("POST", "/payments", h.facility.id, h.cashier, { patientId, method: "cash", amountCents: 10_000 })).json();
+    const [assignment] = (await pool.query("SELECT * FROM charge_assignments LIMIT 1")).rows;
+
+    // Triggers off, as only a superuser can: what each check exists to catch.
+    let lateCharge = "";
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SET LOCAL session_replication_role = replica");
+      await client.query(
+        `INSERT INTO refunds (facility_id, payment_id, account_id, amount_cents, reason, status, requested_by, decided_by, decided_at)
+         VALUES ($1, $2, $3, 20000, 'x', 'approved', $4, $5, now())`,
+        [h.facility.id, payment.id, payment.accountId, h.clerk.actor.membershipId, h.finance.actor.membershipId],
+      );
+      await client.query(
+        `INSERT INTO invoice_adjustments (facility_id, invoice_id, account_id, kind, amount_cents, reason, status, requested_by, decided_by, decided_at)
+         SELECT facility_id, id, account_id, 'waiver', 60000, 'x', 'approved', $2, $3, now() FROM invoices WHERE id = $1`,
+        [invoiceId, h.clerk.actor.membershipId, h.finance.actor.membershipId],
+      );
+      // A charge from before the final bill that no bill carries.
+      const late = await client.query(
+        `INSERT INTO charges (facility_id, encounter_id, billable_item_id, quantity, unit_price_cents, amount_cents, price_list_item_id, service_date, manual_reason, captured_by, captured_at)
+         SELECT facility_id, encounter_id, billable_item_id, quantity, unit_price_cents, amount_cents, price_list_item_id, service_date, manual_reason, captured_by, captured_at - interval '1 hour'
+         FROM charges WHERE id = $1 RETURNING id`,
+        [assignment.charge_id],
+      );
+      lateCharge = late.rows[0].id;
+      await client.query(
+        "INSERT INTO charge_assignments (facility_id, charge_id, invoice_line_id, account_id, amount_cents, mode) VALUES ($1, $2, $3, $4, $5, $6)",
+        [assignment.facility_id, assignment.charge_id, assignment.invoice_line_id, assignment.account_id, assignment.amount_cents, assignment.mode],
+      );
+      await client.query("COMMIT");
+    }
+    finally {
+      client.release();
+    }
+
+    const { drift } = await tx(t => reconcile(t));
+    expect(drift.map(d => [d.identity, d.subjectId])).toEqual(expect.arrayContaining([
+      ["M2", payment.id],
+      ["M3", invoiceId],
+      ["M4", assignment.charge_id],
+      ["M4_final", lateCharge],
+    ]));
+  });
+
   it("is an internal job, called by Cloud Scheduler alone", async () => {
     expect((await app.request("/internal/jobs/reconciliation", { method: "POST" })).status).toBe(401);
   });

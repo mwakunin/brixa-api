@@ -31,6 +31,7 @@ const tx = <T>(fn: (t: AppDb) => Promise<T>) => runAsFacility(h.facility.id, fn)
 /** Runs `work` in a transaction that stays open, holding its locks, until released. */
 async function heldOpen<T>(work: (t: AppDb) => Promise<T>) {
   let pid = 0;
+  let failure: unknown = null;
   let release!: () => void;
   let ready!: () => void;
   const mayCommit = new Promise<void>((resolve) => {
@@ -45,12 +46,20 @@ async function heldOpen<T>(work: (t: AppDb) => Promise<T>) {
       pid = await backendPid(t);
       return result;
     }
+    catch (err) {
+      failure = err;
+      throw err;
+    }
     finally {
       ready();
       await mayCommit;
     }
   });
   await started;
+  if (failure) {
+    release();
+    await done;
+  }
   return { pid, release, done };
 }
 

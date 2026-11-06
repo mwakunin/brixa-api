@@ -173,9 +173,10 @@ describe("paybill payments", () => {
     await post("/c2b/confirmation", confirmation({ TransID: "SKUNKNOWN2" }));
 
     const listed = await (await call("GET", "/mpesa/transactions?status=unmatched", h.facility.id, h.clerk)).json();
-    expect(listed.transactions.map((t: { transactionId: string; statusReason: string }) => [t.transactionId, t.statusReason])).toEqual([
-      ["SKUNKNOWN2", "No account number was given"],
+    // Both arrived within the same second, so either may be listed first.
+    expect(listed.transactions.map((t: { transactionId: string; statusReason: string }) => [t.transactionId, t.statusReason]).sort()).toEqual([
       ["SKUNKNOWN1", "No bill, admission or patient has this number"],
+      ["SKUNKNOWN2", "No account number was given"],
     ]);
     expect(await db.select().from(auditLog).where(eq(auditLog.action, "mpesa.listed"))).toHaveLength(1);
     expect((await call("GET", "/mpesa/transactions", h.facility.id, h.nurse)).status).toBe(403);
@@ -202,10 +203,27 @@ describe("paybill payments", () => {
     expect(await db.select().from(mpesaTransactions)).toHaveLength(1);
   });
 
-  it("for another paybill, or to an unknown token, are never placed", async () => {
-    await post("/c2b/confirmation", confirmation({ TransID: "SKFOREIGN1", BusinessShortCode: "999999" }));
+  it("for another paybill wait for a person, never matched by themselves", async () => {
+    const patientId = await h.patient();
+    const [op] = (await pool.query("SELECT number FROM patient_numbers WHERE patient_id = $1", [patientId])).rows;
+
+    await post("/c2b/confirmation", confirmation({ TransID: "SKFOREIGN1", BusinessShortCode: "999999", BillRefNumber: op.number }));
+
     const [foreign] = await db.select().from(mpesaTransactions);
-    expect(foreign).toMatchObject({ status: "rejected", statusReason: "Paybill 999999 is not this facility's" });
+    expect(foreign).toMatchObject({ status: "unmatched", statusReason: "Paid to paybill 999999, not this facility's current one; check before placing it" });
+    expect(await paymentOf("SKFOREIGN1")).toBeUndefined();
+    expect((await call("POST", `/mpesa/transactions/${foreign.id}/assign`, h.facility.id, h.clerk, { patientId })).status).toBe(200);
+  });
+
+  it("are acknowledged however they arrive, and kept when they cannot be read", async () => {
+    const validation = await app.request(`/webhooks/mpesa/${token}/c2b/validation`, { method: "POST" });
+    expect(validation.status).toBe(200);
+    expect((await post("/c2b/confirmation", ["not", "an", "object"])).status).toBe(200);
+    expect((await post("/c2b/confirmation", { TransID: "SKBROKEN01" })).status).toBe(200);
+
+    const kept = await db.select().from(gatewayExchanges).where(eq(gatewayExchanges.operation, "c2b_confirmation"));
+    expect(kept.map(e => e.response)).toEqual([["not", "an", "object"], { TransID: "SKBROKEN01" }]);
+    expect(await db.select().from(mpesaTransactions)).toHaveLength(0);
 
     token = "x".repeat(43);
     expect((await post("/c2b/confirmation", confirmation())).status).toBe(404);
@@ -263,7 +281,8 @@ describe("m-Pesa prompts", () => {
     const fetch = daraja();
     await drainOutbox();
     const sent = JSON.parse(String(fetch.mock.calls.find(([url]) => String(url).includes("stkpush"))![1]!.body));
-    expect(sent).toMatchObject({ PhoneNumber: "254712345678", Amount: 508, AccountReference: `INV-${YEAR}-000` });
+    // The last 12 characters of INV-YYYY-000001: unique per bill, unlike a prefix.
+    expect(sent).toMatchObject({ PhoneNumber: "254712345678", Amount: 508, AccountReference: `NV${YEAR}000001` });
     expect((await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).status).toBe("sent");
     const [exchange] = await db.select().from(gatewayExchanges).where(eq(gatewayExchanges.operation, "stk_push"));
     expect(exchange.request).not.toHaveProperty("Password");
@@ -276,6 +295,11 @@ describe("m-Pesa prompts", () => {
     expect(await paymentOf("SKSTK00001")).toMatchObject({ method: "mpesa_stk", receivedBy: h.cashier.actor.membershipId });
     expect(await invoice(invoiceId)).toMatchObject({ balanceCents: 0 });
     expect(await db.select().from(payments)).toHaveLength(1);
+
+    const payment = await paymentOf("SKSTK00001");
+    await call("POST", `/payments/${payment.id}/reverse`, h.facility.id, h.finance, { reason: "Wrong patient" });
+    expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json())
+      .toMatchObject({ status: "completed", paymentId: payment.id, paymentReversed: true });
   });
 
   it("close as failed when the patient declines, and are never sent twice", async () => {
@@ -296,13 +320,68 @@ describe("m-Pesa prompts", () => {
     expect((await (await call("GET", `/mpesa/stk/${unsent.id}`, h.facility.id, h.cashier)).json()).status).toBe("failed");
   });
 
-  it("paid without a prompt on record wait in the queue", async () => {
+  it("paid without a prompt on record wait in the queue, checkout id or not", async () => {
     await setUp();
 
     await paid("ws_CO_unknown", "SKSTRAY001", 300);
+    await callback({ ResultCode: 0, ResultDesc: "Processed", CallbackMetadata: { Item: [{ Name: "Amount", Value: 200 }, { Name: "MpesaReceiptNumber", Value: "SKSTRAY002" }] } });
 
+    const queued = await db.select().from(mpesaTransactions);
+    expect(queued.map(t => [t.transactionId, t.source, t.status])).toEqual(expect.arrayContaining([
+      ["SKSTRAY001", "stk", "unmatched"],
+      ["SKSTRAY002", "stk", "unmatched"],
+    ]));
+  });
+
+  it("are never sent again once sending began, even if the worker died", async () => {
+    await setUp();
+    const patientId = await h.patient();
+    const request = await (await prompt({ patientId, phone: "0712345678", amountCents: 10_000 })).json();
+    // As a worker leaves it that claimed the prompt and died before recording Safaricom's answer.
+    await pool.query("UPDATE mpesa_stk_requests SET status = 'sending' WHERE id = $1", [request.id]);
+
+    const fetch = daraja();
+    await drainOutbox();
+
+    expect(fetch.mock.calls.filter(([url]) => String(url).includes("stkpush"))).toHaveLength(0);
+    expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json())
+      .toMatchObject({ status: "failed", resultDesc: expect.stringContaining("Sending was interrupted") });
+  });
+
+  it("paid before the prompt is recorded are still placed against it", async () => {
+    await setUp();
+    const patientId = await h.patient();
+    const invoiceId = await billed(patientId);
+    const request = await (await prompt({ patientId, phone: "0712345678", amountCents: 50_800, invoiceId })).json();
+
+    await paid("ws_CO_1", "SKEARLY001", 508);
+    expect(await paymentOf("SKEARLY001")).toBeUndefined();
+    daraja();
+    await drainOutbox();
+
+    expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).toMatchObject({ status: "completed", receiptNumber: "SKEARLY001" });
+    expect(await invoice(invoiceId)).toMatchObject({ balanceCents: 0 });
+  });
+
+  it("paid in a different amount wait for review, and one accepted without a checkout id fails", async () => {
+    await setUp();
+    const patientId = await h.patient();
+    const request = await (await prompt({ patientId, phone: "0712345678", amountCents: 10_000 })).json();
+    daraja();
+    await drainOutbox();
+
+    await paid("ws_CO_1", "SKDIFFER01", 50);
+
+    expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).toMatchObject({ status: "failed" });
     const [transaction] = await db.select().from(mpesaTransactions);
-    expect(transaction).toMatchObject({ source: "stk", status: "unmatched", amountCents: 30_000 });
+    expect(transaction).toMatchObject({ status: "unmatched", statusReason: "Paid KES 50.00 against a prompt for KES 100.00; check before placing it" });
+
+    const blank = await (await prompt({ patientId, phone: "0712345678", amountCents: 10_000 })).json();
+    vi.restoreAllMocks();
+    daraja({ stk: () => Response.json({ ResponseCode: "0", CustomerMessage: "Success" }) });
+    await drainOutbox();
+    expect(await (await call("GET", `/mpesa/stk/${blank.id}`, h.facility.id, h.cashier)).json())
+      .toMatchObject({ status: "failed", resultDesc: "STK push accepted without a checkout id" });
   });
 });
 

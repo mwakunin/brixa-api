@@ -240,11 +240,25 @@ describe("adjustments", () => {
       expect((await call("POST", `/invoices/${invoiceId}/void`, h.facility.id, h.finance, { reason: "Wrong patient" })).status).toBe(200);
     });
 
+    it("let the restored balance be paid", async () => {
+      const id = await approved("waiver", 50_800);
+      const reversal = await (await reverse(id)).json();
+      await decideReversal(reversal.id, "approve", h.finance);
+      await call("POST", "/cashier-shifts", h.facility.id, h.cashier, { openingFloatCents: 0 });
+      const [{ patient_id: patientId }] = (await pool.query("SELECT patient_id FROM encounters WHERE id = $1", [encounterId])).rows;
+
+      const paid = await call("POST", "/payments", h.facility.id, h.cashier, { patientId, method: "cash", amountCents: 50_800, invoiceId });
+
+      expect(paid.status).toBe(201);
+      expect(await invoice()).toMatchObject({ paidCents: 50_800, balanceCents: 0 });
+    });
+
     it("in the database: once, with a reason, and decided by someone else", async () => {
       const id = await approved();
-      await expect(pool.query("UPDATE invoice_adjustments SET reversed_at = now(), reversed_by = decided_by WHERE id = $1", [id]))
+      // Not without an approved request, however complete the columns.
+      await expect(pool.query("UPDATE invoice_adjustments SET reversed_at = now(), reversed_by = decided_by, reversal_reason = 'x' WHERE id = $1", [id]))
         .rejects
-        .toMatchObject({ code: "23514" });
+        .toMatchObject({ code: "23001" });
       const reversal = await (await reverse(id)).json();
       await expect(pool.query("UPDATE adjustment_reversals SET status = 'approved', decided_by = requested_by, decided_at = now() WHERE id = $1", [reversal.id]))
         .rejects

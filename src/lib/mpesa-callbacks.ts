@@ -9,7 +9,7 @@ import { secretEquals } from "./crypto";
 import { parseC2bConfirmation, parseStkCallback } from "./daraja";
 import { isUniqueViolation } from "./db-errors";
 import { logger } from "./logger";
-import { matchTransaction } from "./mpesa";
+import { matchTransaction, recordExchange } from "./mpesa";
 import { completeStkPush } from "./mpesa-stk";
 import { normalizePhone } from "./phone";
 
@@ -34,6 +34,12 @@ async function facilityForToken(token: string) {
   return settings && secretEquals(settings.callbackToken, token) ? settings : null;
 }
 
+/** A callback we could not read, kept exactly as sent (rule 18), for a person to recover by hand. */
+async function keepUnparsed(facilityId: string, operation: "c2b_confirmation" | "stk_callback", payload: unknown) {
+  await runAsFacility(facilityId, tx =>
+    recordExchange(tx, facilityId, { operation, response: payload as Record<string, unknown>, error: "Could not be read" }));
+}
+
 /** Daraja treats anything else as a failure and retries. */
 export const ACCEPTED = { ResultCode: 0, ResultDesc: "Accepted" } as const;
 
@@ -56,12 +62,13 @@ export async function onC2bConfirmation(token: string, payload: unknown): Promis
   }
   const parsed = parseC2bConfirmation(payload);
   if (!parsed) {
-    // Retrying cannot make it parse; Safaricom's statement still has it.
+    // Retrying cannot make it parse, so it is kept as sent for someone to read.
+    await keepUnparsed(settings.facilityId, "c2b_confirmation", payload);
     logger.error({ facilityId: settings.facilityId }, "Unparseable M-Pesa confirmation");
     return { status: 200, body: ACCEPTED };
   }
 
-  // Another paybill's money posted to our token is evidence, kept but never placed.
+  // Another paybill, e.g. the old one while a change settles: never matched by itself, but a person may place it.
   const foreign = parsed.shortcode !== settings.shortcode;
   let id: string;
   try {
@@ -77,8 +84,7 @@ export async function onC2bConfirmation(token: string, payload: unknown): Promis
         amountCents: parsed.amountCents,
         transactedAt: parsed.transactedAt,
         rawPayload: payload as Record<string, unknown>,
-        status: foreign ? "rejected" : "unmatched",
-        statusReason: foreign ? `Paybill ${parsed.shortcode} is not this facility's` : null,
+        statusReason: foreign ? `Paid to paybill ${parsed.shortcode}, not this facility's current one; check before placing it` : null,
       }).returning({ id: mpesaTransactions.id });
       await recordAudit(tx, {
         facilityId: settings.facilityId,
@@ -133,6 +139,7 @@ export async function onStkCallback(token: string, payload: unknown): Promise<Ca
   }
   const parsed = parseStkCallback(payload);
   if (!parsed) {
+    await keepUnparsed(settings.facilityId, "stk_callback", payload);
     logger.error({ facilityId: settings.facilityId }, "Unparseable M-Pesa prompt callback");
     return { status: 200, body: ACCEPTED };
   }

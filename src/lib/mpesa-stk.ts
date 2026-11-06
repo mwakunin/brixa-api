@@ -1,8 +1,8 @@
-import { eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 
-import { accounts, admissions, documents, encounters, invoices, memberships, mpesaSettings, mpesaStkRequests, mpesaTransactions, patientNumbers, patients } from "@/db/schema";
+import { accounts, admissions, documents, encounters, gatewayExchanges, invoices, memberships, mpesaSettings, mpesaStkRequests, mpesaTransactions, patientNumbers, patients, payments } from "@/db/schema";
 import { runAsFacility } from "@/db/tenant-transaction";
 
 import type { StkCallback } from "./daraja";
@@ -10,7 +10,7 @@ import type { PaymentTarget } from "./mpesa";
 import type { PatientActor } from "./patients";
 
 import { recordAudit } from "./audit";
-import { exchangeOf, stkPush } from "./daraja";
+import { exchangeOf, parseStkCallback, stkPush } from "./daraja";
 import { isUniqueViolation } from "./db-errors";
 import { errorLine } from "./error-summary";
 import { formatKes } from "./money";
@@ -22,13 +22,15 @@ import { normalizePhone } from "./phone";
 /**
  * STK push (P2 slice 6): the cashier asks Safaricom to prompt a patient's
  * phone to pay the paybill. The prompt goes out through the outbox (rule 18)
- * and is never repeated automatically: Daraja has no idempotency key, so a
- * retry after a timeout could prompt, and charge, twice. Safaricom's callback
- * then records the payment towards what the prompt was for. Money that
- * arrives for a prompt we cannot place still lands in the M-Pesa queue.
+ * and is never sent twice: Daraja has no idempotency key, so a repeat could
+ * charge twice. A request is marked `sending`, in its own committed
+ * transaction, before Safaricom is called; a job that finds one `sending`
+ * (a worker that died mid-call) closes it as failed instead of sending
+ * again. Money from a prompt we cannot place still lands in the M-Pesa queue.
  */
 
 type StkRow = typeof mpesaStkRequests.$inferSelect;
+type TransactionRow = typeof mpesaTransactions.$inferSelect;
 
 /** Checks the target now, so the cashier hears at once; the callback checks again. */
 async function checkTarget(tx: AppDb, target: PaymentTarget) {
@@ -113,21 +115,46 @@ async function accountReference(tx: AppDb, request: StkRow): Promise<string> {
   return op?.number ?? "Hospital";
 }
 
-/** Outbox handler: sends a queued prompt once, and records what Safaricom said. */
-export async function sendStkPush(job: { facilityId: string; subjectId: string }): Promise<"done" | "skipped"> {
-  const loaded = await runAsFacility(job.facilityId, async (tx) => {
-    const [request] = await tx.select().from(mpesaStkRequests).where(eq(mpesaStkRequests.id, job.subjectId)).limit(1);
-    const [settings] = await tx.select().from(mpesaSettings).limit(1);
-    if (!request || request.status !== "queued" || !settings)
+async function closeFailed(tx: AppDb, requestId: string, resultDesc: string, resultCode: number | null = null) {
+  await tx.update(mpesaStkRequests)
+    .set({ status: "failed", resultCode, resultDesc: resultDesc.slice(0, 200), completedAt: new Date() })
+    .where(eq(mpesaStkRequests.id, requestId));
+}
+
+/**
+ * Claims a queued request for sending, in its own transaction, so a retry of
+ * the job can tell it was already being sent. One found `sending` is closed:
+ * whether Safaricom got it is unknown, and asking again could charge twice.
+ */
+async function claimForSending(facilityId: string, requestId: string) {
+  return runAsFacility(facilityId, async (tx) => {
+    const [request] = await tx.select().from(mpesaStkRequests).where(eq(mpesaStkRequests.id, requestId)).for("update").limit(1);
+    if (request?.status === "sending") {
+      await closeFailed(tx, request.id, "Sending was interrupted; if the patient paid, the payment is in the M-Pesa queue");
       return null;
+    }
+    const [settings] = await tx.select().from(mpesaSettings).limit(1);
+    if (!request || request.status !== "queued")
+      return null;
+    if (!settings) {
+      await closeFailed(tx, request.id, "M-Pesa is not set up");
+      return null;
+    }
+    await tx.update(mpesaStkRequests).set({ status: "sending" }).where(eq(mpesaStkRequests.id, request.id));
     return { request, settings, reference: await accountReference(tx, request) };
   });
-  if (!loaded)
-    return "skipped";
-  const { request, settings, reference } = loaded;
+}
 
+/** Outbox handler: sends a queued prompt once, and records what Safaricom said. */
+export async function sendStkPush(job: { facilityId: string; subjectId: string }): Promise<"done" | "skipped"> {
+  const claimed = await claimForSending(job.facilityId, job.subjectId);
+  if (!claimed)
+    return "skipped";
+  const { request, settings, reference } = claimed;
+
+  let sent: Awaited<ReturnType<typeof stkPush>>;
   try {
-    const sent = await stkPush({
+    sent = await stkPush({
       shortcode: settings.shortcode,
       credentials: credentialsOf(settings.credentials),
       callbackUrl: callbackUrls(settings.callbackToken).stk,
@@ -136,21 +163,54 @@ export async function sendStkPush(job: { facilityId: string; subjectId: string }
       accountReference: reference,
       description: "Hospital bill",
     });
-    await runAsFacility(job.facilityId, async (tx) => {
-      await recordExchange(tx, job.facilityId, { operation: "stk_push", stkRequestId: request.id, ...sent });
-      await tx.update(mpesaStkRequests).set({ status: "sent", checkoutRequestId: sent.checkoutRequestId }).where(eq(mpesaStkRequests.id, request.id));
-    });
   }
   catch (err) {
-    // Never retried (see above): the cashier sees it failed and can prompt again.
     await runAsFacility(job.facilityId, async (tx) => {
       await recordExchange(tx, job.facilityId, { operation: "stk_push", stkRequestId: request.id, ...exchangeOf(err), error: errorLine(err) });
-      await tx.update(mpesaStkRequests)
-        .set({ status: "failed", resultDesc: err instanceof Error ? err.message.slice(0, 200) : "The prompt could not be sent", completedAt: new Date() })
-        .where(eq(mpesaStkRequests.id, request.id));
+      await closeFailed(tx, request.id, err instanceof Error ? err.message : "The prompt could not be sent");
     });
+    return "done";
   }
+
+  // If this write fails the job is retried, finds the request `sending`, and closes it: never a second prompt.
+  await runAsFacility(job.facilityId, async (tx) => {
+    await recordExchange(tx, job.facilityId, { operation: "stk_push", stkRequestId: request.id, ...sent });
+    await tx.update(mpesaStkRequests).set({ status: "sent", checkoutRequestId: sent.checkoutRequestId }).where(eq(mpesaStkRequests.id, request.id));
+    await applyEarlyCallback(tx, job.facilityId, request.id, sent.checkoutRequestId);
+  });
   return "done";
+}
+
+function checkoutOf(column: typeof mpesaTransactions.rawPayload | typeof gatewayExchanges.response) {
+  return sql`${column} #>> '{Body,stkCallback,CheckoutRequestID}'`;
+}
+
+/**
+ * Safaricom can call back before we have recorded the checkout id. Such a
+ * callback was kept with no prompt: a payment in the queue, or a refusal in
+ * the exchanges. Once the checkout id is known, it is applied to its prompt.
+ */
+async function applyEarlyCallback(tx: AppDb, facilityId: string, requestId: string, checkoutRequestId: string) {
+  const [early] = await tx
+    .select()
+    .from(mpesaTransactions)
+    .where(and(eq(mpesaTransactions.source, "stk"), eq(mpesaTransactions.status, "unmatched"), sql`${checkoutOf(mpesaTransactions.rawPayload)} = ${checkoutRequestId}`))
+    .for("update")
+    .limit(1);
+  const [request] = await tx.select().from(mpesaStkRequests).where(eq(mpesaStkRequests.id, requestId)).limit(1);
+  if (early) {
+    await settleForRequest(tx, facilityId, request, early);
+    return;
+  }
+  const [refused] = await tx
+    .select({ response: gatewayExchanges.response })
+    .from(gatewayExchanges)
+    .where(and(eq(gatewayExchanges.operation, "stk_callback"), sql`${checkoutOf(gatewayExchanges.response)} = ${checkoutRequestId}`))
+    .orderBy(desc(gatewayExchanges.createdAt))
+    .limit(1);
+  const callback = refused ? parseStkCallback(refused.response) : null;
+  if (callback && callback.resultCode !== 0)
+    await closeFailed(tx, request.id, callback.resultDesc, callback.resultCode);
 }
 
 async function actorOf(tx: AppDb, membershipId: string): Promise<PatientActor> {
@@ -159,11 +219,33 @@ async function actorOf(tx: AppDb, membershipId: string): Promise<PatientActor> {
 }
 
 /**
+ * Places a prompt's money towards what the prompt was for, received by the
+ * cashier who asked. A different amount from the one prompted is left in
+ * the queue for a person: the patient may have paid something else.
+ */
+async function settleForRequest(tx: AppDb, facilityId: string, request: StkRow, transaction: TransactionRow): Promise<"paid" | "queued"> {
+  if (request.status === "completed")
+    return "queued";
+  if (transaction.amountCents !== request.amountCents) {
+    await tx.update(mpesaTransactions)
+      .set({ statusReason: `Paid ${formatKes(transaction.amountCents)} against a prompt for ${formatKes(request.amountCents)}; check before placing it` })
+      .where(eq(mpesaTransactions.id, transaction.id));
+    await closeFailed(tx, request.id, "Paid a different amount; the payment is in the M-Pesa queue");
+    return "queued";
+  }
+  const target = { patientId: request.patientId, invoiceId: request.invoiceId ?? undefined, encounterId: request.encounterId ?? undefined };
+  await settleTransaction(tx, facilityId, transaction, target, await actorOf(tx, request.requestedBy));
+  await tx.update(mpesaStkRequests)
+    .set({ status: "completed", resultCode: 0, mpesaTransactionId: transaction.id, completedAt: new Date() })
+    .where(eq(mpesaStkRequests.id, request.id));
+  return "paid";
+}
+
+/**
  * Safaricom's answer to a prompt, inside the facility's transaction. A
  * failure closes the request. Money received becomes an M-Pesa transaction
- * and, when the prompt is ours, a payment towards what it was for, received
- * by the cashier who asked. A retried callback finds the transaction already
- * recorded and changes nothing.
+ * and, when the prompt is ours, a payment towards what it was for. A retried
+ * callback finds the transaction already recorded and changes nothing.
  */
 export async function completeStkPush(
   tx: AppDb,
@@ -172,21 +254,21 @@ export async function completeStkPush(
   callback: StkCallback,
   payload: unknown,
 ): Promise<"failed" | "paid" | "queued" | "duplicate" | "unusable"> {
-  const [request] = await tx.select().from(mpesaStkRequests).where(eq(mpesaStkRequests.checkoutRequestId, callback.checkoutRequestId)).for("update").limit(1);
+  const [request] = callback.checkoutRequestId
+    ? await tx.select().from(mpesaStkRequests).where(eq(mpesaStkRequests.checkoutRequestId, callback.checkoutRequestId)).for("update").limit(1)
+    : [];
   await recordExchange(tx, facilityId, { operation: "stk_callback", stkRequestId: request?.id ?? null, response: payload as Record<string, unknown> });
 
   if (callback.resultCode !== 0) {
-    if (request && request.status === "sent") {
-      await tx.update(mpesaStkRequests)
-        .set({ status: "failed", resultCode: callback.resultCode, resultDesc: callback.resultDesc.slice(0, 200), completedAt: new Date() })
-        .where(eq(mpesaStkRequests.id, request.id));
-    }
+    if (request?.status === "sent")
+      await closeFailed(tx, request.id, callback.resultDesc, callback.resultCode);
     return "failed";
   }
+  // No amount or receipt: nothing can be booked. The callback is kept above, and the caller logs it.
   if (!callback.receiptNumber || !callback.amountCents || callback.amountCents % 100 !== 0)
     return "unusable";
 
-  let transaction: typeof mpesaTransactions.$inferSelect;
+  let transaction: TransactionRow;
   try {
     [transaction] = await tx.transaction(sp => sp.insert(mpesaTransactions).values({
       facilityId,
@@ -206,24 +288,30 @@ export async function completeStkPush(
     throw err;
   }
 
-  // A prompt we marked failed (a timeout) can still have been paid: place it all the same.
-  if (!request || request.status === "completed")
+  // A prompt we closed as failed (interrupted, or a timeout) can still have been paid: place it all the same.
+  if (!request)
     return "queued";
-  const target = { patientId: request.patientId, invoiceId: request.invoiceId ?? undefined, encounterId: request.encounterId ?? undefined };
-  await settleTransaction(tx, facilityId, transaction, target, await actorOf(tx, request.requestedBy));
-  await tx.update(mpesaStkRequests)
-    .set({ status: "completed", resultCode: 0, resultDesc: callback.resultDesc.slice(0, 200), mpesaTransactionId: transaction.id, completedAt: new Date() })
-    .where(eq(mpesaStkRequests.id, request.id));
-  return "paid";
+  return settleForRequest(tx, facilityId, request, transaction);
 }
 
-/** A prompt as the cashier polls it, with the payment it became. */
+/** A prompt as the cashier polls it, with the payment it became and whether that was reversed. */
 export async function stkRequestView(tx: AppDb, id: string) {
   const [request] = await tx.select().from(mpesaStkRequests).where(eq(mpesaStkRequests.id, id)).limit(1);
   if (!request)
     return null;
-  const [transaction] = request.mpesaTransactionId
-    ? await tx.select({ transactionId: mpesaTransactions.transactionId }).from(mpesaTransactions).where(eq(mpesaTransactions.id, request.mpesaTransactionId)).limit(1)
+  const [paid] = request.mpesaTransactionId
+    ? await tx
+        .select({ receiptNumber: mpesaTransactions.transactionId, paymentId: payments.id, reversedAt: payments.reversedAt })
+        .from(mpesaTransactions)
+        .leftJoin(payments, eq(payments.mpesaTransactionId, mpesaTransactions.id))
+        .where(eq(mpesaTransactions.id, request.mpesaTransactionId))
+        .orderBy(desc(payments.receivedAt))
+        .limit(1)
     : [];
-  return { ...request, receiptNumber: transaction?.transactionId ?? null };
+  return {
+    ...request,
+    receiptNumber: paid?.receiptNumber ?? null,
+    paymentId: paid?.paymentId ?? null,
+    paymentReversed: paid?.reversedAt != null,
+  };
 }

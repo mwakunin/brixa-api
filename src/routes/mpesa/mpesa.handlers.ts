@@ -105,6 +105,8 @@ function stkJson(request: StkView) {
     status: request.status,
     resultDesc: request.resultDesc,
     receiptNumber: request.receiptNumber,
+    paymentId: request.paymentId,
+    paymentReversed: request.paymentReversed,
     requestedAt: request.requestedAt.toISOString(),
   };
 }

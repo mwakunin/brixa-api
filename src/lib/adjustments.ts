@@ -310,11 +310,12 @@ export async function approveReversal(tx: AppDb, facilityId: string, id: string,
     throw new AdjustmentError("already_reversed");
 
   await tx.update(adjustmentReversals).set({ status: "approved", decidedBy: actor.membershipId, decidedAt: at }).where(eq(adjustmentReversals.id, id));
+  // Voided before the adjustment is marked, which the trigger would otherwise do without the audit.
+  if (adjustment.documentId)
+    await voidDocument(tx, { facilityId, documentId: adjustment.documentId, reason: reversal.reason, voidedBy: actor, at });
   await tx.update(invoiceAdjustments)
     .set({ reversedAt: at, reversedBy: actor.membershipId, reversalReason: reversal.reason })
     .where(eq(invoiceAdjustments.id, adjustment.id));
-  if (adjustment.documentId)
-    await voidDocument(tx, { facilityId, documentId: adjustment.documentId, reason: reversal.reason, voidedBy: actor, at });
 
   await recordAudit(tx, {
     facilityId,

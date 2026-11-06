@@ -17,7 +17,7 @@ import type { AppDb } from "@/db";
  * - M3: an invoice's live allocations and standing adjustments never exceed
  *   its total.
  * - M4: a charge's live assignments never exceed it; once an encounter's
- *   final bill is out, every live charge of the encounter is fully billed.
+ *   final bill is out, every live charge captured before it is fully billed.
  * - M-Pesa: a placed transaction has exactly one live payment, of its
  *   amount; one not placed has none.
  *
@@ -84,7 +84,8 @@ const CHECKS: { identity: Identity; query: SQL }[] = [
       FROM charges c
       LEFT JOIN (${LIVE_ASSIGNMENTS}) x ON x.charge_id = c.id
       WHERE c.cancelled_at IS NULL
-        AND EXISTS (SELECT 1 FROM invoices f WHERE f.encounter_id = c.encounter_id AND f.kind = 'final' AND f.status = 'finalised')
+        -- Captured before the final bill went out; a later one waits for a supplementary bill.
+        AND EXISTS (SELECT 1 FROM invoices f WHERE f.encounter_id = c.encounter_id AND f.kind = 'final' AND f.status = 'finalised' AND c.captured_at <= f.finalised_at)
       GROUP BY c.id, c.amount_cents
       HAVING coalesce(sum(x.amount_cents), 0) < c.amount_cents`,
   },

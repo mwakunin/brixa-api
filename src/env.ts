@@ -162,6 +162,9 @@ const EnvSchema = z.object({
        * of 0 every caller shares one address: one person's eleven sign-in
        * attempts would lock every member of staff out.
        */
+      // Defaulting to the sandbox would send live facilities' prompts to Safaricom's test host.
+      if (process.env.MPESA_ENV === undefined)
+        ctx.addIssue({ code: "custom", path: ["MPESA_ENV"], message: "Must be set explicitly in production: sandbox or production" });
       if (process.env.TRUST_PROXY_HOPS === undefined) {
         ctx.addIssue({
           code: "custom",

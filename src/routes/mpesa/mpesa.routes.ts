@@ -157,11 +157,14 @@ const StkRequestSchema = z.object({
   encounterId: z.uuid().nullable(),
   phone: z.string(),
   amountCents: z.number().int(),
-  /** `queued`, then `sent` once Safaricom has it; `completed` when paid, or `failed`. */
-  status: z.enum(["queued", "sent", "completed", "failed"]),
+  /** `queued`, `sending`, then `sent` once Safaricom has it; `completed` when paid, or `failed`. */
+  status: z.enum(["queued", "sending", "sent", "completed", "failed"]),
   resultDesc: z.string().nullable(),
   /** The M-Pesa receipt number, once paid. */
   receiptNumber: z.string().nullable(),
+  /** The payment it became, and whether finance has since reversed it. */
+  paymentId: z.uuid().nullable(),
+  paymentReversed: z.boolean(),
   requestedAt: z.string(),
 });
 
