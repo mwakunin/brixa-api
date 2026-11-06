@@ -128,6 +128,21 @@ const EnvSchema = z.object({
    * tokens as: the only caller the internal routes accept.
    */
   TASKS_INVOKER_EMAIL: unsetIfBlank(z.email().optional()),
+
+  // --- M-Pesa (Daraja) ---
+  /** Which Daraja host every facility's calls go to. */
+  MPESA_ENV: z.enum(["sandbox", "production"]).default("sandbox"),
+  /**
+   * Comma-separated addresses Safaricom calls back from. Advisory only: an
+   * unlisted source is logged, never refused, since the list changes and
+   * nothing is signed. The token in the callback path is the control.
+   */
+  MPESA_CALLBACK_ALLOWED_IPS: unsetIfBlank(z.string().optional()),
+  /**
+   * Base64 of 32 random bytes: encrypts each facility's Daraja credentials
+   * at rest (AES-256-GCM). Without it, M-Pesa cannot be set up.
+   */
+  CREDENTIALS_ENCRYPTION_KEY: unsetIfBlank(z.string().optional()),
 })
   .superRefine((input, ctx) => {
     if (input.NODE_ENV === "production") {

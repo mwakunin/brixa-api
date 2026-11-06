@@ -197,6 +197,20 @@
       "when": 1793977020333,
       "tag": "0027_shift_closing_check",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1793978760077,
+      "tag": "0028_mpesa",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1793978764911,
+      "tag": "0029_mpesa_rls",
+      "breakpoints": true
     }
   ]
 }

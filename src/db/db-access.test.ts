@@ -45,6 +45,12 @@ const OWNER_ALLOWLIST = new Map([
     + "the invitation it names, after which the work runs as that tenant",
   ],
   [
+    "lib/mpesa-callbacks.ts",
+    "Safaricom calls back with no session and no facility; the secret token "
+    + "in the callback path is the whole lookup and yields only the facility "
+    + "whose URLs carry it, after which the work runs as that tenant",
+  ],
+  [
     "lib/verify-document.ts",
     "checking a printed document arrives from its QR code with no session and "
     + "no facility; the code is the whole lookup and yields only the facility "

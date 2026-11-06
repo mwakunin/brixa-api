@@ -4,6 +4,8 @@ import { pool } from "@/db";
 import { errorLine } from "@/lib/error-summary";
 import { sendInvitation } from "@/lib/invitations";
 import { logger } from "@/lib/logger";
+import { registerUrls } from "@/lib/mpesa";
+import { sendStkPush } from "@/lib/mpesa-stk";
 
 /**
  * Drains the outbox (CLAUDE.md §7): claims due jobs, makes each call, records
@@ -40,6 +42,8 @@ export type OutboxHandler = (job: OutboxJob) => Promise<OutboxOutcome>;
 
 const HANDLERS: Record<OutboxOperation, OutboxHandler> = {
   "invitation.send": sendInvitation,
+  "mpesa.register_urls": registerUrls,
+  "mpesa.stk_push": sendStkPush,
 };
 
 /** How long a claimed job stays invisible to other workers. */
