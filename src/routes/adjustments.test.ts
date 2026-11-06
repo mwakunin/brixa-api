@@ -59,6 +59,7 @@ describe("adjustments", () => {
 
     expect(approved.number).toBe(`CN-${YEAR}-000001`);
     const [row] = await db.select().from(invoiceAdjustments).where(eq(invoiceAdjustments.id, id));
+    expect(approved.documentId).toBe(row.documentId);
     const [document] = await db.select().from(documents).where(eq(documents.id, row.documentId!));
     expect(document).toMatchObject({ kind: "credit_note", number: `CN-${YEAR}-000001` });
     expect(document.content).toMatchObject({
@@ -187,6 +188,10 @@ describe("adjustments", () => {
         [h.facility.id, invoiceId, row.accountId, row.requestedBy, h.finance.actor.membershipId],
       )).rejects.toMatchObject({ code: "23001" });
       await expect(pool.query("UPDATE invoice_adjustments SET status = 'approved', decided_by = requested_by, decided_at = now() WHERE id = $1", [id]))
+        .rejects
+        .toMatchObject({ code: "23514" });
+      // Withdrawn only with its requester named.
+      await expect(pool.query("UPDATE invoice_adjustments SET status = 'withdrawn', decided_at = now() WHERE id = $1", [id]))
         .rejects
         .toMatchObject({ code: "23514" });
 

@@ -781,7 +781,7 @@ export const priceChanges = pgTable("price_changes", {
     sql`(${t.status} = 'pending' AND ${t.decidedBy} IS NULL AND ${t.decidedAt} IS NULL)
       OR (${t.status} IN ('approved', 'rejected') AND ${t.decidedBy} IS NOT NULL AND ${t.decidedAt} IS NOT NULL
           AND ${t.decidedBy} <> ${t.requestedBy})
-      OR (${t.status} = 'withdrawn' AND ${t.decidedBy} = ${t.requestedBy} AND ${t.decidedAt} IS NOT NULL)`,
+      OR (${t.status} = 'withdrawn' AND ${t.decidedBy} IS NOT NULL AND ${t.decidedBy} = ${t.requestedBy} AND ${t.decidedAt} IS NOT NULL)`,
   ),
 ]);
 
@@ -1262,7 +1262,7 @@ export const invoiceAdjustments = pgTable("invoice_adjustments", {
     sql`(${t.status} = 'pending' AND ${t.decidedBy} IS NULL AND ${t.decidedAt} IS NULL)
       OR (${t.status} IN ('approved', 'rejected') AND ${t.decidedBy} IS NOT NULL AND ${t.decidedAt} IS NOT NULL
           AND ${t.decidedBy} <> ${t.requestedBy})
-      OR (${t.status} = 'withdrawn' AND ${t.decidedBy} = ${t.requestedBy} AND ${t.decidedAt} IS NOT NULL)`,
+      OR (${t.status} = 'withdrawn' AND ${t.decidedBy} IS NOT NULL AND ${t.decidedBy} = ${t.requestedBy} AND ${t.decidedAt} IS NOT NULL)`,
   ),
   check(
     "invoice_adjustments_credit_note_document",
@@ -1464,7 +1464,7 @@ export const refunds = pgTable("refunds", {
     sql`(${t.status} = 'pending' AND ${t.decidedBy} IS NULL AND ${t.decidedAt} IS NULL)
       OR (${t.status} IN ('approved', 'rejected') AND ${t.decidedBy} IS NOT NULL AND ${t.decidedAt} IS NOT NULL
           AND ${t.decidedBy} <> ${t.requestedBy})
-      OR (${t.status} = 'withdrawn' AND ${t.decidedBy} = ${t.requestedBy} AND ${t.decidedAt} IS NOT NULL)`,
+      OR (${t.status} = 'withdrawn' AND ${t.decidedBy} IS NOT NULL AND ${t.decidedBy} = ${t.requestedBy} AND ${t.decidedAt} IS NOT NULL)`,
   ),
   // Paid out only once approved, with every payout detail, or none of them.
   // Each branch says IS NULL or IS NOT NULL outright: a CHECK passes on NULL.
@@ -1473,6 +1473,7 @@ export const refunds = pgTable("refunds", {
     sql`(${t.paidAt} IS NULL AND ${t.paidBy} IS NULL AND ${t.method} IS NULL AND ${t.reference} IS NULL
         AND ${t.cashierShiftId} IS NULL AND ${t.documentId} IS NULL)
       OR (${t.status} = 'approved' AND ${t.paidAt} IS NOT NULL AND ${t.paidBy} IS NOT NULL AND ${t.documentId} IS NOT NULL
+        AND ${t.method} IS NOT NULL
         AND ((${t.method} = 'cash' AND ${t.reference} IS NULL AND ${t.cashierShiftId} IS NOT NULL)
           OR (${t.method} = 'card' AND ${t.reference} IS NOT NULL AND length(btrim(${t.reference})) > 0 AND ${t.cashierShiftId} IS NOT NULL)
           OR (${t.method} IN ('bank', 'mpesa') AND ${t.reference} IS NOT NULL AND length(btrim(${t.reference})) > 0 AND ${t.cashierShiftId} IS NULL)))`,

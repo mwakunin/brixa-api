@@ -176,6 +176,20 @@
       "when": 1793968261134,
       "tag": "0024_refunds_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1793974371544,
+      "tag": "0025_review_fixes_5",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1793974394685,
+      "tag": "0026_open_shift_rls",
+      "breakpoints": true
     }
   ]
 }

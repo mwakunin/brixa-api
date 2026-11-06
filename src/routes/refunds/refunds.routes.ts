@@ -32,7 +32,8 @@ const RefundSchema = z.object({
   paymentId: z.uuid(),
   /** The receipt of the payment it returns. */
   receiptNumber: z.string(),
-  /** Its own number, once paid out. */
+  /** Its own document (to print, `/documents/{id}/pdf`) and number, once paid out. */
+  documentId: z.uuid().nullable(),
   number: z.string().nullable(),
   amountCents: z.number().int(),
   reason: z.string(),
@@ -88,17 +89,23 @@ export const requestRefund = createRoute({
   },
 });
 
+const ListQuerySchema = z.object({
+  status: StatusSchema.optional(),
+  /** `true`: approved, not yet paid out, not reversed. */
+  toPay: z.enum(["true"]).optional(),
+});
+
 export const listRefunds = createRoute({
   tags,
   method: "get",
   path: "/refunds",
   summary: "Refunds, newest first",
-  description: "`?status=pending` is the approver's queue; `?status=approved` holds those to pay out. At most 100. Audited.",
+  description: "`?status=pending` is the approver's queue; `?toPay=true` is the cashier's. At most 100. Audited.",
   middleware: [readersOnly] as const,
-  request: { headers: facilityHeaders, query: z.object({ status: StatusSchema.optional() }) },
+  request: { headers: facilityHeaders, query: ListQuerySchema },
   responses: {
     [HttpStatusCodes.OK]: jsonContent(z.object({ refunds: z.array(RefundSchema) }), "Refunds"),
-    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(z.object({ status: StatusSchema.optional() })), "Unknown status"),
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(ListQuerySchema), "Unknown filter"),
     ...tenantResponses,
   },
 });

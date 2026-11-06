@@ -205,7 +205,8 @@ export async function listAdjustments(tx: AppDb, filter: { status?: AdjustmentSt
       id: invoiceAdjustments.id,
       invoiceId: invoiceAdjustments.invoiceId,
       invoiceNumber: invoiceDocument.number,
-      /** An approved credit note's own number. */
+      /** An approved credit note's own document and number. */
+      documentId: invoiceAdjustments.documentId,
       number: documents.number,
       kind: invoiceAdjustments.kind,
       amountCents: invoiceAdjustments.amountCents,

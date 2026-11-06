@@ -64,8 +64,8 @@ export const requestRefund: TenantRouteHandler<RequestRefundRoute> = async (c) =
 };
 
 export const listRefunds: TenantRouteHandler<ListRefundsRoute> = async (c) => {
-  const { status } = c.req.valid("query");
-  const rows = await refunds.listRefunds(c.var.db, { status });
+  const { status, toPay } = c.req.valid("query");
+  const rows = await refunds.listRefunds(c.var.db, { status, toPay: toPay === "true" });
   // Amounts and reasons on patients' money: a read worth recording (rule 9).
   await recordAudit(c.var.db, {
     facilityId: c.var.facility.id,
@@ -73,7 +73,7 @@ export const listRefunds: TenantRouteHandler<ListRefundsRoute> = async (c) => {
     action: "refund.listed",
     entityType: "refund",
     summary: `Listed refunds (${rows.length})`,
-    detail: { status: status ?? null, ids: rows.map(r => r.id) },
+    detail: { status: status ?? null, toPay: toPay === "true", ids: rows.map(r => r.id) },
   });
   return c.json({ refunds: rows.map(refundJson) }, HttpStatusCodes.OK);
 };

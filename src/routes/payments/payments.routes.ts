@@ -156,7 +156,7 @@ export const reverseAllocation = createRoute({
   method: "post",
   path: "/allocations/{id}/reverse",
   summary: "Un-apply credit from a bill",
-  description: "The money returns to the payment's credit.",
+  description: "The money returns to the payment's credit, unless the payment itself is reversed.",
   middleware: [financeOnly] as const,
   request: { headers: facilityHeaders, params: IdParamsSchema, body: jsonContentRequired(ReasonSchema, "Why") },
   responses: {

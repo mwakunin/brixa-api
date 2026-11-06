@@ -198,5 +198,11 @@ describe("the price rules, in the database itself", () => {
       [change.id],
     );
     await expect(selfApproved).rejects.toMatchObject({ code: "23514" });
+    // Withdrawn only with its requester named.
+    const unnamed = pool.query(
+      "INSERT INTO price_changes (facility_id, price_list_id, status, effective_from, reason, requested_by, decided_at) SELECT facility_id, price_list_id, 'withdrawn', effective_from, 'x', requested_by, now() FROM price_changes WHERE id = $1",
+      [change.id],
+    );
+    await expect(unnamed).rejects.toMatchObject({ code: "23514" });
   });
 });

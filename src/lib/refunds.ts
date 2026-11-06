@@ -304,15 +304,19 @@ export async function reverseRefund(tx: AppDb, facilityId: string, id: string, r
   });
 }
 
-/** Refunds, newest first: the approver's queue at `pending`, the cashier's at `approved`. Names no patient. */
-export async function listRefunds(tx: AppDb, filter: { status?: RefundStatus; id?: string } = {}) {
+/**
+ * Refunds, newest first: the approver's queue at `pending`; with `toPay`, the
+ * cashier's (approved, not paid out, not reversed). Names no patient.
+ */
+export async function listRefunds(tx: AppDb, filter: { status?: RefundStatus; toPay?: boolean; id?: string } = {}) {
   const receipt = alias(documents, "receipt");
   return tx
     .select({
       id: refunds.id,
       paymentId: refunds.paymentId,
       receiptNumber: receipt.number,
-      /** The refund's own number, once paid out. */
+      /** The refund's own document and number, once paid out. */
+      documentId: refunds.documentId,
       number: documents.number,
       amountCents: refunds.amountCents,
       reason: refunds.reason,
@@ -334,6 +338,7 @@ export async function listRefunds(tx: AppDb, filter: { status?: RefundStatus; id
     .leftJoin(documents, eq(documents.id, refunds.documentId))
     .where(and(
       filter.status ? eq(refunds.status, filter.status) : undefined,
+      filter.toPay ? and(eq(refunds.status, "approved"), isNull(refunds.paidAt), isNull(refunds.reversedAt)) : undefined,
       filter.id ? eq(refunds.id, filter.id) : undefined,
     ))
     .orderBy(desc(refunds.requestedAt), desc(refunds.id))

@@ -72,12 +72,13 @@ export class PaymentError extends Error {
 // Shifts
 // ---------------------------------------------------------------------------
 
-export async function openShift(tx: AppDb, facilityId: string, openingFloatCents: number, actor: PatientActor): Promise<string> {
+/** Opens the cashier's shift. Opened and closed by the app's clock, so a quick close never precedes its open. */
+export async function openShift(tx: AppDb, facilityId: string, openingFloatCents: number, actor: PatientActor, at = new Date()): Promise<string> {
   try {
     // A savepoint, so a refused second shift leaves the request's transaction usable.
     return await tx.transaction(async (sp) => {
       const [shift] = await sp.insert(cashierShifts)
-        .values({ facilityId, cashierId: actor.membershipId, openingFloatCents })
+        .values({ facilityId, cashierId: actor.membershipId, openingFloatCents, openedAt: at })
         .returning({ id: cashierShifts.id });
       await recordAudit(sp, {
         facilityId,
@@ -198,6 +199,12 @@ export interface PaymentInput {
   invoiceId?: string;
 }
 
+/** A finalised bill as a payment's target: its number and what it still owes. */
+async function billTarget(tx: AppDb, invoice: typeof invoices.$inferSelect) {
+  const [document] = await tx.select({ number: documents.number }).from(documents).where(eq(documents.id, invoice.documentId!)).limit(1);
+  return { encounterId: invoice.encounterId, invoice, invoiceNumber: document.number, owedCents: await balanceCents(tx, invoice) };
+}
+
 /** What the payment is for, checked against the patient: an invoice, an encounter, or neither. */
 async function paymentTarget(tx: AppDb, input: PaymentInput, accountId: string) {
   if (input.invoiceId) {
@@ -209,8 +216,7 @@ async function paymentTarget(tx: AppDb, input: PaymentInput, accountId: string) 
       throw new PaymentError("other_patient");
     if (invoice.status !== "finalised")
       throw new PaymentError("not_finalised");
-    const [document] = await tx.select({ number: documents.number }).from(documents).where(eq(documents.id, invoice.documentId!)).limit(1);
-    return { encounterId: invoice.encounterId, invoice, invoiceNumber: document.number, owedCents: await balanceCents(tx, invoice) };
+    return billTarget(tx, invoice);
   }
 
   if (input.encounterId) {
@@ -221,6 +227,25 @@ async function paymentTarget(tx: AppDb, input: PaymentInput, accountId: string) 
       throw new PaymentError("other_patient");
     if (encounter.status === "cancelled")
       throw new PaymentError("encounter_cancelled");
+
+    // Its final bill is already out and still owes: the payment settles it,
+    // as a deposit taken earlier would have at finalising (decided 2026-11-04).
+    const [final] = await tx
+      .select()
+      .from(invoices)
+      .where(and(
+        eq(invoices.encounterId, encounter.id),
+        eq(invoices.accountId, accountId),
+        eq(invoices.kind, "final"),
+        eq(invoices.status, "finalised"),
+      ))
+      .for("update")
+      .limit(1);
+    if (final) {
+      const target = await billTarget(tx, final);
+      if (target.owedCents > 0)
+        return target;
+    }
     return { encounterId: encounter.id, invoice: null, invoiceNumber: null, owedCents: 0 };
   }
 

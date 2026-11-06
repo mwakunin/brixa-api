@@ -135,6 +135,7 @@ describe("payments", () => {
     const { patientId } = await billed();
 
     expect((await pay({ patientId, method: "card", amountCents: 1_000 })).status).toBe(422);
+    expect((await pay({ patientId, method: "bank", amountCents: 1_000 }, h.finance)).status).toBe(422);
     expect((await pay({ patientId, method: "cash", amountCents: 1_000, reference: "X123" })).status).toBe(422);
     expect((await pay({ patientId, method: "cash", amountCents: 1_050 })).status).toBe(422);
   });
@@ -150,6 +151,7 @@ describe("payments", () => {
     const patientId = await h.patient();
     const { encounterId } = await tx(t => admitPatient(t, h.facility.id, { patientId, bedId: h.beds.general }, h.nurse.actor, at(0, 10)));
     const deposit = await (await pay({ patientId, method: "cash", amountCents: 600_000, encounterId })).json();
+    const topUp = await (await pay({ patientId, method: "cash", amountCents: 1_000, encounterId })).json();
     const [receipt] = await db.select().from(documents).where(eq(documents.id, deposit.documentId));
     expect(receipt.content.fields).toContainEqual({ label: "For", value: `Deposit, admission ADM-${YEAR}-0001` });
 
@@ -160,7 +162,26 @@ describe("payments", () => {
 
     expect(await invoice(invoiceId)).toMatchObject({ totalCents: 500_000, paidCents: 500_000, balanceCents: 0 });
     const account = await (await call("GET", `/patients/${patientId}/account`, h.facility.id, h.cashier)).json();
-    expect(account).toMatchObject({ creditCents: 100_000, owedCents: 0 });
+    expect(account).toMatchObject({ creditCents: 101_000, owedCents: 0 });
+    // The first deposit covered the bill; the top-up was not applied, and the audit says so.
+    const [applied] = await db.select().from(auditLog).where(eq(auditLog.action, "allocation.recorded"));
+    expect(applied.detail).toMatchObject({ invoiceId, amountCents: 500_000, payments: [deposit.id] });
+    expect(await (await call("GET", `/payments/${topUp.id}`, h.facility.id, h.finance)).json()).toMatchObject({ unallocatedCents: 1_000 });
+  });
+
+  it("taken towards a visit whose final bill is out settle that bill", async () => {
+    const { patientId, encounterId, invoiceId } = await billed();
+
+    const payment = await (await pay({ patientId, method: "cash", amountCents: 60_000, encounterId })).json();
+
+    expect(payment).toMatchObject({ unallocatedCents: 9_200, allocations: [{ invoiceId, amountCents: 50_800 }] });
+    expect(await invoice(invoiceId)).toMatchObject({ balanceCents: 0 });
+    const [receipt] = await db.select().from(documents).where(eq(documents.id, payment.documentId));
+    expect(receipt.content.fields).toContainEqual({ label: "For", value: `Invoice INV-${YEAR}-000001` });
+
+    // Once it owes nothing, more money towards the visit stays as its credit.
+    const more = await (await pay({ patientId, method: "cash", amountCents: 1_000, encounterId })).json();
+    expect(more).toMatchObject({ encounterId, unallocatedCents: 1_000, allocations: [] });
   });
 
   it("left as credit are applied to a bill on request", async () => {

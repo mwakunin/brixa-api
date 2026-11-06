@@ -86,10 +86,12 @@ describe("refunds", () => {
     expect(paid.status).toBe(200);
     const done = await paid.json();
     expect(done).toMatchObject({ number: `RFD-${YEAR}-000001`, method: "cash", reference: null, paidBy: h.cashier.actor.membershipId });
+    expect(done.documentId).toEqual(expect.any(String));
     expect(await refusal(await payOut(refund.id))).toEqual([409, "already_paid"]);
 
     expect(await shift()).toMatchObject({ cashCents: 60_000, cashRefundsCents: 60_000, refundCount: 1, expectedCashCents: 500_000 });
     const [row] = await db.select().from(refunds).where(eq(refunds.id, refund.id));
+    expect(row.documentId).toBe(done.documentId);
     const [printed] = await db.select().from(documents).where(eq(documents.id, row.documentId!));
     expect(printed).toMatchObject({ kind: "refund", number: `RFD-${YEAR}-000001` });
     expect(printed.content).toMatchObject({
@@ -150,8 +152,10 @@ describe("refunds", () => {
     const credit = await deposit();
     const cash = await (await ask(credit.id, { amountCents: 20_000 })).json();
     const mpesa = await (await ask(credit.id, { amountCents: 20_000 })).json();
+    const card = await (await ask(credit.id, { amountCents: 20_000 })).json();
     await decide(cash.id, "approve");
     await decide(mpesa.id, "approve");
+    await decide(card.id, "approve");
 
     expect(await refusal(await payOut(cash.id, { method: "cash" }, h.finance))).toEqual([409, "shift_required"]);
     expect((await payOut(mpesa.id, { method: "mpesa" }, h.finance)).status).toBe(422);
@@ -159,7 +163,14 @@ describe("refunds", () => {
 
     const sent = await (await payOut(mpesa.id, { method: "mpesa", reference: "SKL4H7XQ2P" }, h.finance)).json();
     expect(sent).toMatchObject({ method: "mpesa", reference: "SKL4H7XQ2P", number: `RFD-${YEAR}-000001` });
-    expect(await shift()).toMatchObject({ cashRefundsCents: 0, refundCount: 0, expectedCashCents: 560_000 });
+
+    expect(await refusal(await payOut(card.id, { method: "card", reference: "AUTH 4455" }, h.finance))).toEqual([409, "shift_required"]);
+    expect((await payOut(card.id, { method: "card" })).status).toBe(422);
+    const swiped = await (await payOut(card.id, { method: "card", reference: "AUTH 4455" })).json();
+    expect(swiped).toMatchObject({ method: "card", reference: "AUTH 4455", number: `RFD-${YEAR}-000002` });
+    const [row] = await db.select().from(refunds).where(eq(refunds.id, card.id));
+    expect(row.cashierShiftId).toBe((await shift()).id);
+    expect(await shift()).toMatchObject({ cashRefundsCents: 0, cardRefundsCents: 20_000, refundCount: 1, expectedCashCents: 560_000 });
   });
 
   it("are reversed by finance, never by whoever paid them out, returning the credit and the cash", async () => {
@@ -220,6 +231,13 @@ describe("refunds", () => {
     expect(entry).toMatchObject({ actorId: h.finance.id, detail: { status: "pending", ids: [refund.id] } });
     expect((await call("GET", "/refunds", h.facility.id, h.nurse)).status).toBe(403);
 
+    const toPay = async () => (await (await call("GET", "/refunds?toPay=true", h.facility.id, h.cashier)).json()).refunds.map((r: { id: string }) => r.id);
+    expect(await toPay()).toEqual([]);
+    await decide(refund.id, "approve");
+    expect(await toPay()).toEqual([refund.id]);
+    await payOut(refund.id);
+    expect(await toPay()).toEqual([]);
+
     const elsewhere = await hospital();
     expect((await call("POST", `/refunds/${refund.id}/approve`, elsewhere.facility.id, elsewhere.finance)).status).toBe(404);
     expect((await call("POST", `/payments/${credit.id}/refunds`, elsewhere.facility.id, elsewhere.clerk, { reason: "Test" })).status).toBe(404);
@@ -243,8 +261,15 @@ describe("in the database", () => {
     await expect(pool.query("UPDATE refunds SET status = 'approved', decided_by = requested_by, decided_at = now() WHERE id = $1", [refund.id]))
       .rejects
       .toMatchObject({ code: "23514" });
+    await expect(pool.query("UPDATE refunds SET status = 'withdrawn', decided_at = now() WHERE id = $1", [refund.id]))
+      .rejects
+      .toMatchObject({ code: "23514" });
 
     await decide(refund.id, "approve");
+    await expect(pool.query(
+      "UPDATE refunds SET paid_at = now(), paid_by = $2, document_id = (SELECT document_id FROM payments WHERE id = refunds.payment_id) WHERE id = $1",
+      [refund.id, h.finance.actor.membershipId],
+    )).rejects.toMatchObject({ code: "23514" });
     await payOut(refund.id);
     await expect(pool.query("UPDATE refunds SET status = 'rejected' WHERE id = $1", [refund.id])).rejects.toMatchObject({ code: "23001" });
     await expect(pool.query("UPDATE refunds SET paid_at = now() WHERE id = $1", [refund.id])).rejects.toMatchObject({ code: "23001" });
@@ -295,6 +320,26 @@ describe("in the database", () => {
        SELECT facility_id, account_id, 'bank', 100, NULL, document_id, received_by FROM payments WHERE id = $1`,
       [credit.id],
     )).rejects.toMatchObject({ code: "23514" });
+  });
+});
+
+describe("a closed shift", () => {
+  it("takes no payment and pays out no refund, whoever writes", async () => {
+    const credit = await deposit();
+    const refundId = await approved(credit.id);
+    const closed = await shift();
+    await call("POST", `/cashier-shifts/${closed.id}/close`, h.facility.id, h.cashier, { declaredCashCents: 560_000 });
+
+    await expect(pool.query(
+      `INSERT INTO payments (facility_id, account_id, method, amount_cents, cashier_shift_id, document_id, received_by)
+       SELECT facility_id, account_id, 'cash', 100, cashier_shift_id, document_id, received_by FROM payments WHERE id = $1`,
+      [credit.id],
+    )).rejects.toMatchObject({ code: "23001" });
+    await expect(pool.query(
+      `UPDATE refunds SET paid_at = now(), paid_by = $2, method = 'cash', cashier_shift_id = $3,
+         document_id = (SELECT document_id FROM payments WHERE id = refunds.payment_id) WHERE id = $1`,
+      [refundId, h.cashier.actor.membershipId, closed.id],
+    )).rejects.toMatchObject({ code: "23001" });
   });
 });
 

@@ -172,6 +172,7 @@ export async function applyCredit(
 ): Promise<number> {
   let owed = invoice.totalCents;
   let applied = 0;
+  const used: string[] = [];
   for (const payment of credit) {
     const amountCents = Math.min(payment.freeCents, owed);
     if (amountCents <= 0)
@@ -186,6 +187,7 @@ export async function applyCredit(
     });
     owed -= amountCents;
     applied += amountCents;
+    used.push(payment.id);
   }
 
   if (applied > 0) {
@@ -196,13 +198,17 @@ export async function applyCredit(
       entityType: "invoice",
       entityId: invoice.id,
       summary: `Applied ${formatKes(applied)} of credit to an invoice on finalising it`,
-      detail: { invoiceId: invoice.id, amountCents: applied, payments: credit.map(c => c.id) },
+      detail: { invoiceId: invoice.id, amountCents: applied, payments: used },
     });
   }
   return applied;
 }
 
-/** Un-applies an allocation; its money returns to the payment's credit. */
+/**
+ * Un-applies an allocation; its money returns to the payment's credit. On a
+ * reversed payment the allocation already counts for nothing, and there is
+ * no credit to return.
+ */
 export async function reverseAllocation(tx: AppDb, facilityId: string, id: string, reason: string, actor: PatientActor) {
   const [allocation] = await tx.select().from(allocations).where(eq(allocations.id, id)).for("update").limit(1);
   if (!allocation)

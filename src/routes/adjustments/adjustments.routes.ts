@@ -28,7 +28,8 @@ const AdjustmentSchema = z.object({
   id: z.uuid(),
   invoiceId: z.uuid(),
   invoiceNumber: z.string().nullable(),
-  /** An approved credit note's own number. */
+  /** An approved credit note's own document (to print, `/documents/{id}/pdf`) and number. */
+  documentId: z.uuid().nullable(),
   number: z.string().nullable(),
   kind: KindSchema,
   amountCents: z.number().int(),
