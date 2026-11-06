@@ -241,19 +241,26 @@ async function settleForRequest(tx: AppDb, facilityId: string, request: StkRow, 
   return "paid";
 }
 
+export type StkCallbackRecord
+  = | { outcome: "failed" | "unusable" | "queued" }
+    | { outcome: "settle"; requestId: string; transactionId: string };
+
 /**
- * Safaricom's answer to a prompt, inside the facility's transaction. A
- * failure closes the request. Money received becomes an M-Pesa transaction
- * and, when the prompt is ours, a payment towards what it was for. A retried
- * callback finds the transaction already recorded and changes nothing.
+ * Safaricom's answer to a prompt, kept in its own transaction: the exchange,
+ * and money received as an M-Pesa transaction. A failure closes the prompt.
+ * Placing the money is a second step (`settleStkCallback`), so if that fails
+ * the payment still waits in the queue. A receipt already on file is
+ * Safaricom repeating itself, or the paybill confirmation of the same
+ * payment arriving first; the latter, still unplaced, is placed against the
+ * prompt.
  */
-export async function completeStkPush(
+export async function recordStkCallback(
   tx: AppDb,
   facilityId: string,
   shortcode: string,
   callback: StkCallback,
   payload: unknown,
-): Promise<"failed" | "paid" | "queued" | "duplicate" | "unusable"> {
+): Promise<StkCallbackRecord> {
   const [request] = callback.checkoutRequestId
     ? await tx.select().from(mpesaStkRequests).where(eq(mpesaStkRequests.checkoutRequestId, callback.checkoutRequestId)).for("update").limit(1)
     : [];
@@ -262,11 +269,11 @@ export async function completeStkPush(
   if (callback.resultCode !== 0) {
     if (request?.status === "sent")
       await closeFailed(tx, request.id, callback.resultDesc, callback.resultCode);
-    return "failed";
+    return { outcome: "failed" };
   }
   // No amount or receipt: nothing can be booked. The callback is kept above, and the caller logs it.
   if (!callback.receiptNumber || !callback.amountCents || callback.amountCents % 100 !== 0)
-    return "unusable";
+    return { outcome: "unusable" };
 
   let transaction: TransactionRow;
   try {
@@ -279,17 +286,28 @@ export async function completeStkPush(
       amountCents: callback.amountCents!,
       transactedAt: callback.transactedAt ?? new Date(),
       rawPayload: payload as Record<string, unknown>,
-      statusReason: request ? null : "No prompt on record for this payment",
+      statusReason: request ? "Paid for an M-Pesa prompt; not yet placed" : "No prompt on record for this payment",
     }).returning());
   }
   catch (err) {
-    if (isUniqueViolation(err))
-      return "duplicate";
-    throw err;
+    if (!isUniqueViolation(err))
+      throw err;
+    [transaction] = await tx.select().from(mpesaTransactions).where(eq(mpesaTransactions.transactionId, callback.receiptNumber)).limit(1);
+    if (!transaction || transaction.status !== "unmatched")
+      return { outcome: "queued" };
   }
 
   // A prompt we closed as failed (interrupted, or a timeout) can still have been paid: place it all the same.
-  if (!request)
+  if (!request || request.status === "completed")
+    return { outcome: "queued" };
+  return { outcome: "settle", requestId: request.id, transactionId: transaction.id };
+}
+
+/** The second step: places a kept STK payment towards its prompt. Safe to repeat. */
+export async function settleStkCallback(tx: AppDb, facilityId: string, requestId: string, transactionId: string): Promise<"paid" | "queued"> {
+  const [request] = await tx.select().from(mpesaStkRequests).where(eq(mpesaStkRequests.id, requestId)).for("update").limit(1);
+  const [transaction] = await tx.select().from(mpesaTransactions).where(eq(mpesaTransactions.id, transactionId)).for("update").limit(1);
+  if (!request || !transaction || transaction.status !== "unmatched")
     return "queued";
   return settleForRequest(tx, facilityId, request, transaction);
 }

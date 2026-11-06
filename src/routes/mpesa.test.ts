@@ -333,6 +333,24 @@ describe("m-Pesa prompts", () => {
     ]));
   });
 
+  it("settle their prompt even when the paybill confirmation of the same payment comes first", async () => {
+    await setUp();
+    const patientId = await h.patient();
+    const invoiceId = await billed(patientId);
+    const request = await (await prompt({ patientId, phone: "0712345678", amountCents: 50_800, invoiceId })).json();
+    daraja();
+    await drainOutbox();
+
+    // The confirmation carries the shortened reference the phone showed, which names no bill by itself.
+    await post("/c2b/confirmation", confirmation({ TransID: "SKBOTH0001", TransAmount: "508.00", BillRefNumber: `NV${YEAR}000001` }));
+    expect(await paymentOf("SKBOTH0001")).toBeUndefined();
+    await paid("ws_CO_1", "SKBOTH0001", 508);
+
+    expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).toMatchObject({ status: "completed", receiptNumber: "SKBOTH0001" });
+    expect(await invoice(invoiceId)).toMatchObject({ balanceCents: 0 });
+    expect(await db.select().from(payments)).toHaveLength(1);
+  });
+
   it("are never sent again once sending began, even if the worker died", async () => {
     await setUp();
     const patientId = await h.patient();

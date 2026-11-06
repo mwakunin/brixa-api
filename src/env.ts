@@ -142,7 +142,7 @@ const EnvSchema = z.object({
    * Base64 of 32 random bytes: encrypts each facility's Daraja credentials
    * at rest (AES-256-GCM). Without it, M-Pesa cannot be set up.
    */
-  CREDENTIALS_ENCRYPTION_KEY: unsetIfBlank(z.string().optional()),
+  CREDENTIALS_ENCRYPTION_KEY: unsetIfBlank(z.string().regex(/^[A-Z0-9+/]{43}=$/i, "Must be base64 of 32 random bytes (44 characters)").optional()),
 })
   .superRefine((input, ctx) => {
     if (input.NODE_ENV === "production") {
@@ -165,6 +165,9 @@ const EnvSchema = z.object({
       // Defaulting to the sandbox would send live facilities' prompts to Safaricom's test host.
       if (process.env.MPESA_ENV === undefined)
         ctx.addIssue({ code: "custom", path: ["MPESA_ENV"], message: "Must be set explicitly in production: sandbox or production" });
+      // Without it no facility can set up M-Pesa, and the admin would learn so from a 500.
+      if (!input.CREDENTIALS_ENCRYPTION_KEY)
+        ctx.addIssue({ code: "custom", path: ["CREDENTIALS_ENCRYPTION_KEY"], message: "Must be set when NODE_ENV is 'production'" });
       if (process.env.TRUST_PROXY_HOPS === undefined) {
         ctx.addIssue({
           code: "custom",

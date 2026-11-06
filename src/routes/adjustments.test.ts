@@ -253,6 +253,16 @@ describe("adjustments", () => {
       expect(await invoice()).toMatchObject({ paidCents: 50_800, balanceCents: 0 });
     });
 
+    it("in the database: never approved and reversed in one step", async () => {
+      const pending = await (await ask({ kind: "credit_note", amountCents: 800 })).json();
+
+      await expect(pool.query(
+        `UPDATE invoice_adjustments SET status = 'approved', decided_by = $2, decided_at = now(),
+           reversed_at = now(), reversed_by = $2, reversal_reason = 'x' WHERE id = $1`,
+        [pending.id, h.finance.actor.membershipId],
+      )).rejects.toMatchObject({ code: "23001" });
+    });
+
     it("in the database: once, with a reason, and decided by someone else", async () => {
       const id = await approved();
       // Not without an approved request, however complete the columns.

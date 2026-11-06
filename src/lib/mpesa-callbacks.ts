@@ -10,7 +10,7 @@ import { parseC2bConfirmation, parseStkCallback } from "./daraja";
 import { isUniqueViolation } from "./db-errors";
 import { logger } from "./logger";
 import { matchTransaction, recordExchange } from "./mpesa";
-import { completeStkPush } from "./mpesa-stk";
+import { recordStkCallback, settleStkCallback } from "./mpesa-stk";
 import { normalizePhone } from "./phone";
 
 /**
@@ -143,8 +143,17 @@ export async function onStkCallback(token: string, payload: unknown): Promise<Ca
     logger.error({ facilityId: settings.facilityId }, "Unparseable M-Pesa prompt callback");
     return { status: 200, body: ACCEPTED };
   }
-  const outcome = await runAsFacility(settings.facilityId, tx => completeStkPush(tx, settings.facilityId, settings.shortcode, parsed, payload));
-  if (outcome === "unusable")
+  // Kept first, in its own transaction, as a paybill confirmation is: placing it can then fail without losing it.
+  const recorded = await runAsFacility(settings.facilityId, tx => recordStkCallback(tx, settings.facilityId, settings.shortcode, parsed, payload));
+  if (recorded.outcome === "unusable")
     logger.error({ facilityId: settings.facilityId }, "M-Pesa prompt callback reported success without a receipt or amount");
+  if (recorded.outcome === "settle") {
+    try {
+      await runAsFacility(settings.facilityId, tx => settleStkCallback(tx, settings.facilityId, recorded.requestId, recorded.transactionId));
+    }
+    catch (err) {
+      logger.error({ err, facilityId: settings.facilityId, transactionId: parsed.receiptNumber }, "Failed to place an M-Pesa prompt's payment; it waits in the queue");
+    }
+  }
   return { status: 200, body: ACCEPTED };
 }
