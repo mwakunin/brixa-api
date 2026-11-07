@@ -310,10 +310,17 @@ export async function recordStkCallback(
     [transaction] = await tx.select().from(mpesaTransactions).where(eq(mpesaTransactions.transactionId, callback.receiptNumber)).for("update").limit(1);
     // The paybill confirmation came first and its reference placed it already
     // (an admission or patient number): one payment, now the prompt's too.
-    if (transaction?.status === "allocated" && request && request.status !== "completed" && transaction.amountCents === request.amountCents) {
-      await tx.update(mpesaStkRequests)
-        .set({ status: "completed", resultCode: 0, mpesaTransactionId: transaction.id, completedAt: new Date() })
-        .where(eq(mpesaStkRequests.id, request.id));
+    // In a different amount it is not what the prompt asked for, but it is the
+    // prompt's only outcome: closed, naming the payment, never left `sent`.
+    if (transaction?.status === "allocated" && request && request.status !== "completed") {
+      if (transaction.amountCents === request.amountCents) {
+        await tx.update(mpesaStkRequests)
+          .set({ status: "completed", resultCode: 0, mpesaTransactionId: transaction.id, completedAt: new Date() })
+          .where(eq(mpesaStkRequests.id, request.id));
+      }
+      else {
+        await closeFailed(tx, request.id, `Paid ${formatKes(transaction.amountCents)} instead, already placed as M-Pesa ${transaction.transactionId}`);
+      }
       return { outcome: "queued" };
     }
     if (!transaction || transaction.status !== "unmatched")

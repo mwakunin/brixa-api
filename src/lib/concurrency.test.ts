@@ -55,8 +55,9 @@ async function heldOpen<T>(work: (t: AppDb) => Promise<T>) {
       await mayCommit;
     }
   });
-  await started;
-  if (failure) {
+  // Also settles if the transaction never began (a connection error), which would otherwise wait for ever.
+  await Promise.race([started, done.catch(() => undefined)]);
+  if (failure || pid === 0) {
     release();
     await done;
   }

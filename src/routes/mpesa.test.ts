@@ -328,6 +328,23 @@ describe("m-Pesa prompts", () => {
     expect(await db.select().from(payments)).toHaveLength(1);
   });
 
+  it("close their prompt when the paybill confirmation placed a different amount first", async () => {
+    await setUp();
+    const patientId = await h.patient();
+    const { id: encounterId } = await (await call("POST", "/admissions", h.facility.id, h.nurse, { patientId, bedId: h.beds.general })).json();
+    const request = await (await prompt({ patientId, phone: "0712345678", amountCents: 100_000, encounterId })).json();
+    daraja();
+    await drainOutbox();
+
+    await post("/c2b/confirmation", confirmation({ TransID: "SKADMIT002", TransAmount: "600.00", BillRefNumber: `ADM-${year()}-0001` }));
+    await paid("ws_CO_1", "SKADMIT002", 600);
+
+    // Never left `sent`: the only payment there will be is named.
+    expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json())
+      .toMatchObject({ status: "failed", resultDesc: "Paid KES 600.00 instead, already placed as M-Pesa SKADMIT002" });
+    expect(await db.select().from(payments)).toHaveLength(1);
+  });
+
   it("close as failed when the patient declines, and are never sent twice", async () => {
     await setUp();
     const patientId = await h.patient();
