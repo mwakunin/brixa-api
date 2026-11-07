@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import env from "@/env";
 
+import { sslConfigFor } from "./connection";
 import { checkConnections, probeConnection } from "./index";
 
 describe("the readiness probe", () => {
@@ -34,7 +35,8 @@ describe("the readiness probe", () => {
   it("says why a connection failed, without what it held", async () => {
     const url = new URL(env.DATABASE_URL);
     url.username = "no_such_role";
-    const stranger = new Pool({ connectionString: url.toString(), connectionTimeoutMillis: 5_000 });
+    // The runtime pools' TLS settings, so a TLS-only server refuses the role, not the connection.
+    const stranger = new Pool({ connectionString: url.toString(), ssl: sslConfigFor(url.toString()), connectionTimeoutMillis: 5_000 });
 
     try {
       const error = await probeConnection(stranger);
