@@ -1,0 +1,2 @@
+CREATE INDEX "gateway_exchanges_stk_checkout_index" ON "gateway_exchanges" USING btree ("facility_id",("response" #>> '{Body,stkCallback,CheckoutRequestID}')) WHERE "gateway_exchanges"."operation" = 'stk_callback';--> statement-breakpoint
+CREATE INDEX "mpesa_transactions_stk_checkout_index" ON "mpesa_transactions" USING btree ("facility_id",("raw_payload" #>> '{Body,stkCallback,CheckoutRequestID}')) WHERE "mpesa_transactions"."source" = 'stk';

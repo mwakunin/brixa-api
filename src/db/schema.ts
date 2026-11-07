@@ -90,6 +90,15 @@ export function normalisedNumber(column: unknown) {
 }
 
 /**
+ * An STK callback's checkout id, read from its stored payload. One
+ * definition for the early-callback lookups (`lib/mpesa-stk.ts`) and the
+ * indexes that serve them, as with `normalisedNumber`.
+ */
+export function stkCheckoutId(column: unknown) {
+  return sql`(${column} #>> '{Body,stkCallback,CheckoutRequestID}')`;
+}
+
+/**
  * The array form of `oneOf`: every element of a `text[]` column is a known
  * value. An empty array passes `<@`, so "at least one" is a separate CHECK
  * where it matters.
@@ -1448,6 +1457,8 @@ export const mpesaTransactions = pgTable("mpesa_transactions", {
   unique("mpesa_transactions_facility_id_id_key").on(t.facilityId, t.id),
   unique("mpesa_transactions_facility_id_transaction_id_key").on(t.facilityId, t.transactionId),
   index("mpesa_transactions_status_index").on(t.facilityId, t.status),
+  // An early STK callback, found by its checkout id once the send records it.
+  index("mpesa_transactions_stk_checkout_index").on(t.facilityId, stkCheckoutId(t.rawPayload)).where(sql`${t.source} = 'stk'`),
   oneOf("mpesa_transactions_source_known", t.source, ["c2b", "stk"]),
   oneOf("mpesa_transactions_status_known", t.status, ["unmatched", "allocated", "rejected"]),
   check("mpesa_transactions_amount_whole_shillings", sql`${t.amountCents} > 0 AND ${t.amountCents} % 100 = 0`),
@@ -1523,6 +1534,8 @@ export const gatewayExchanges = pgTable("gateway_exchanges", {
 }, t => [
   foreignKey({ name: "gateway_exchanges_stk_request_fk", columns: [t.facilityId, t.stkRequestId], foreignColumns: [mpesaStkRequests.facilityId, mpesaStkRequests.id] }),
   index("gateway_exchanges_stk_request_index").on(t.stkRequestId),
+  // An early refusal, found by its checkout id once the send records it.
+  index("gateway_exchanges_stk_checkout_index").on(t.facilityId, stkCheckoutId(t.response)).where(sql`${t.operation} = 'stk_callback'`),
   oneOf("gateway_exchanges_gateway_known", t.gateway, ["daraja"]),
   oneOf("gateway_exchanges_operation_known", t.operation, ["register_urls", "stk_push", "stk_callback", "c2b_confirmation"]),
   check("gateway_exchanges_register_has_no_request", sql`${t.operation} NOT IN ('register_urls', 'c2b_confirmation') OR ${t.stkRequestId} IS NULL`),

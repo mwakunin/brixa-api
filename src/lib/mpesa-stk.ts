@@ -2,7 +2,7 @@ import { and, desc, eq, sql } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 
-import { accounts, admissions, documents, encounters, gatewayExchanges, invoices, memberships, mpesaSettings, mpesaStkRequests, mpesaTransactions, patientNumbers, patients, payments } from "@/db/schema";
+import { accounts, admissions, documents, encounters, gatewayExchanges, invoices, memberships, mpesaSettings, mpesaStkRequests, mpesaTransactions, patientNumbers, patients, payments, stkCheckoutId } from "@/db/schema";
 import { runAsFacility } from "@/db/tenant-transaction";
 
 import type { StkCallback } from "./daraja";
@@ -173,17 +173,29 @@ export async function sendStkPush(job: { facilityId: string; subjectId: string }
   }
 
   // If this write fails the job is retried, finds the request `sending`, and closes it: never a second prompt.
-  await runAsFacility(job.facilityId, async (tx) => {
-    await recordExchange(tx, job.facilityId, { operation: "stk_push", stkRequestId: request.id, ...sent });
-    await tx.update(mpesaStkRequests).set({ status: "sent", checkoutRequestId: sent.checkoutRequestId }).where(eq(mpesaStkRequests.id, request.id));
-    await applyEarlyCallback(tx, job.facilityId, request.id, sent.checkoutRequestId);
-  });
+  await runAsFacility(job.facilityId, tx => recordSent(tx, job.facilityId, request.id, sent));
   return "done";
 }
 
-function checkoutOf(column: typeof mpesaTransactions.rawPayload | typeof gatewayExchanges.response) {
-  return sql`${column} #>> '{Body,stkCallback,CheckoutRequestID}'`;
+/**
+ * Serialises the two writers of one checkout: the send recording Safaricom's
+ * answer, and a callback for it. Whichever comes second waits, then sees the
+ * first one's rows, so an early callback is never missed by both. Released
+ * when the transaction ends.
+ */
+export async function lockCheckout(tx: AppDb, facilityId: string, checkoutRequestId: string) {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`stk:${facilityId}:${checkoutRequestId}`}, 0))`);
 }
+
+/** Records that Safaricom has the prompt, and applies a callback that beat this here. */
+export async function recordSent(tx: AppDb, facilityId: string, requestId: string, sent: Awaited<ReturnType<typeof stkPush>>) {
+  await lockCheckout(tx, facilityId, sent.checkoutRequestId);
+  await recordExchange(tx, facilityId, { operation: "stk_push", stkRequestId: requestId, ...sent });
+  await tx.update(mpesaStkRequests).set({ status: "sent", checkoutRequestId: sent.checkoutRequestId }).where(eq(mpesaStkRequests.id, requestId));
+  await applyEarlyCallback(tx, facilityId, requestId, sent.checkoutRequestId);
+}
+
+const checkoutOf = stkCheckoutId;
 
 /**
  * Safaricom can call back before we have recorded the checkout id. Such a
@@ -261,6 +273,9 @@ export async function recordStkCallback(
   callback: StkCallback,
   payload: unknown,
 ): Promise<StkCallbackRecord> {
+  // Waits for a send recording this checkout id to commit, so the request lookup sees it.
+  if (callback.checkoutRequestId)
+    await lockCheckout(tx, facilityId, callback.checkoutRequestId);
   const [request] = callback.checkoutRequestId
     ? await tx.select().from(mpesaStkRequests).where(eq(mpesaStkRequests.checkoutRequestId, callback.checkoutRequestId)).for("update").limit(1)
     : [];

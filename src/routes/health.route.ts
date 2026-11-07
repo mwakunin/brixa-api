@@ -34,13 +34,14 @@ const router = createRouter()
       },
     }),
     async (c) => {
-      // Bounded by the pools' connection timeout and a statement_timeout
-      // (db/index.ts), so the probe fails rather than hangs.
-      const connections = await checkConnections();
+      // Each probe has a deadline covering every step, and Postgres caps the
+      // query too (db/index.ts), so the probe fails rather than hangs.
+      const { errors, ...connections } = await checkConnections();
       const up = connections.owner && connections.app && connections.auth;
 
+      // Each failure with its role, in the log only: the response is public.
       if (!up)
-        c.var.logger.error({ connections }, "health check: a database connection is down");
+        c.var.logger.error({ connections, errors }, "health check: a database connection is down");
 
       return c.json(
         {

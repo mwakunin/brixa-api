@@ -1,4 +1,4 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 
 import db from "@/db";
 import { facilities, jobFailures } from "@/db/schema";
@@ -13,6 +13,10 @@ import { reconcile } from "@/lib/reconciliation";
  * in `job_failures` until a later run no longer finds it, and is logged as
  * "money identities drifted" for alerting, with ids and counts only.
  */
+
+/** Findings per insert: well inside Postgres's limit on bind parameters (four per row). */
+const FINDINGS_PER_INSERT = 500;
+
 export async function reconcileAll() {
   const tally = { facilities: 0, drifted: 0, findings: 0, failed: 0 };
   const all = await db.select({ id: facilities.id }).from(facilities);
@@ -27,13 +31,18 @@ export async function reconcileAll() {
           .select()
           .from(jobFailures)
           .where(and(eq(jobFailures.job, "reconciliation"), isNull(jobFailures.resolvedAt)));
-        for (const row of open) {
-          if (!current.has(`${row.subjectId}|${row.error}`))
-            await tx.update(jobFailures).set({ resolvedAt: new Date() }).where(eq(jobFailures.id, row.id));
-        }
-        for (const finding of drift) {
+        // In bulk, so a bad night's many findings cost a few statements, not one round trip each.
+        const fixed = open.filter(row => !current.has(`${row.subjectId}|${row.error}`)).map(row => row.id);
+        if (fixed.length > 0)
+          await tx.update(jobFailures).set({ resolvedAt: new Date() }).where(inArray(jobFailures.id, fixed));
+        for (let i = 0; i < drift.length; i += FINDINGS_PER_INSERT) {
           await tx.insert(jobFailures)
-            .values({ facilityId: facility.id, job: "reconciliation", subjectId: finding.subjectId, error: finding.detail })
+            .values(drift.slice(i, i + FINDINGS_PER_INSERT).map(finding => ({
+              facilityId: facility.id,
+              job: "reconciliation" as const,
+              subjectId: finding.subjectId,
+              error: finding.detail,
+            })))
             .onConflictDoNothing();
         }
         return drift;

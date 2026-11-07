@@ -234,6 +234,18 @@ describe("adjustments", () => {
       expect((await call("GET", "/adjustment-reversals", h.facility.id, h.nurse)).status).toBe(403);
     });
 
+    it("are neither asked for, decided nor seen from another facility", async () => {
+      const id = await approved();
+      const reversal = await (await reverse(id)).json();
+      const elsewhere = await hospital();
+
+      const asked = await call("POST", `/adjustments/${id}/reversals`, elsewhere.facility.id, elsewhere.clerk, { reason: "Approved in error" });
+      expect(asked.status).toBe(404);
+      expect((await call("POST", `/adjustment-reversals/${reversal.id}/approve`, elsewhere.facility.id, elsewhere.finance)).status).toBe(404);
+      const listed = await (await call("GET", "/adjustment-reversals", elsewhere.facility.id, elsewhere.finance)).json();
+      expect(listed.reversals).toEqual([]);
+    });
+
     it("free the invoice's room for payments and for voiding", async () => {
       const id = await approved("waiver", 50_800);
       const reversal = await (await reverse(id)).json();

@@ -5,10 +5,12 @@ import type { Hospital, Person } from "@/test/hospital";
 
 import app from "@/app";
 import db, { pool } from "@/db";
-import { admissions, auditLog, documents, gatewayExchanges, mpesaSettings, mpesaTransactions, normalisedNumber, outbox, patientNumbers, payments } from "@/db/schema";
+import { admissions, auditLog, documents, gatewayExchanges, mpesaSettings, mpesaTransactions, normalisedNumber, outbox, patientNumbers, payments, stkCheckoutId } from "@/db/schema";
+import { runAsFacility } from "@/db/tenant-transaction";
 import { drainOutbox } from "@/jobs/outbox-worker";
 import { darajaTimestamp, resetDarajaTokens } from "@/lib/daraja";
-import { resetDb } from "@/test/helpers";
+import { recordSent } from "@/lib/mpesa-stk";
+import { backendPid, resetDb, waitForBlockedBackend } from "@/test/helpers";
 import { call, hospital, TODAY } from "@/test/hospital";
 
 /** The Kenyan year now: read when used, since TODAY is re-read for each test. */
@@ -375,6 +377,48 @@ describe("m-Pesa prompts", () => {
     expect(await db.select().from(payments)).toHaveLength(1);
   });
 
+  it("paid while the send is being recorded wait for it, then complete the prompt", async () => {
+    await setUp();
+    const patientId = await h.patient();
+    const request = await (await prompt({ patientId, phone: "0712345678", amountCents: 10_000 })).json();
+    const sent = { request: {}, response: {}, httpStatus: 200, checkoutRequestId: "ws_CO_race", merchantRequestId: "m-race" };
+
+    // The send's write holds its transaction open, its checkout id not yet visible to anyone else.
+    let pid = 0;
+    let release!: () => void;
+    let ready!: () => void;
+    const mayCommit = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    const sending = runAsFacility(h.facility.id, async (t) => {
+      try {
+        await recordSent(t, h.facility.id, request.id, sent);
+        pid = await backendPid(t);
+      }
+      finally {
+        ready();
+        await mayCommit;
+      }
+    });
+    await started;
+
+    const callingBack = paid("ws_CO_race", "SKRACE0001", 100);
+    try {
+      // Without the shared lock the callback would not wait, and would queue the money as unknown.
+      expect(await waitForBlockedBackend(pid)).toBe(true);
+    }
+    finally {
+      release();
+    }
+    await sending;
+    expect((await callingBack).status).toBe(200);
+
+    expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).toMatchObject({ status: "completed", receiptNumber: "SKRACE0001" });
+  });
+
   it("are never sent again once sending began, even if the worker died", async () => {
     await setUp();
     const patientId = await h.patient();
@@ -433,6 +477,9 @@ describe("in the database", () => {
       ["documents_normalised_invoice_number_index", db.select({ id: documents.id }).from(documents).where(sql`${documents.facilityId} = ${h.facility.id} AND ${documents.kind} = 'invoice' AND ${normalisedNumber(documents.number)} = ${"INV2026000001"}`)],
       ["admissions_normalised_number_index", db.select({ id: admissions.id }).from(admissions).where(sql`${admissions.facilityId} = ${h.facility.id} AND ${normalisedNumber(admissions.admissionNumber)} = ${"ADM20260001"}`)],
       ["patient_numbers_normalised_number_index", db.select({ id: patientNumbers.id }).from(patientNumbers).where(sql`${patientNumbers.facilityId} = ${h.facility.id} AND ${normalisedNumber(patientNumbers.number)} = ${"OPD1201"}`)],
+      // The early-callback lookups by checkout id, likewise.
+      ["mpesa_transactions_stk_checkout_index", db.select({ id: mpesaTransactions.id }).from(mpesaTransactions).where(sql`${mpesaTransactions.facilityId} = ${h.facility.id} AND ${mpesaTransactions.source} = 'stk' AND ${stkCheckoutId(mpesaTransactions.rawPayload)} = ${"ws_CO_1"}`)],
+      ["gateway_exchanges_stk_checkout_index", db.select({ id: gatewayExchanges.id }).from(gatewayExchanges).where(sql`${gatewayExchanges.facilityId} = ${h.facility.id} AND ${gatewayExchanges.operation} = 'stk_callback' AND ${stkCheckoutId(gatewayExchanges.response)} = ${"ws_CO_1"}`)],
     ] as const;
 
     const client = await pool.connect();

@@ -260,6 +260,13 @@
       "when": 1793987997096,
       "tag": "0036_normalised_number_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1794058061767,
+      "tag": "0037_stk_checkout_indexes",
+      "breakpoints": true
     }
   ]
 }

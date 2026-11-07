@@ -1,7 +1,12 @@
+import type { PoolClient } from "pg";
+
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 
+import type { ErrorSummary } from "@/lib/error-summary";
+
 import env from "@/env";
+import { summarizeError } from "@/lib/error-summary";
 
 import * as authSchema from "./auth-schema";
 import { CONNECTION_TIMEOUT_MS, sslConfigFor } from "./connection";
@@ -103,38 +108,94 @@ export async function assertRoleIsRestricted(target: Pool): Promise<void> {
     throw new PrivilegedRoleError(role?.rolname ?? "unknown");
 }
 
+/** How long one connection's probe may take, every step included. */
+export const PROBE_DEADLINE_MS = 3000;
+
+/**
+ * Probes one connection: null if it can run a query, else why not.
+ *
+ * Bounded on every step by a deadline here, not only by Postgres: a stalled
+ * server would otherwise leave `BEGIN`, or the wait for a connection, without
+ * any bound, and the readiness probe hanging with a client held. A client
+ * that failed or overran is released with its error, so pg discards it rather
+ * than pooling a connection left mid-transaction. Postgres still caps the
+ * query itself (`statement_timeout`).
+ */
+export async function probeConnection(target: Pool, deadlineMs = PROBE_DEADLINE_MS): Promise<ErrorSummary | null> {
+  let client: PoolClient | undefined;
+  let released = false;
+  let timedOut = false;
+  const discard = (err: Error) => {
+    if (client && !released) {
+      released = true;
+      client.release(err);
+    }
+  };
+
+  const work = (async () => {
+    client = await target.connect();
+    if (timedOut) {
+      discard(new Error("Probe abandoned after its deadline"));
+      return;
+    }
+    await client.query("BEGIN");
+    await client.query("SET LOCAL statement_timeout = 2000");
+    await client.query("SELECT 1");
+    await client.query("COMMIT");
+    if (!released) {
+      released = true;
+      client.release();
+    }
+  })();
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      reject(new Error(`No answer within ${deadlineMs} ms`));
+    }, deadlineMs);
+  });
+
+  try {
+    await Promise.race([work, deadline]);
+    return null;
+  }
+  catch (err) {
+    discard(err instanceof Error ? err : new Error(String(err)));
+    // It settles later, if at all; its client is already discarded.
+    work.catch(() => {});
+    return summarizeError(err);
+  }
+  finally {
+    clearTimeout(timer);
+  }
+}
+
+export interface ConnectionCheck {
+  owner: boolean;
+  app: boolean;
+  auth: boolean;
+  /** Why each failed connection failed: enough to tell bad credentials from a network fault, nothing about a patient. */
+  errors: Partial<Record<"owner" | "app" | "auth", ErrorSummary>>;
+}
+
 /**
  * Whether every connection can run a query: the readiness probe.
  *
  * All three, because each logs in as its own role: the owner can still be up
  * while `hospital_app` or `hospital_auth` cannot sign in, and then nothing a
- * user does would work. Each probe is bounded by Postgres itself
- * (`statement_timeout`) as well as by the pool's connection timeout, so a
- * probe cannot hang.
+ * user does would work.
  */
-export async function checkConnections(): Promise<{ owner: boolean; app: boolean; auth: boolean }> {
-  async function probe(target: Pool) {
-    const client = await target.connect();
-    try {
-      await client.query("BEGIN");
-      await client.query("SET LOCAL statement_timeout = 2000");
-      await client.query("SELECT 1");
-      await client.query("COMMIT");
-      return true;
-    }
-    catch {
-      await client.query("ROLLBACK").catch(() => {});
-      return false;
-    }
-    finally {
-      client.release();
-    }
-  }
-
-  const [owner, app, auth] = await Promise.all(
-    [pool, appPool, authPool].map(target => probe(target).catch(() => false)),
-  );
-  return { owner, app, auth };
+export async function checkConnections(): Promise<ConnectionCheck> {
+  const [owner, app, auth] = await Promise.all([pool, appPool, authPool].map(target => probeConnection(target)));
+  const errors: ConnectionCheck["errors"] = {};
+  if (owner)
+    errors.owner = owner;
+  if (app)
+    errors.app = app;
+  if (auth)
+    errors.auth = auth;
+  return { owner: !owner, app: !app, auth: !auth, errors };
 }
 
 /** The boot check: both restricted connections really are restricted. */
