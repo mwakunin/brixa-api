@@ -66,7 +66,8 @@ describe("the outbox worker", () => {
     }));
 
     expect(tally).toEqual({ ...NOTHING, done: 1 });
-    expect(seen).toEqual([{ facilityId: facility.id, subjectId }]);
+    // Ids, and whether this is the last try: nothing about the subject itself.
+    expect(seen).toEqual([{ facilityId: facility.id, subjectId, finalAttempt: false }]);
     expect(await job(subjectId)).toMatchObject({ status: "done", attempts: 1, last_error: null });
   });
 
