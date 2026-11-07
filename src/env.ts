@@ -40,7 +40,19 @@ function parseRole(dsn: string | undefined): string | undefined {
   }
 }
 
-const EnvSchema = z.object({
+/** The password from a DSN, or undefined if it isn't parseable. */
+function parsePassword(dsn: string | undefined): string | undefined {
+  if (!dsn)
+    return undefined;
+  try {
+    return decodeURIComponent(new URL(dsn).password) || undefined;
+  }
+  catch {
+    return undefined;
+  }
+}
+
+export const EnvSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().positive().default(9999),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]),
@@ -277,6 +289,22 @@ const EnvSchema = z.object({
             + "Each connection's role is what separates the owner, tenant "
             + "requests and Better Auth from one another. See db/roles.sql.",
         });
+      }
+    }
+
+    // db/roles.sql creates each restricted role with its own name as its
+    // password, which is public in this repository. Production sets real ones
+    // out of band; a missed ALTER ROLE must stop the boot, not ship.
+    if (input.NODE_ENV === "production") {
+      for (const key of ["APP_DATABASE_URL", "AUTH_DATABASE_URL"] as const) {
+        const role = parseRole(input[key]);
+        if (role && parsePassword(input[key]) === role) {
+          ctx.addIssue({
+            code: "custom",
+            path: [key],
+            message: "Must not use the development default password from db/roles.sql in production",
+          });
+        }
       }
     }
   })

@@ -50,4 +50,30 @@ describe("daraja access tokens", () => {
     expect(stub.minted()).toBe(2);
     expect(stub.bearers[2]).not.toBe(stub.bearers[0]);
   });
+
+  it("are asked for once by callers that miss the cache together", async () => {
+    const stub = daraja();
+
+    await Promise.all([register("busy-key", "s"), register("busy-key", "s"), register("busy-key", "s")]);
+
+    expect(stub.minted()).toBe(1);
+    expect(new Set(stub.bearers).size).toBe(1);
+  });
+
+  it("are asked for again after a failed request, which is never cached", async () => {
+    let attempts = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("/oauth/v1/generate")) {
+        attempts += 1;
+        return attempts === 1 ? new Response("down", { status: 503 }) : Response.json({ access_token: "second", expires_in: "3599" });
+      }
+      return Response.json({ ResponseCode: "0" });
+    });
+
+    await expect(register("flaky-key", "s")).rejects.toThrow("Daraja token request failed (503)");
+    await register("flaky-key", "s");
+
+    expect(attempts).toBe(2);
+  });
 });

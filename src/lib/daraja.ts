@@ -49,21 +49,38 @@ export interface DarajaCredentials {
  * key is a hash of both, so the secret is not kept in the clear as a map key.
  */
 const tokens = new Map<string, { value: string; expiresAt: number }>();
+/** A token request already on its way, shared by callers that miss the cache together. */
+const inFlight = new Map<string, Promise<string>>();
 
 export function resetDarajaTokens() {
   tokens.clear();
+  inFlight.clear();
 }
 
 function cacheKeyOf(credentials: DarajaCredentials): string {
   return createHash("sha256").update(`${credentials.consumerKey}\0${credentials.consumerSecret}`).digest("base64url");
 }
 
+/**
+ * One request per credential at a time: callers that miss the cache together
+ * share it, rather than each minting a token Daraja may answer by revoking
+ * the last. A failure is not kept, so the next caller asks again.
+ */
 async function accessToken(credentials: DarajaCredentials): Promise<string> {
   const cacheKey = cacheKeyOf(credentials);
   const cached = tokens.get(cacheKey);
   if (cached && Date.now() < cached.expiresAt)
     return cached.value;
 
+  const pending = inFlight.get(cacheKey);
+  if (pending)
+    return pending;
+  const request = mintToken(credentials, cacheKey).finally(() => inFlight.delete(cacheKey));
+  inFlight.set(cacheKey, request);
+  return request;
+}
+
+async function mintToken(credentials: DarajaCredentials, cacheKey: string): Promise<string> {
   const basic = Buffer.from(`${credentials.consumerKey}:${credentials.consumerSecret}`).toString("base64");
   const res = await fetch(`${baseUrl()}/oauth/v1/generate?grant_type=client_credentials`, {
     headers: { Authorization: `Basic ${basic}` },
