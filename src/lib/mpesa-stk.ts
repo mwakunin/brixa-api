@@ -1,8 +1,8 @@
-import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 
-import { accounts, admissions, documents, encounters, gatewayExchanges, invoices, memberships, mpesaSettings, mpesaStkRequests, mpesaTransactions, patientNumbers, patients, payments, stkCheckoutId } from "@/db/schema";
+import { accounts, admissions, allocations, documents, encounters, gatewayExchanges, invoices, memberships, mpesaSettings, mpesaStkRequests, mpesaTransactions, patientNumbers, patients, payments, stkCheckoutId } from "@/db/schema";
 import { runAsFacility } from "@/db/tenant-transaction";
 
 import type { StkCallback } from "./daraja";
@@ -149,7 +149,7 @@ async function claimForSending(facilityId: string, requestId: string) {
 }
 
 /** Outbox handler: sends a queued prompt once, and records what Safaricom said. */
-export async function sendStkPush(job: { facilityId: string; subjectId: string }): Promise<"done" | "skipped"> {
+export async function sendStkPush(job: { facilityId: string; subjectId: string; finalAttempt?: boolean }): Promise<"done" | "skipped"> {
   const claimed = await claimForSending(job.facilityId, job.subjectId);
   if (!claimed)
     return "skipped";
@@ -170,16 +170,20 @@ export async function sendStkPush(job: { facilityId: string; subjectId: string }
   catch (err) {
     // Nothing reached Safaricom (the token could not be had, and not for want of
     // valid credentials): the prompt goes back to the queue and the job is retried.
-    if (neverSent(err) && !(err instanceof DarajaError && err.definitive)) {
+    // On the last try the prompt is closed instead, so the cashier sees an outcome rather than `queued` for ever.
+    if (neverSent(err) && !(err instanceof DarajaError && err.definitive) && !job.finalAttempt) {
       await runAsFacility(job.facilityId, async (tx) => {
         await recordExchange(tx, job.facilityId, { operation: "stk_push", stkRequestId: request.id, error: errorLine(err) });
         await tx.update(mpesaStkRequests).set({ status: "queued" }).where(eq(mpesaStkRequests.id, request.id));
       });
       throw err;
     }
+    const reason = neverSent(err) && job.finalAttempt
+      ? "M-Pesa could not be reached after several tries; the prompt was not sent"
+      : err instanceof Error ? err.message : "The prompt could not be sent";
     await runAsFacility(job.facilityId, async (tx) => {
       await recordExchange(tx, job.facilityId, { operation: "stk_push", stkRequestId: request.id, ...exchangeOf(err), error: errorLine(err) });
-      await closeFailed(tx, request.id, err instanceof Error ? err.message : "The prompt could not be sent");
+      await closeFailed(tx, request.id, reason);
     });
     return "done";
   }
@@ -221,10 +225,16 @@ async function applyEarlyCallback(tx: AppDb, facilityId: string, requestId: stri
   const [early] = await tx
     .select()
     .from(mpesaTransactions)
-    .where(and(eq(mpesaTransactions.source, "stk"), eq(mpesaTransactions.status, "unmatched"), sql`${checkoutOf(mpesaTransactions.rawPayload)} = ${checkoutRequestId}`))
+    .where(and(eq(mpesaTransactions.source, "stk"), inArray(mpesaTransactions.status, ["unmatched", "allocated"]), sql`${checkoutOf(mpesaTransactions.rawPayload)} = ${checkoutRequestId}`))
     .for("update")
     .limit(1);
   const [request] = await tx.select().from(mpesaStkRequests).where(eq(mpesaStkRequests.id, requestId)).limit(1);
+  // Placed from the queue by a person before the send was recorded: linked, not left `sent`.
+  if (early?.status === "allocated") {
+    if (request.status !== "completed")
+      await linkPlacedTransaction(tx, request, early);
+    return;
+  }
   if (early) {
     await settleForRequest(tx, facilityId, request, early);
     return;
@@ -271,18 +281,23 @@ async function settleForRequest(tx: AppDb, facilityId: string, request: StkRow, 
 /**
  * A prompt's receipt that another path placed already (its paybill
  * confirmation's reference, or a person): completed with that one payment if
- * it is this patient's and this amount, otherwise closed naming it, so the
- * prompt is never left `sent` with no outcome to come.
+ * it is this patient's, for what the prompt was for, and this amount;
+ * otherwise closed naming it, so the prompt is never left `sent` with no
+ * outcome to come.
  */
 async function linkPlacedTransaction(tx: AppDb, request: StkRow, transaction: TransactionRow) {
   const [placed] = await tx
-    .select({ patientId: accounts.patientId })
+    .select({ id: payments.id, patientId: accounts.patientId, encounterId: payments.encounterId })
     .from(payments)
     .innerJoin(accounts, eq(accounts.id, payments.accountId))
     .where(and(eq(payments.mpesaTransactionId, transaction.id), isNull(payments.reversedAt)))
     .limit(1);
   if (placed?.patientId !== request.patientId) {
     await closeFailed(tx, request.id, `Paid, but placed on another patient's account as M-Pesa ${transaction.transactionId}; check it`);
+    return;
+  }
+  if (!await placedOnTarget(tx, request, placed)) {
+    await closeFailed(tx, request.id, `Paid, but placed against another bill or visit as M-Pesa ${transaction.transactionId}; check it`);
     return;
   }
   if (transaction.amountCents !== request.amountCents) {
@@ -292,6 +307,21 @@ async function linkPlacedTransaction(tx: AppDb, request: StkRow, transaction: Tr
   await tx.update(mpesaStkRequests)
     .set({ status: "completed", resultCode: 0, resultDesc: null, mpesaTransactionId: transaction.id, completedAt: new Date() })
     .where(eq(mpesaStkRequests.id, request.id));
+}
+
+/** A prompt for a bill needs the payment on that bill; one for a stay needs it as that stay's deposit. */
+async function placedOnTarget(tx: AppDb, request: StkRow, placed: { id: string; encounterId: string | null }) {
+  if (request.invoiceId) {
+    const [allocation] = await tx
+      .select({ id: allocations.id })
+      .from(allocations)
+      .where(and(eq(allocations.paymentId, placed.id), eq(allocations.invoiceId, request.invoiceId), isNull(allocations.reversedAt)))
+      .limit(1);
+    return Boolean(allocation);
+  }
+  if (request.encounterId)
+    return placed.encounterId === request.encounterId;
+  return true;
 }
 
 export type StkCallbackRecord

@@ -50,6 +50,14 @@ const LIVE_ASSIGNMENTS = sql`
   JOIN invoices i ON i.id = l.invoice_id
   WHERE i.status <> 'void'`;
 
+/** Assignments on finalised bills only: a draft has billed nobody yet. */
+const FINALISED_ASSIGNMENTS = sql`
+  SELECT ca.charge_id, ca.amount_cents
+  FROM charge_assignments ca
+  JOIN invoice_lines l ON l.id = ca.invoice_line_id
+  JOIN invoices i ON i.id = l.invoice_id
+  WHERE i.status = 'finalised'`;
+
 const CHECKS: { identity: Identity; query: SQL }[] = [
   {
     identity: "M2",
@@ -82,7 +90,7 @@ const CHECKS: { identity: Identity; query: SQL }[] = [
     query: sql`
       SELECT c.id AS subject, c.amount_cents AS cap, coalesce(sum(x.amount_cents), 0) AS used
       FROM charges c
-      LEFT JOIN (${LIVE_ASSIGNMENTS}) x ON x.charge_id = c.id
+      LEFT JOIN (${FINALISED_ASSIGNMENTS}) x ON x.charge_id = c.id
       WHERE c.cancelled_at IS NULL
         -- Captured before the final bill went out; a later one waits for a supplementary bill.
         AND EXISTS (SELECT 1 FROM invoices f WHERE f.encounter_id = c.encounter_id AND f.kind = 'final' AND f.status = 'finalised' AND c.captured_at <= f.finalised_at)

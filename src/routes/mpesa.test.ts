@@ -7,7 +7,7 @@ import app from "@/app";
 import db, { pool } from "@/db";
 import { admissions, auditLog, documents, gatewayExchanges, mpesaSettings, mpesaTransactions, normalisedNumber, outbox, patientNumbers, payments, stkCheckoutId } from "@/db/schema";
 import { runAsFacility } from "@/db/tenant-transaction";
-import { drainOutbox } from "@/jobs/outbox-worker";
+import { drainOutbox, MAX_ATTEMPTS } from "@/jobs/outbox-worker";
 import { darajaTimestamp, resetDarajaTokens } from "@/lib/daraja";
 import { recordSent } from "@/lib/mpesa-stk";
 import { backendPid, resetDb, waitForBlockedBackend } from "@/test/helpers";
@@ -217,13 +217,28 @@ describe("paybill payments", () => {
     expect(await paymentOf("SKSHARED01")).toBeUndefined();
   });
 
+  it("naming a bill whose number is also another patient's, once normalised, wait for a person", async () => {
+    const patientId = await h.patient();
+    await billed(patientId);
+    const other = await h.patient();
+    await pool.query("INSERT INTO patient_numbers (facility_id, patient_id, kind, number) VALUES ($1, $2, 'inpatient', $3)", [h.facility.id, other, `INV${year()}000001`]);
+
+    await post("/c2b/confirmation", confirmation({ TransID: "SKCROSS001", TransAmount: "508.00", BillRefNumber: `INV-${year()}-000001` }));
+
+    const [transaction] = await db.select().from(mpesaTransactions);
+    expect(transaction).toMatchObject({ status: "unmatched", statusReason: "More than one record has this number" });
+    expect(await paymentOf("SKCROSS001")).toBeUndefined();
+  });
+
   it("are recorded once however often Safaricom repeats them", async () => {
     const body = confirmation({ TransID: "SKREPEAT01" });
 
     for (let i = 0; i < 3; i += 1)
       expect((await post("/c2b/confirmation", body)).status).toBe(200);
+    // The same receipt in other letters is the same receipt.
+    expect((await post("/c2b/confirmation", { ...body, TransID: "skrepeat01" })).status).toBe(200);
 
-    expect(await db.select().from(mpesaTransactions)).toHaveLength(1);
+    expect(await db.select().from(mpesaTransactions)).toMatchObject([{ transactionId: "SKREPEAT01" }]);
   });
 
   it("for another paybill wait for a person, never matched by themselves", async () => {
@@ -241,6 +256,12 @@ describe("paybill payments", () => {
   it("are acknowledged however they arrive, and kept when they cannot be read", async () => {
     const validation = await app.request(`/webhooks/mpesa/${token}/c2b/validation`, { method: "POST" });
     expect(validation.status).toBe(200);
+    // Even with the database unreachable: a failed lookup must not decline the payer's payment.
+    vi.spyOn(db, "select").mockImplementationOnce(() => {
+      throw new Error("connection refused");
+    });
+    const blind = await app.request(`/webhooks/mpesa/${token}/c2b/validation`, { method: "POST" });
+    expect([blind.status, await blind.json()]).toEqual([200, { ResultCode: 0, ResultDesc: "Accepted" }]);
     expect((await post("/c2b/confirmation", ["not", "an", "object"])).status).toBe(200);
     expect((await post("/c2b/confirmation", { TransID: "SKBROKEN01" })).status).toBe(200);
 
@@ -476,6 +497,24 @@ describe("m-Pesa prompts", () => {
       .toMatchObject({ status: "failed", resultDesc: "Paid, but placed on another patient's account as M-Pesa SKOTHER001; check it" });
   });
 
+  it("do not complete their prompt with a payment placed against another of the patient's bills", async () => {
+    await setUp();
+    const patientId = await h.patient();
+    await billed(patientId);
+    const second = await billed(patientId);
+    const request = await (await prompt({ patientId, phone: "0712345678", amountCents: 50_800, invoiceId: second })).json();
+    daraja();
+    await drainOutbox();
+
+    // Its paybill confirmation names the first bill, and is placed there first.
+    await post("/c2b/confirmation", confirmation({ TransID: "SKFIRST001", TransAmount: "508.00", BillRefNumber: `INV-${year()}-000001` }));
+    await paid("ws_CO_1", "SKFIRST001", 508);
+
+    expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json())
+      .toMatchObject({ status: "failed", resultDesc: "Paid, but placed against another bill or visit as M-Pesa SKFIRST001; check it" });
+    expect(await invoice(second)).toMatchObject({ balanceCents: 50_800 });
+  });
+
   it("are tried again when no token could be had, since nothing reached Safaricom", async () => {
     await setUp();
     daraja();
@@ -501,6 +540,24 @@ describe("m-Pesa prompts", () => {
     await drainOutbox();
 
     expect((await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).status).toBe("sent");
+  });
+
+  it("are closed as failed when no token could be had on the last try", async () => {
+    await setUp();
+    daraja();
+    await drainOutbox();
+    vi.restoreAllMocks();
+    resetDarajaTokens();
+    const patientId = await h.patient();
+    const request = await (await prompt({ patientId, phone: "0712345678", amountCents: 10_000 })).json();
+    await pool.query(`UPDATE outbox SET attempts = ${MAX_ATTEMPTS - 1} WHERE operation = 'mpesa.stk_push'`);
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("down", { status: 503 }));
+
+    expect(await drainOutbox()).toMatchObject({ done: 1, retried: 0, failed: 0 });
+
+    // An outcome the cashier can see, rather than `queued` with nothing left to send it.
+    expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json())
+      .toMatchObject({ status: "failed", resultDesc: "M-Pesa could not be reached after several tries; the prompt was not sent" });
   });
 
   it("are reopened as sent when Safaricom's answer is recorded after another delivery closed them", async () => {
@@ -556,6 +613,22 @@ describe("m-Pesa prompts", () => {
 
     expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).toMatchObject({ status: "completed", receiptNumber: "SKEARLY001" });
     expect(await invoice(invoiceId)).toMatchObject({ balanceCents: 0 });
+  });
+
+  it("paid before the prompt is recorded, and placed from the queue meanwhile, are linked to it", async () => {
+    await setUp();
+    const patientId = await h.patient();
+    const invoiceId = await billed(patientId);
+    const request = await (await prompt({ patientId, phone: "0712345678", amountCents: 50_800, invoiceId })).json();
+
+    await paid("ws_CO_1", "SKPLACED01", 508);
+    const [early] = await db.select().from(mpesaTransactions);
+    expect((await call("POST", `/mpesa/transactions/${early.id}/assign`, h.facility.id, h.clerk, { patientId, invoiceId })).status).toBe(200);
+    daraja();
+    await drainOutbox();
+
+    expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).toMatchObject({ status: "completed", receiptNumber: "SKPLACED01" });
+    expect(await db.select().from(payments)).toHaveLength(1);
   });
 
   it("paid in a different amount wait for review, and one accepted without a checkout id fails", async () => {

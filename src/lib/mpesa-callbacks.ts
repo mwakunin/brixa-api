@@ -126,8 +126,13 @@ export async function onC2bConfirmation(token: string, payload: unknown): Promis
  * so every payment is accepted, even for an unknown token.
  */
 export async function onC2bValidation(token: string): Promise<CallbackAnswer> {
-  if (!await facilityForToken(token))
-    logger.warn({ tokenPrefix: token.slice(0, 6) }, "M-Pesa validation for an unknown callback token; accepted");
+  // Answered without waiting: a failed lookup must not become a declined payment.
+  facilityForToken(token)
+    .then((settings) => {
+      if (!settings)
+        logger.warn({ tokenPrefix: token.slice(0, 6) }, "M-Pesa validation for an unknown callback token; accepted");
+    })
+    .catch((err: unknown) => logger.warn({ error: errorLine(err) }, "M-Pesa validation lookup failed; accepted"));
   return { status: 200, body: ACCEPTED };
 }
 

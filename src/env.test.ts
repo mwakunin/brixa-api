@@ -48,6 +48,16 @@ describe("production database URLs", () => {
     expect(issuesAt(input, "AUTH_DATABASE_URL")).toContain(DEFAULT);
   });
 
+  it("refuse a default password given as a query parameter, which pg prefers", () => {
+    const input = production(
+      "postgresql://hospital_app:from-secret-manager-1@db.example.test/hms?password=hospital_app",
+      "postgresql://db.example.test/hms?user=hospital_auth&password=hospital_auth",
+    );
+
+    expect(issuesAt(input, "APP_DATABASE_URL")).toContain(DEFAULT);
+    expect(issuesAt(input, "AUTH_DATABASE_URL")).toContain(DEFAULT);
+  });
+
   it("accept passwords set out of band", () => {
     const input = production(
       "postgresql://hospital_app:from-secret-manager-1@db.example.test/hms",

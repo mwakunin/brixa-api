@@ -299,7 +299,8 @@ export function parseC2bConfirmation(payload: unknown): C2bConfirmation | null {
   if (typeof payload !== "object" || payload === null)
     return null;
   const body = payload as Record<string, unknown>;
-  const transactionId = text(body, "TransID");
+  // Uppercase, as Safaricom prints receipts, so the same receipt never reads as two.
+  const transactionId = text(body, "TransID")?.toUpperCase() ?? null;
   const shortcode = text(body, "BusinessShortCode");
   const msisdn = text(body, "MSISDN");
   const transTime = text(body, "TransTime");
@@ -357,7 +358,7 @@ export function parseStkCallback(payload: unknown): StkCallback | null {
     checkoutRequestId: typeof stk.CheckoutRequestID === "string" && stk.CheckoutRequestID !== "" ? stk.CheckoutRequestID : null,
     resultCode,
     resultDesc: typeof stk.ResultDesc === "string" ? stk.ResultDesc : "",
-    receiptNumber: typeof receipt === "string" && receipt !== "" ? receipt : null,
+    receiptNumber: typeof receipt === "string" && receipt.trim() !== "" ? receipt.trim().toUpperCase() : null,
     amountCents: typeof amount === "number" ? Math.round(amount * 100) : null,
     phone: phone != null ? String(phone) : null,
     transactedAt: when != null ? parseTransTime(String(when)) : null,

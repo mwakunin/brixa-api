@@ -196,52 +196,44 @@ const UNMATCHED_REASONS = {
   ambiguous: "More than one record has this number",
 } as const;
 
-function one<T>(rows: T[]): MatchOutcome | T | null {
-  if (rows.length > 1)
-    return { kind: "unmatched", reason: "ambiguous" };
-  return rows[0] ?? null;
-}
-
 /**
  * Finds what a reference names, if exactly one thing: a patient's bill, an
- * admission, or a patient's OP or IP number, tried in that order. A payer's
- * bill is never matched: a patient's paybill payment is not the insurer's.
+ * admission, or a patient's OP or IP number. All three are looked up, so a
+ * number naming more than one is ambiguous. A payer's bill is never
+ * matched: a patient's paybill payment is not the insurer's.
  */
 export async function matchReference(tx: AppDb, reference: string | null): Promise<MatchOutcome> {
   const ref = reference ? normaliseReference(reference) : "";
   if (ref === "")
     return { kind: "unmatched", reason: "no_reference" };
 
-  const bill = one(await tx
+  const bills = await tx
     .select({ invoiceId: invoices.id, patientId: accounts.patientId })
     .from(documents)
     .innerJoin(invoices, eq(invoices.documentId, documents.id))
     .innerJoin(accounts, eq(accounts.id, invoices.accountId))
-    .where(and(eq(documents.kind, "invoice"), isNotNull(accounts.patientId), sql`${normalised(documents.number)} = ${ref}`)));
-  if (bill && "kind" in bill)
-    return bill;
-  if (bill)
-    return { kind: "matched", target: { patientId: bill.patientId!, invoiceId: bill.invoiceId } };
-
-  const stay = one(await tx
+    .where(and(eq(documents.kind, "invoice"), isNotNull(accounts.patientId), sql`${normalised(documents.number)} = ${ref}`));
+  const stays = await tx
     .select({ encounterId: admissions.encounterId, patientId: encounters.patientId })
     .from(admissions)
     .innerJoin(encounters, eq(encounters.id, admissions.encounterId))
-    .where(sql`${normalised(admissions.admissionNumber)} = ${ref}`));
-  if (stay && "kind" in stay)
-    return stay;
-  if (stay)
-    return { kind: "matched", target: { patientId: stay.patientId, encounterId: stay.encounterId } };
-
-  const patient = one(await tx
+    .where(sql`${normalised(admissions.admissionNumber)} = ${ref}`);
+  const people = await tx
     .select({ patientId: patientNumbers.patientId })
     .from(patientNumbers)
-    .where(sql`${normalised(patientNumbers.number)} = ${ref}`));
-  if (patient && "kind" in patient)
-    return patient;
-  if (patient)
-    return { kind: "matched", target: { patientId: patient.patientId } };
+    .where(sql`${normalised(patientNumbers.number)} = ${ref}`);
 
+  // Every category is looked at: a number naming things in two of them (a bill
+  // and someone's patient number, written alike) is a person's to decide.
+  const targets: PaymentTarget[] = [
+    ...bills.map(b => ({ patientId: b.patientId!, invoiceId: b.invoiceId })),
+    ...stays.map(s => ({ patientId: s.patientId, encounterId: s.encounterId })),
+    ...people.map(p => ({ patientId: p.patientId })),
+  ];
+  if (targets.length > 1)
+    return { kind: "unmatched", reason: "ambiguous" };
+  if (targets.length === 1)
+    return { kind: "matched", target: targets[0] };
   return { kind: "unmatched", reason: "no_candidate" };
 }
 

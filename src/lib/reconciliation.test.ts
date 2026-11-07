@@ -179,6 +179,20 @@ describe("the daily reconciliation check", () => {
     ]));
   });
 
+  it("counts a charge as billed by a final bill only when a finalised bill carries it", async () => {
+    const patientId = await h.patient();
+    const { id: encounterId } = await (await call("POST", "/encounters", h.facility.id, h.nurse, { patientId, kind: "opd" })).json();
+    const charge = await (await call("POST", `/encounters/${encounterId}/charges`, h.facility.id, h.clerk, { billableItemId: h.items.consultation, quantity: "1", reason: "Before P3" })).json();
+    // An interim bill drafted and left a draft, then a final bill for what came after.
+    expect((await call("POST", `/encounters/${encounterId}/invoices`, h.facility.id, h.clerk, { kind: "interim" })).status).toBe(201);
+    await call("POST", `/encounters/${encounterId}/charges`, h.facility.id, h.clerk, { billableItemId: h.items.tablet, quantity: "3", reason: "Before P3" });
+    const { id: finalId } = await (await call("POST", `/encounters/${encounterId}/invoices`, h.facility.id, h.clerk, { kind: "final" })).json();
+    expect((await call("POST", `/invoices/${finalId}/finalise`, h.facility.id, h.clerk)).status).toBe(200);
+
+    const { drift } = await tx(t => reconcile(t));
+    expect(drift.map(d => [d.identity, d.subjectId])).toContainEqual(["M4_final", charge.id]);
+  });
+
   it("is an internal job, called by Cloud Scheduler alone", async () => {
     expect((await app.request("/internal/jobs/reconciliation", { method: "POST" })).status).toBe(401);
   });

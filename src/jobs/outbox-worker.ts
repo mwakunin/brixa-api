@@ -29,6 +29,8 @@ import { sendStkPush } from "@/lib/mpesa-stk";
 export interface OutboxJob {
   facilityId: string;
   subjectId: string;
+  /** No retry follows this attempt: a handler that would ask for one must settle the subject instead. */
+  finalAttempt?: boolean;
 }
 
 /**
@@ -177,7 +179,7 @@ export async function drainOutbox(options: {
       break;
 
     try {
-      const outcome = await handlers[row.operation]({ facilityId: row.facility_id, subjectId: row.subject_id });
+      const outcome = await handlers[row.operation]({ facilityId: row.facility_id, subjectId: row.subject_id, finalAttempt: row.attempts >= MAX_ATTEMPTS });
       await recordSuccess(row.id, outcome);
       tally[outcome] += 1;
     }

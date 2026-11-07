@@ -28,24 +28,29 @@ function unsetIfBlank<T extends z.ZodType>(schema: T) {
   return z.preprocess(value => (value === "" ? undefined : value), schema);
 }
 
-/** The username from a DSN, or undefined if it isn't parseable. */
+/**
+ * The username `pg` will use: a `?user=` parameter wins over the user-info
+ * part, as in pg-connection-string. Undefined if the DSN isn't parseable.
+ */
 function parseRole(dsn: string | undefined): string | undefined {
   if (!dsn)
     return undefined;
   try {
-    return decodeURIComponent(new URL(dsn).username) || undefined;
+    const url = new URL(dsn);
+    return url.searchParams.get("user") || decodeURIComponent(url.username) || undefined;
   }
   catch {
     return undefined;
   }
 }
 
-/** The password from a DSN, or undefined if it isn't parseable. */
+/** The password `pg` will use: a `?password=` parameter wins, as for the user. */
 function parsePassword(dsn: string | undefined): string | undefined {
   if (!dsn)
     return undefined;
   try {
-    return decodeURIComponent(new URL(dsn).password) || undefined;
+    const url = new URL(dsn);
+    return url.searchParams.get("password") || decodeURIComponent(url.password) || undefined;
   }
   catch {
     return undefined;
