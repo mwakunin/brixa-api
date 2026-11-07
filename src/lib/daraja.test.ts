@@ -49,6 +49,31 @@ describe("daraja access tokens", () => {
 
     expect(stub.minted()).toBe(2);
     expect(stub.bearers[2]).not.toBe(stub.bearers[0]);
+
+    // Nor a different key that happens to share the secret.
+    await register("other-key", "secret-a");
+
+    expect(stub.minted()).toBe(3);
+    expect(stub.bearers[3]).not.toBe(stub.bearers[0]);
+  });
+
+  it("are dropped when Daraja refuses one, so the next call mints a fresh token", async () => {
+    let minted = 0;
+    let calls = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("/oauth/v1/generate")) {
+        minted += 1;
+        return Response.json({ access_token: `token-${minted}`, expires_in: "3599" });
+      }
+      calls += 1;
+      return calls === 1 ? Response.json({ errorMessage: "Invalid Access Token" }, { status: 401 }) : Response.json({ ResponseCode: "0" });
+    });
+
+    await expect(register("revoked-key", "s")).rejects.toThrow();
+    await register("revoked-key", "s");
+
+    expect(minted).toBe(2);
   });
 
   it("are asked for once by callers that miss the cache together", async () => {

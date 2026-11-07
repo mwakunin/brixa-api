@@ -267,6 +267,13 @@
       "when": 1794058061767,
       "tag": "0037_stk_checkout_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1794083373277,
+      "tag": "0038_stk_viewed_audit",
+      "breakpoints": true
     }
   ]
 }

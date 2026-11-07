@@ -91,17 +91,24 @@ const TransactionSchema = z.object({
   paymentId: z.uuid().nullable(),
 });
 
+const TransactionQuerySchema = z.object({
+  status: StatusSchema.optional(),
+  /** Safaricom's receipt number, as the payer reads it out. */
+  transactionId: z.string().trim().regex(/^[A-Z0-9]{8,12}$/i, "An M-Pesa receipt number").optional(),
+  offset: z.coerce.number().int().min(0).max(100_000).default(0),
+});
+
 export const listTransactions = createRoute({
   tags,
   method: "get",
   path: "/mpesa/transactions",
   summary: "M-Pesa transactions, newest first",
-  description: "`?status=unmatched` is the queue of payments nothing matched. At most 100. Audited: it shows payers' names and phones.",
+  description: "`?status=unmatched` is the queue of payments nothing matched; `?transactionId=` finds one by its receipt number. 100 a page, `?offset=` for older. Audited: it shows payers' names and phones.",
   middleware: [readersOnly] as const,
-  request: { headers: facilityHeaders, query: z.object({ status: StatusSchema.optional() }) },
+  request: { headers: facilityHeaders, query: TransactionQuerySchema },
   responses: {
     [HttpStatusCodes.OK]: jsonContent(z.object({ transactions: z.array(TransactionSchema) }), "Transactions"),
-    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(z.object({ status: StatusSchema.optional() })), "Unknown status"),
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(TransactionQuerySchema), "Unknown filter"),
     ...tenantResponses,
   },
 });

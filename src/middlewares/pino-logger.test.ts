@@ -43,6 +43,22 @@ describe("log redaction", () => {
   });
 });
 
+describe("a request's logged path", () => {
+  it("never carries an M-Pesa callback token", async () => {
+    const { lines, logger } = capturingLogger();
+    const token = "a".repeat(43);
+    const app = new Hono<AppBindings>()
+      .use(pinoLogger(logger))
+      .post("/webhooks/mpesa/:token/c2b/confirmation", c => c.json({ ResultCode: 0 }));
+
+    await app.request(`/webhooks/mpesa/${token}/c2b/confirmation`, { method: "POST" });
+
+    const written = lines.join("");
+    expect(written).toContain("/webhooks/mpesa/[token]/c2b/confirmation");
+    expect(written).not.toContain(token);
+  });
+});
+
 describe("a failed request's log lines", () => {
   // What Drizzle's errors look like: the SQL, then every bound value.
   const QUERY_ERROR = "Failed query: insert into \"invitations\" (\"email\", \"name\") values ($1, $2)\nparams: secret.person@example.test,Wanjiru Kamau";

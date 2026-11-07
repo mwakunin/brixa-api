@@ -300,7 +300,7 @@ export async function matchTransaction(tx: AppDb, facilityId: string, id: string
 // ---------------------------------------------------------------------------
 
 /** M-Pesa transactions, newest first; `unmatched` is the cashier's queue. At most 100. */
-export async function listTransactions(tx: AppDb, filter: { status?: TransactionRow["status"]; id?: string } = {}) {
+export async function listTransactions(tx: AppDb, filter: { status?: TransactionRow["status"]; id?: string; transactionId?: string; offset?: number } = {}) {
   return tx
     .select({
       id: mpesaTransactions.id,
@@ -320,9 +320,11 @@ export async function listTransactions(tx: AppDb, filter: { status?: Transaction
     .where(and(
       filter.status ? eq(mpesaTransactions.status, filter.status) : undefined,
       filter.id ? eq(mpesaTransactions.id, filter.id) : undefined,
+      filter.transactionId ? eq(mpesaTransactions.transactionId, filter.transactionId.trim().toUpperCase()) : undefined,
     ))
     .orderBy(desc(mpesaTransactions.transactedAt), desc(mpesaTransactions.id))
-    .limit(100);
+    .limit(100)
+    .offset(filter.offset ?? 0);
 }
 
 export type ListedTransaction = Awaited<ReturnType<typeof listTransactions>>[number];

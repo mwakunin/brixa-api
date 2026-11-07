@@ -103,16 +103,38 @@ export interface Exchange {
   httpStatus: number;
 }
 
+/**
+ * Whether a failed call never reached the endpoint it was for: the access
+ * token could not be had, so nothing was sent and the call may be retried.
+ */
+export function neverSent(err: unknown): boolean {
+  return (err as { neverSent?: boolean })?.neverSent === true;
+}
+
 async function post(path: string, credentials: DarajaCredentials, body: Record<string, unknown>) {
-  const token = await accessToken(credentials);
+  let token: string;
+  try {
+    token = await accessToken(credentials);
+  }
+  catch (err) {
+    throw Object.assign(err instanceof Error ? err : new Error(String(err)), { neverSent: true });
+  }
   const res = await fetch(`${baseUrl()}${path}`, {
     method: "POST",
     headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
     signal: AbortSignal.timeout(DARAJA_TIMEOUT_MS),
     body: JSON.stringify(body),
   });
+  // A token Daraja refuses is dropped, so the next call mints a fresh one rather than reusing it until expiry.
+  if (res.status === 401)
+    tokens.delete(cacheKeyOf(credentials));
   const response = await res.json().catch(() => ({})) as Record<string, unknown>;
   return { res, response };
+}
+
+/** A callback URL as recorded: its secret token replaced, since the record outlives the request (rule 10). */
+export function withoutCallbackToken(url: string): string {
+  return url.replace(/\/webhooks\/mpesa\/[^/]+\//, "/webhooks/mpesa/[token]/");
 }
 
 function refused(what: string, res: Response, response: Record<string, unknown>): DarajaError {
@@ -133,13 +155,14 @@ export async function registerC2bUrls(input: {
   confirmationUrl: string;
   validationUrl: string;
 }): Promise<Exchange> {
-  const request = {
+  const sent = {
     ShortCode: input.shortcode,
     ResponseType: "Completed",
     ConfirmationURL: input.confirmationUrl,
     ValidationURL: input.validationUrl,
   };
-  const { res, response } = await post("/mpesa/c2b/v1/registerurl", input.credentials, request);
+  const request = { ...sent, ConfirmationURL: withoutCallbackToken(sent.ConfirmationURL), ValidationURL: withoutCallbackToken(sent.ValidationURL) };
+  const { res, response } = await post("/mpesa/c2b/v1/registerurl", input.credentials, sent);
   if (!res.ok || String(response.ResponseCode ?? "") !== "0")
     throw Object.assign(refused("URL registration", res, response), { exchange: { request, response, httpStatus: res.status } });
   return { request, response, httpStatus: res.status };
@@ -168,7 +191,8 @@ export function stkPassword(shortcode: string, passkey: string, timestamp: strin
 
 /**
  * Prompts a phone to pay the facility's paybill. The request recorded for
- * the exchange leaves out the password, which is derived from the passkey.
+ * the exchange leaves out the password, which is derived from the passkey,
+ * and the callback token.
  */
 export async function stkPush(input: {
   shortcode: string;
@@ -201,6 +225,8 @@ export async function stkPush(input: {
     ...request,
     Password: stkPassword(input.shortcode, input.credentials.passkey, timestamp),
   });
+  // Recorded without the callback token, as the password is left out above.
+  request.CallBackURL = withoutCallbackToken(request.CallBackURL);
   if (!res.ok || String(response.ResponseCode ?? "") !== "0")
     throw Object.assign(refused("STK push", res, response), { exchange: { request, response, httpStatus: res.status } });
   // Without its checkout id the callback cannot be matched to the prompt.
@@ -312,15 +338,24 @@ export function parseStkCallback(payload: unknown): StkCallback | null {
   const stk = (payload as { Body?: { stkCallback?: Record<string, unknown> } })?.Body?.stkCallback;
   if (!stk || typeof stk !== "object")
     return null;
-  const items = (stk.CallbackMetadata as { Item?: { Name?: unknown; Value?: unknown }[] } | undefined)?.Item;
-  const pick = (name: string) => (Array.isArray(items) ? items.find(i => i.Name === name)?.Value : undefined);
+  // A result code that is not a whole number cannot be stored, so the callback is kept as unreadable instead.
+  const resultCode = Number(stk.ResultCode);
+  if (stk.ResultCode === undefined || stk.ResultCode === null || !Number.isSafeInteger(resultCode))
+    return null;
+  const items = (stk.CallbackMetadata as { Item?: unknown[] } | undefined)?.Item;
+  const pick = (name: string) => {
+    if (!Array.isArray(items))
+      return undefined;
+    const item = items.find(i => typeof i === "object" && i !== null && (i as { Name?: unknown }).Name === name);
+    return (item as { Value?: unknown } | undefined)?.Value;
+  };
   const amount = pick("Amount");
   const receipt = pick("MpesaReceiptNumber");
   const phone = pick("PhoneNumber");
   const when = pick("TransactionDate");
   return {
     checkoutRequestId: typeof stk.CheckoutRequestID === "string" && stk.CheckoutRequestID !== "" ? stk.CheckoutRequestID : null,
-    resultCode: Number(stk.ResultCode ?? -1),
+    resultCode,
     resultDesc: typeof stk.ResultDesc === "string" ? stk.ResultDesc : "",
     receiptNumber: typeof receipt === "string" && receipt !== "" ? receipt : null,
     amountCents: typeof amount === "number" ? Math.round(amount * 100) : null,

@@ -23,6 +23,8 @@ What the API needs from Google Cloud before it can run in production. The code r
 | `MPESA_ENV` | `production` once a facility goes live; `sandbox` until then |
 | `MPESA_CALLBACK_ALLOWED_IPS` | Optional: Safaricom's published callback addresses. Advisory, never used to refuse |
 
+**M-Pesa callback URLs carry a secret.** Each facility's `/webhooks/mpesa/{token}/…` path holds the token that lets a caller post payment confirmations for it. The API never writes it to its own logs (`loggedPath`) or to `gateway_exchanges`, but **Cloud Run's request logs record every request URL**. Add a Cloud Logging exclusion for `httpRequest.requestUrl =~ "/webhooks/mpesa/"` on the `run.googleapis.com/requests` log, or restrict who may read it.
+
 ## 2. Background jobs
 
 Every external call is an outbox row, drained by `POST /internal/outbox/drain` (`src/routes/internal.route.ts`). That route accepts only a Google-signed identity token for `TASKS_INVOKER_EMAIL`, minted for the API's origin. The API is public, because the staff app calls it from browsers, so this check, not Cloud Run's IAM, is what keeps the route closed.
@@ -42,7 +44,7 @@ Every external call is an outbox row, drained by `POST /internal/outbox/drain` (
    - `jsonPayload.msg = "outbox job failed permanently"`: a job will not be retried. The line carries `outboxId`, `facilityId` and `operation`; the row's `last_error` says why.
    - `jsonPayload.msg = "outbox nudge failed; the scheduled sweep will deliver"`: Cloud Tasks could not be reached. Worth a look if it persists.
    - `jsonPayload.msg = "job failed for a facility"`: a nightly job (`job`: the bed-day run or the reconciliation check) failed for one facility (`facilityId`). Nights the bed-day run could not price are listed in that facility's `job_failures` instead.
-   - **A scheduled job that failed as a whole**: `resource.type = "cloud_scheduler_job"` with `severity >= ERROR`, i.e. the attempt got no 2xx from `/internal/jobs/…` even after its retries. No facility was checked or charged that night.
+   - **A scheduled job that failed as a whole**: `resource.type = "cloud_scheduler_job"` with `severity >= ERROR`, i.e. the attempt got no 2xx from `/internal/jobs/…` even after its retries. The run did not finish: facilities whose transaction committed before the failure were checked or charged, the rest were not. Both jobs are idempotent, so running the job again by hand completes the night without repeating anything.
 
 ## 3. File storage
 

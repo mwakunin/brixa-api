@@ -361,7 +361,7 @@ export async function withdrawReversal(tx: AppDb, facilityId: string, id: string
 }
 
 /** Reversal requests, newest first: the approver's queue at `pending`. At most 100. Names no patient. */
-export async function listReversals(tx: AppDb, filter: { status?: AdjustmentStatus; id?: string } = {}) {
+export async function listReversals(tx: AppDb, filter: { status?: AdjustmentStatus; id?: string; offset?: number } = {}) {
   return tx
     .select({
       id: adjustmentReversals.id,
@@ -383,5 +383,6 @@ export async function listReversals(tx: AppDb, filter: { status?: AdjustmentStat
       filter.id ? eq(adjustmentReversals.id, filter.id) : undefined,
     ))
     .orderBy(desc(adjustmentReversals.requestedAt), desc(adjustmentReversals.id))
-    .limit(100);
+    .limit(100)
+    .offset(filter.offset ?? 0);
 }

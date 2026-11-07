@@ -134,8 +134,10 @@ export async function probeConnection(target: Pool, deadlineMs = PROBE_DEADLINE_
 
   const work = (async () => {
     client = await target.connect();
+    // Arrived after the deadline, unused and healthy: back to the pool as it is, not destroyed.
     if (timedOut) {
-      discard(new Error("Probe abandoned after its deadline"));
+      released = true;
+      client.release();
       return;
     }
     await client.query("BEGIN");

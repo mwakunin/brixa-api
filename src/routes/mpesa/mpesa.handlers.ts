@@ -55,8 +55,8 @@ export const putSettings: TenantRouteHandler<PutSettingsRoute> = async (c) => {
 };
 
 export const listTransactions: TenantRouteHandler<ListTransactionsRoute> = async (c) => {
-  const { status } = c.req.valid("query");
-  const rows = await mpesa.listTransactions(c.var.db, { status });
+  const { status, transactionId, offset } = c.req.valid("query");
+  const rows = await mpesa.listTransactions(c.var.db, { status, transactionId, offset });
   // Payers' names, phones and what they typed: a read worth recording (rule 9).
   await recordAudit(c.var.db, {
     facilityId: c.var.facility.id,
@@ -125,5 +125,14 @@ export const getStk: TenantRouteHandler<GetStkRoute> = async (c) => {
   const request = await stkRequestView(c.var.db, c.req.valid("param").id);
   if (!request)
     return c.json({ message: HttpStatusPhrases.NOT_FOUND }, HttpStatusCodes.NOT_FOUND);
+  // A patient, their phone and their payment: a read worth recording (rule 9).
+  await recordAudit(c.var.db, {
+    facilityId: c.var.facility.id,
+    actorId: c.var.user!.id,
+    action: "mpesa.stk_viewed",
+    entityType: "mpesa_stk_request",
+    entityId: request.id,
+    summary: "Opened an M-Pesa prompt",
+  });
   return c.json(stkJson(request), HttpStatusCodes.OK);
 };

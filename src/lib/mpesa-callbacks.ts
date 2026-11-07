@@ -8,6 +8,7 @@ import { recordAudit } from "./audit";
 import { secretEquals } from "./crypto";
 import { parseC2bConfirmation, parseStkCallback } from "./daraja";
 import { isUniqueViolation } from "./db-errors";
+import { errorLine } from "./error-summary";
 import { logger } from "./logger";
 import { matchTransaction, recordExchange } from "./mpesa";
 import { recordStkCallback, settleStkCallback } from "./mpesa-stk";
@@ -101,7 +102,7 @@ export async function onC2bConfirmation(token: string, payload: unknown): Promis
   catch (err) {
     if (isUniqueViolation(err))
       return { status: 200, body: ACCEPTED };
-    logger.error({ err, facilityId: settings.facilityId, transactionId: parsed.transactionId }, "Failed to store an M-Pesa confirmation");
+    logger.error({ error: errorLine(err), facilityId: settings.facilityId, transactionId: parsed.transactionId }, "Failed to store an M-Pesa confirmation");
     throw err;
   }
   if (foreign) {
@@ -114,7 +115,7 @@ export async function onC2bConfirmation(token: string, payload: unknown): Promis
   }
   catch (err) {
     // Stored and unmatched: it waits in the queue for a person.
-    logger.error({ err, facilityId: settings.facilityId, transactionId: parsed.transactionId }, "Failed to match an M-Pesa confirmation");
+    logger.error({ error: errorLine(err), facilityId: settings.facilityId, transactionId: parsed.transactionId }, "Failed to match an M-Pesa confirmation");
   }
   return { status: 200, body: ACCEPTED };
 }
@@ -152,7 +153,7 @@ export async function onStkCallback(token: string, payload: unknown): Promise<Ca
       await runAsFacility(settings.facilityId, tx => settleStkCallback(tx, settings.facilityId, recorded.requestId, recorded.transactionId));
     }
     catch (err) {
-      logger.error({ err, facilityId: settings.facilityId, transactionId: parsed.receiptNumber }, "Failed to place an M-Pesa prompt's payment; it waits in the queue");
+      logger.error({ error: errorLine(err), facilityId: settings.facilityId, transactionId: parsed.receiptNumber }, "Failed to place an M-Pesa prompt's payment; it waits in the queue");
     }
   }
   return { status: 200, body: ACCEPTED };

@@ -167,17 +167,22 @@ export const requestReversal = createRoute({
   },
 });
 
+const ReversalQuerySchema = z.object({
+  status: StatusSchema.optional(),
+  offset: z.coerce.number().int().min(0).max(100_000).default(0),
+});
+
 export const listReversals = createRoute({
   tags,
   method: "get",
   path: "/adjustment-reversals",
   summary: "Requests to reverse adjustments, newest first",
-  description: "`?status=pending` is the approver's queue. At most 100. Audited.",
+  description: "`?status=pending` is the approver's queue. 100 a page, `?offset=` for older. Audited.",
   middleware: [readersOnly] as const,
-  request: { headers: facilityHeaders, query: z.object({ status: StatusSchema.optional() }) },
+  request: { headers: facilityHeaders, query: ReversalQuerySchema },
   responses: {
     [HttpStatusCodes.OK]: jsonContent(z.object({ reversals: z.array(ReversalSchema) }), "Requests"),
-    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(z.object({ status: StatusSchema.optional() })), "Unknown status"),
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(ReversalQuerySchema), "Unknown filter"),
     ...tenantResponses,
   },
 });

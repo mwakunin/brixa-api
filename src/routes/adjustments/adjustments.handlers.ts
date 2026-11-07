@@ -128,8 +128,8 @@ export const requestReversal: TenantRouteHandler<RequestReversalRoute> = async (
 };
 
 export const listReversals: TenantRouteHandler<ListReversalsRoute> = async (c) => {
-  const { status } = c.req.valid("query");
-  const rows = await adjustments.listReversals(c.var.db, { status });
+  const { status, offset } = c.req.valid("query");
+  const rows = await adjustments.listReversals(c.var.db, { status, offset });
   await recordAudit(c.var.db, {
     facilityId: c.var.facility.id,
     actorId: c.var.user!.id,

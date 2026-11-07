@@ -282,6 +282,7 @@ export const auditLog = pgTable("audit_log", {
     | "mpesa.rejected"
     | "mpesa.listed"
     | "mpesa.stk_requested"
+    | "mpesa.stk_viewed"
     | "adjustment.reversal_requested"
     | "adjustment.reversed"
     | "adjustment.reversal_rejected"
@@ -362,6 +363,7 @@ export const auditLog = pgTable("audit_log", {
     "mpesa.rejected",
     "mpesa.listed",
     "mpesa.stk_requested",
+    "mpesa.stk_viewed",
     "adjustment.reversal_requested",
     "adjustment.reversed",
     "adjustment.reversal_rejected",

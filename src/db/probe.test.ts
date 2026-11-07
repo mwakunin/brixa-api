@@ -43,6 +43,7 @@ describe("the readiness probe", () => {
 
       expect(error?.message).toMatch(/no_such_role/);
       expect(error?.message).not.toContain(url.password || "-no-password-");
+      expect(error?.message).not.toContain(decodeURIComponent(url.password) || "-no-password-");
     }
     finally {
       await stranger.end().catch(() => {});

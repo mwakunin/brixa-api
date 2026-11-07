@@ -118,6 +118,8 @@ describe("m-Pesa settings", () => {
     const [exchange] = await db.select().from(gatewayExchanges);
     expect(exchange).toMatchObject({ operation: "register_urls", httpStatus: 200, error: null });
     expect(JSON.stringify(exchange.request)).not.toMatch(/consumer-secret-1|stk-passkey-1/);
+    expect(JSON.stringify(exchange.request)).not.toContain(token);
+    expect(exchange.request).toMatchObject({ ConfirmationURL: expect.stringContaining("/webhooks/mpesa/[token]/") });
   });
 
   it("show Safaricom's refusal to the admin, and try again later", async () => {
@@ -182,6 +184,10 @@ describe("paybill payments", () => {
       ["SKUNKNOWN2", "No account number was given"],
     ]);
     expect(await db.select().from(auditLog).where(eq(auditLog.action, "mpesa.listed"))).toHaveLength(1);
+    const found = await (await call("GET", "/mpesa/transactions?transactionId=skunknown1", h.facility.id, h.clerk)).json();
+    expect(found.transactions.map((t: { transactionId: string }) => t.transactionId)).toEqual(["SKUNKNOWN1"]);
+    const nextPage = await (await call("GET", "/mpesa/transactions?status=unmatched&offset=1", h.facility.id, h.clerk)).json();
+    expect(nextPage.transactions).toHaveLength(1);
     expect((await call("GET", "/mpesa/transactions", h.facility.id, h.nurse)).status).toBe(403);
 
     const [first] = await db.select().from(mpesaTransactions).where(eq(mpesaTransactions.transactionId, "SKUNKNOWN1"));
@@ -195,6 +201,20 @@ describe("paybill payments", () => {
     expect((await call("POST", `/mpesa/transactions/${second.id}/reject`, h.facility.id, h.clerk, { reason: "Paid in error" })).status).toBe(403);
     expect(await (await call("POST", `/mpesa/transactions/${second.id}/reject`, h.facility.id, h.finance, { reason: "Paid in error" })).json())
       .toMatchObject({ status: "rejected", statusReason: "Paid in error" });
+  });
+
+  it("naming a number two patients share, once normalised, wait for a person", async () => {
+    const first = await h.patient();
+    const other = await h.patient();
+    const [op] = (await pool.query("SELECT number FROM patient_numbers WHERE patient_id = $1 AND kind = 'outpatient'", [first])).rows;
+    // The same number written another way, on another patient.
+    await pool.query("INSERT INTO patient_numbers (facility_id, patient_id, kind, number) VALUES ($1, $2, 'inpatient', $3)", [h.facility.id, other, op.number.replace(/(\D+)(\d+)/, "$1-$2")]);
+
+    await post("/c2b/confirmation", confirmation({ TransID: "SKSHARED01", BillRefNumber: op.number }));
+
+    const [transaction] = await db.select().from(mpesaTransactions);
+    expect(transaction).toMatchObject({ status: "unmatched", statusReason: "More than one record has this number" });
+    expect(await paymentOf("SKSHARED01")).toBeUndefined();
   });
 
   it("are recorded once however often Safaricom repeats them", async () => {
@@ -289,6 +309,7 @@ describe("m-Pesa prompts", () => {
     expect((await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).status).toBe("sent");
     const [exchange] = await db.select().from(gatewayExchanges).where(eq(gatewayExchanges.operation, "stk_push"));
     expect(exchange.request).not.toHaveProperty("Password");
+    expect(JSON.stringify(exchange.request)).not.toContain(token);
 
     expect((await paid("ws_CO_1", "SKSTK00001", 508)).status).toBe(200);
     await paid("ws_CO_1", "SKSTK00001", 508);
@@ -296,6 +317,8 @@ describe("m-Pesa prompts", () => {
     expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json())
       .toMatchObject({ status: "completed", receiptNumber: "SKSTK00001" });
     expect(await paymentOf("SKSTK00001")).toMatchObject({ method: "mpesa_stk", receivedBy: h.cashier.actor.membershipId });
+    expect(await db.select().from(auditLog).where(eq(auditLog.action, "mpesa.received"))).toMatchObject([{ actorId: null, detail: { source: "stk" } }]);
+    expect((await db.select().from(auditLog).where(eq(auditLog.action, "mpesa.stk_viewed"))).length).toBeGreaterThan(0);
     expect(await invoice(invoiceId)).toMatchObject({ balanceCents: 0 });
     expect(await db.select().from(payments)).toHaveLength(1);
 
@@ -434,6 +457,75 @@ describe("m-Pesa prompts", () => {
     expect((await callingBack).status).toBe(200);
 
     expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).toMatchObject({ status: "completed", receiptNumber: "SKRACE0001" });
+  });
+
+  it("do not complete their prompt with a payment placed on another patient", async () => {
+    await setUp();
+    const patientId = await h.patient();
+    const other = await h.patient();
+    const [op] = (await pool.query("SELECT number FROM patient_numbers WHERE patient_id = $1 AND kind = 'outpatient'", [other])).rows;
+    const request = await (await prompt({ patientId, phone: "0712345678", amountCents: 100_000 })).json();
+    daraja();
+    await drainOutbox();
+
+    // Its paybill confirmation names the other patient, and is placed there first.
+    await post("/c2b/confirmation", confirmation({ TransID: "SKOTHER001", TransAmount: "1000.00", BillRefNumber: op.number }));
+    await paid("ws_CO_1", "SKOTHER001", 1000);
+
+    expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json())
+      .toMatchObject({ status: "failed", resultDesc: "Paid, but placed on another patient's account as M-Pesa SKOTHER001; check it" });
+  });
+
+  it("are tried again when no token could be had, since nothing reached Safaricom", async () => {
+    await setUp();
+    daraja();
+    await drainOutbox();
+    vi.restoreAllMocks();
+    resetDarajaTokens();
+    const patientId = await h.patient();
+    const request = await (await prompt({ patientId, phone: "0712345678", amountCents: 10_000 })).json();
+
+    let tokenCalls = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("/oauth/v1/generate")) {
+        tokenCalls += 1;
+        return tokenCalls === 1 ? new Response("down", { status: 503 }) : Response.json({ access_token: "t", expires_in: "3599" });
+      }
+      return Response.json({ ResponseCode: "0", MerchantRequestID: "m-1", CheckoutRequestID: "ws_CO_retry", CustomerMessage: "Success" });
+    });
+
+    expect(await drainOutbox()).toMatchObject({ retried: 1 });
+    expect((await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).status).toBe("queued");
+    await pool.query("UPDATE outbox SET available_at = now() WHERE status = 'pending'");
+    await drainOutbox();
+
+    expect((await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).status).toBe("sent");
+  });
+
+  it("are reopened as sent when Safaricom's answer is recorded after another delivery closed them", async () => {
+    await setUp();
+    const patientId = await h.patient();
+    const request = await (await prompt({ patientId, phone: "0712345678", amountCents: 10_000 })).json();
+    await pool.query("UPDATE mpesa_stk_requests SET status = 'failed', result_desc = 'Sending was interrupted', completed_at = now() WHERE id = $1", [request.id]);
+
+    await runAsFacility(h.facility.id, t => recordSent(t, h.facility.id, request.id, { request: {}, response: {}, httpStatus: 200, checkoutRequestId: "ws_CO_late", merchantRequestId: "m" }));
+
+    expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).toMatchObject({ status: "sent", resultDesc: null });
+  });
+
+  it("whose callbacks cannot be stored are kept and acknowledged, never crash", async () => {
+    await setUp();
+
+    const answers = [
+      await callback({ CheckoutRequestID: "ws_CO_bad1", ResultCode: "invalid", ResultDesc: "?" }),
+      await callback({ CheckoutRequestID: "ws_CO_bad2", ResultCode: 0, ResultDesc: "Processed", CallbackMetadata: { Item: [null, { Name: "MpesaReceiptNumber", Value: "SKNULLS001" }] } }),
+      await callback({ CheckoutRequestID: "ws_CO_bad3", ResultCode: 0, ResultDesc: "Processed", CallbackMetadata: { Item: [{ Name: "Amount", Value: -5 }, { Name: "MpesaReceiptNumber", Value: "SKNEGATIVE" }] } }),
+    ];
+
+    expect(answers.map(a => a.status)).toEqual([200, 200, 200]);
+    expect(await db.select().from(mpesaTransactions)).toHaveLength(0);
+    expect(await db.select().from(gatewayExchanges).where(eq(gatewayExchanges.operation, "stk_callback"))).toHaveLength(3);
   });
 
   it("are never sent again once sending began, even if the worker died", async () => {
