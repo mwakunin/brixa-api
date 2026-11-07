@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 
 import env from "@/env";
 
@@ -41,15 +42,25 @@ export interface DarajaCredentials {
   passkey: string;
 }
 
-// One token per consumer key: two facilities never share a slot unless they share a key.
+/*
+ * One token per full credential. Keyed by the consumer key alone, a facility
+ * that entered another's key with any secret would be handed that facility's
+ * cached token, and call Daraja as it without ever knowing its secret. The
+ * key is a hash of both, so the secret is not kept in the clear as a map key.
+ */
 const tokens = new Map<string, { value: string; expiresAt: number }>();
 
 export function resetDarajaTokens() {
   tokens.clear();
 }
 
+function cacheKeyOf(credentials: DarajaCredentials): string {
+  return createHash("sha256").update(`${credentials.consumerKey}\0${credentials.consumerSecret}`).digest("base64url");
+}
+
 async function accessToken(credentials: DarajaCredentials): Promise<string> {
-  const cached = tokens.get(credentials.consumerKey);
+  const cacheKey = cacheKeyOf(credentials);
+  const cached = tokens.get(cacheKey);
   if (cached && Date.now() < cached.expiresAt)
     return cached.value;
 
@@ -64,7 +75,7 @@ async function accessToken(credentials: DarajaCredentials): Promise<string> {
 
   const ttlSeconds = Number(body.expires_in ?? 3599);
   // A minute of headroom, so a token never expires in flight.
-  tokens.set(credentials.consumerKey, { value: body.access_token, expiresAt: Date.now() + Math.max(ttlSeconds - 60, 0) * 1000 });
+  tokens.set(cacheKey, { value: body.access_token, expiresAt: Date.now() + Math.max(ttlSeconds - 60, 0) * 1000 });
   return body.access_token;
 }
 
