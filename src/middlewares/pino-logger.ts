@@ -22,9 +22,25 @@ export function requestLogMessage(c: Pick<Context, "error">): string {
 }
 
 /**
+ * A path as it may be logged. An M-Pesa callback's path carries the
+ * facility's secret callback token, and anyone holding that token can post
+ * payment confirmations, so it is replaced before the line is written.
+ */
+export function loggedPath(path: string): string {
+  return path.replace(/^\/webhooks\/mpesa\/[^/]+/, "/webhooks/mpesa/[token]");
+}
+
+/**
  * One line per request, through the process's shared, redacting logger.
  * `target` is a parameter so a test can read what would be written.
  */
 export function pinoLogger(target: Logger = logger) {
-  return requestLogger({ pino: target, http: { onResMessage: requestLogMessage } });
+  return requestLogger({
+    pino: target,
+    http: {
+      onResMessage: requestLogMessage,
+      // hono-pino's own bindings, but with the path made safe to log.
+      onReqBindings: c => ({ req: { url: loggedPath(c.req.path), method: c.req.method, headers: c.req.header() } }),
+    },
+  });
 }

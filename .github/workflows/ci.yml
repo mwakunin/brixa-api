@@ -171,6 +171,8 @@ jobs:
             -e STORAGE_DRIVER=gcs -e STORAGE_BUCKET=hms-ci \
             -e TASKS_QUEUE=projects/hms-ci/locations/africa-south1/queues/outbox \
             -e TASKS_INVOKER_EMAIL=tasks-invoker@hms-ci.iam.gserviceaccount.com \
+            -e MPESA_ENV=sandbox \
+            -e CREDENTIALS_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
             hospital-api:ci
           # Without a database the roles cannot be verified, so the instance
           # must answer, but stay unready: /health reports the database down

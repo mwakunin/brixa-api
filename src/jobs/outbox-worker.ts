@@ -4,6 +4,8 @@ import { pool } from "@/db";
 import { errorLine } from "@/lib/error-summary";
 import { sendInvitation } from "@/lib/invitations";
 import { logger } from "@/lib/logger";
+import { registerUrls } from "@/lib/mpesa";
+import { closeAbandonedStkPush, sendStkPush } from "@/lib/mpesa-stk";
 
 /**
  * Drains the outbox (CLAUDE.md §7): claims due jobs, makes each call, records
@@ -27,6 +29,8 @@ import { logger } from "@/lib/logger";
 export interface OutboxJob {
   facilityId: string;
   subjectId: string;
+  /** No retry follows this attempt: a handler that would ask for one must settle the subject instead. */
+  finalAttempt?: boolean;
 }
 
 /**
@@ -40,6 +44,17 @@ export type OutboxHandler = (job: OutboxJob) => Promise<OutboxOutcome>;
 
 const HANDLERS: Record<OutboxOperation, OutboxHandler> = {
   "invitation.send": sendInvitation,
+  "mpesa.register_urls": registerUrls,
+  "mpesa.stk_push": sendStkPush,
+};
+
+/**
+ * What a job leaves to put right once it will not be retried, where its
+ * subject would otherwise be stuck mid-way (a prompt `sending` for ever).
+ * Run after the job is marked failed; must be safe to run twice.
+ */
+const ON_GIVE_UP: Partial<Record<OutboxOperation, (job: OutboxJob) => Promise<void>>> = {
+  "mpesa.stk_push": closeAbandonedStkPush,
 };
 
 /** How long a claimed job stays invisible to other workers. */
@@ -70,16 +85,33 @@ async function failAbandoned() {
     SET status = 'failed', completed_at = now(),
         last_error = coalesce(last_error, 'Worker stopped during the final attempt')
     WHERE status = 'pending' AND attempts >= $1 AND available_at <= now()
-    RETURNING id, facility_id, operation, attempts
+    RETURNING id, facility_id, operation, subject_id, attempts
   `, [MAX_ATTEMPTS]);
-  rows.forEach(reportFailed);
+  for (const row of rows)
+    await gaveUp(row);
 }
 
 interface FailedRow {
   id: string;
   facility_id: string;
   operation: OutboxOperation;
+  subject_id: string;
   attempts: number;
+}
+
+/**
+ * Reports a job that will not be retried, then lets its operation put its
+ * subject right. That step failing is logged, never thrown: the job is
+ * already failed, and the alert below has fired.
+ */
+async function gaveUp(row: FailedRow) {
+  reportFailed(row);
+  try {
+    await ON_GIVE_UP[row.operation]?.({ facilityId: row.facility_id, subjectId: row.subject_id });
+  }
+  catch (err) {
+    logger.error({ outboxId: row.id, facilityId: row.facility_id, operation: row.operation, error: errorLine(err) }, "could not settle a failed outbox job's subject");
+  }
 }
 
 /**
@@ -143,7 +175,7 @@ async function recordFailure(row: ClaimedRow, err: unknown) {
       [row.id, message],
     );
     if (rowCount)
-      reportFailed(row);
+      await gaveUp(row);
     return "failed" as const;
   }
 
@@ -173,7 +205,7 @@ export async function drainOutbox(options: {
       break;
 
     try {
-      const outcome = await handlers[row.operation]({ facilityId: row.facility_id, subjectId: row.subject_id });
+      const outcome = await handlers[row.operation]({ facilityId: row.facility_id, subjectId: row.subject_id, finalAttempt: row.attempts >= MAX_ATTEMPTS });
       await recordSuccess(row.id, outcome);
       tally[outcome] += 1;
     }

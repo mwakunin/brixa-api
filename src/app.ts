@@ -15,6 +15,7 @@ import invitations from "@/routes/invitations/invitations.index";
 import invoices from "@/routes/invoices/invoices.index";
 import localFiles from "@/routes/local-files.route";
 import me from "@/routes/me/me.index";
+import mpesa from "@/routes/mpesa/mpesa.index";
 import patients from "@/routes/patients/patients.index";
 import payments from "@/routes/payments/payments.index";
 import prices from "@/routes/prices/prices.index";
@@ -24,6 +25,7 @@ import staff from "@/routes/staff/staff.index";
 import superadmin from "@/routes/superadmin/superadmin.index";
 import verify from "@/routes/verify/verify.index";
 import wards from "@/routes/wards/wards.index";
+import webhooks from "@/routes/webhooks/webhooks.index";
 
 const app = createApp();
 
@@ -37,7 +39,8 @@ configureOpenAPI(app);
  * owner connection. `invitations` is reached from an emailed link, with no
  * session and no facility: the token names the invitation. `verify` is
  * reached from a printed document's QR code, the same way: the code names the
- * document. `internal` is for Cloud Tasks and Cloud Scheduler alone, each
+ * document. `webhooks` is Safaricom calling back: the token in the path names
+ * the facility. `internal` is for Cloud Tasks and Cloud Scheduler alone, each
  * call carrying a Google-signed identity token.
  *
  * These must stay ahead of the tenant routers, which register `withFacility`
@@ -50,6 +53,7 @@ const unscopedRoutes = [
   superadmin,
   invitations,
   verify,
+  webhooks,
   internal,
 ] as const;
 
@@ -82,6 +86,7 @@ const tenantRoutes = [
   shifts,
   payments,
   refunds,
+  mpesa,
 ] as unknown as readonly AppOpenAPI[];
 
 [...unscopedRoutes, ...developmentRoutes, ...tenantRoutes].forEach((route) => {

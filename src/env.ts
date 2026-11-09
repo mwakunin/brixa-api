@@ -28,19 +28,40 @@ function unsetIfBlank<T extends z.ZodType>(schema: T) {
   return z.preprocess(value => (value === "" ? undefined : value), schema);
 }
 
-/** The username from a DSN, or undefined if it isn't parseable. */
-function parseRole(dsn: string | undefined): string | undefined {
+/**
+ * A credential as `pg` will use it: a `?user=` or `?password=` parameter wins
+ * over the user-info part, and of repeated parameters the last wins, as in
+ * pg-connection-string. Undefined if the DSN isn't parseable.
+ */
+function credentialOf(dsn: string | undefined, name: "user" | "password"): string | undefined {
   if (!dsn)
     return undefined;
   try {
-    return decodeURIComponent(new URL(dsn).username) || undefined;
+    const url = new URL(dsn);
+    return url.searchParams.getAll(name).at(-1) || decodeURIComponent(name === "user" ? url.username : url.password) || undefined;
   }
   catch {
     return undefined;
   }
 }
 
-const EnvSchema = z.object({
+const parseRole = (dsn: string | undefined) => credentialOf(dsn, "user");
+const parsePassword = (dsn: string | undefined) => credentialOf(dsn, "password");
+
+/** True if the DSN repeats a `user` or `password` parameter. */
+function repeatsCredential(dsn: string | undefined): boolean {
+  if (!dsn)
+    return false;
+  try {
+    const { searchParams } = new URL(dsn);
+    return searchParams.getAll("user").length > 1 || searchParams.getAll("password").length > 1;
+  }
+  catch {
+    return false;
+  }
+}
+
+export const EnvSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().positive().default(9999),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]),
@@ -128,6 +149,21 @@ const EnvSchema = z.object({
    * tokens as: the only caller the internal routes accept.
    */
   TASKS_INVOKER_EMAIL: unsetIfBlank(z.email().optional()),
+
+  // --- M-Pesa (Daraja) ---
+  /** Which Daraja host every facility's calls go to. */
+  MPESA_ENV: z.enum(["sandbox", "production"]).default("sandbox"),
+  /**
+   * Comma-separated addresses Safaricom calls back from. Advisory only: an
+   * unlisted source is logged, never refused, since the list changes and
+   * nothing is signed. The token in the callback path is the control.
+   */
+  MPESA_CALLBACK_ALLOWED_IPS: unsetIfBlank(z.string().optional()),
+  /**
+   * Base64 of 32 random bytes: encrypts each facility's Daraja credentials
+   * at rest (AES-256-GCM). Without it, M-Pesa cannot be set up.
+   */
+  CREDENTIALS_ENCRYPTION_KEY: unsetIfBlank(z.string().regex(/^[A-Z0-9+/]{43}=$/i, "Must be base64 of 32 random bytes (44 characters)").optional()),
 })
   .superRefine((input, ctx) => {
     if (input.NODE_ENV === "production") {
@@ -147,6 +183,12 @@ const EnvSchema = z.object({
        * of 0 every caller shares one address: one person's eleven sign-in
        * attempts would lock every member of staff out.
        */
+      // Defaulting to the sandbox would send live facilities' prompts to Safaricom's test host.
+      if (process.env.MPESA_ENV === undefined)
+        ctx.addIssue({ code: "custom", path: ["MPESA_ENV"], message: "Must be set explicitly in production: sandbox or production" });
+      // Without it no facility can set up M-Pesa, and the admin would learn so from a 500.
+      if (!input.CREDENTIALS_ENCRYPTION_KEY)
+        ctx.addIssue({ code: "custom", path: ["CREDENTIALS_ENCRYPTION_KEY"], message: "Must be set when NODE_ENV is 'production'" });
       if (process.env.TRUST_PROXY_HOPS === undefined) {
         ctx.addIssue({
           code: "custom",
@@ -229,6 +271,13 @@ const EnvSchema = z.object({
      *   auth = owner  Better Auth could read every tenant table
      *   auth = app    tenant handlers could read session tokens again
      */
+    // Each check below reads the value pg uses, but a DSN that says two things
+    // is refused outright rather than trusted to be read the same way everywhere.
+    for (const key of ["DATABASE_URL", "APP_DATABASE_URL", "AUTH_DATABASE_URL"] as const) {
+      if (repeatsCredential(input[key]))
+        ctx.addIssue({ code: "custom", path: [key], message: "Must not repeat the user or password parameter: pg uses the last one" });
+    }
+
     const roles = [
       ["DATABASE_URL", parseRole(input.DATABASE_URL)],
       ["APP_DATABASE_URL", parseRole(input.APP_DATABASE_URL)],
@@ -256,6 +305,22 @@ const EnvSchema = z.object({
             + "Each connection's role is what separates the owner, tenant "
             + "requests and Better Auth from one another. See db/roles.sql.",
         });
+      }
+    }
+
+    // db/roles.sql creates each restricted role with its own name as its
+    // password, which is public in this repository. Production sets real ones
+    // out of band; a missed ALTER ROLE must stop the boot, not ship.
+    if (input.NODE_ENV === "production") {
+      for (const key of ["APP_DATABASE_URL", "AUTH_DATABASE_URL"] as const) {
+        const role = parseRole(input[key]);
+        if (role && parsePassword(input[key]) === role) {
+          ctx.addIssue({
+            code: "custom",
+            path: [key],
+            message: "Must not use the development default password from db/roles.sql in production",
+          });
+        }
       }
     }
   })

@@ -18,7 +18,15 @@ export function call(method: string, path: string, facilityId: string, person: P
   });
 }
 
-export const TODAY = businessDate();
+/**
+ * The Kenyan date each test works in. Re-read whenever a hospital is set up,
+ * so a long run that crosses midnight in Nairobi starts each test on the
+ * right day: a date fixed when the file loaded would make prices start
+ * yesterday, which approval refuses as backdated. A live binding, so
+ * importers see the update.
+ */
+// eslint-disable-next-line import/no-mutable-exports
+export let TODAY = businessDate();
 
 /** `hours` after the start of the Kenyan day `offset` days from today. */
 export function at(offset: number, hours: number) {
@@ -31,6 +39,7 @@ export function at(offset: number, hours: number) {
  * rates and one whose are not, and the staff to work it.
  */
 export async function hospital() {
+  TODAY = businessDate();
   const facility = await makeOnboardedFacility();
   const person = async (roles: Parameters<typeof addMembership>[2]) => {
     const user = await signedInUser();

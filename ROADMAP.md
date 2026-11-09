@@ -1,6 +1,6 @@
 # Roadmap
 
-Status: proposed · Last updated: 2026-11-03
+Status: proposed · Last updated: 2026-11-06
 
 `SPEC.md` is the source of truth for decisions and open questions; `CLAUDE.md` holds the conventions code must follow; `SCHEMA.md` holds the data model. This document orders the work. It names phases, not dates: the one external date that matters is the pilot hospital's planned SHA date, and the largest dependency (DHA certification) runs on someone else's clock.
 
@@ -23,6 +23,16 @@ Status: proposed · Last updated: 2026-11-03
 3. **Every phase keeps a certification pack current**: self-attestation answers, security evidence, test scripts. P8 then submits a pack rather than starting one.
 
 The lesson carried from the school SaaS is that nothing tests a design like a real user. The pilot goes live in P6 as a **complete cash hospital system** (decision D8 in `SPEC.md`), and every later phase is built with live staff using the product.
+
+**The frontend runs as its own track, designed before it is built (decided 2026-11-06).** An outpatient visit is one journey across service points (registration, triage, consultation, lab, pharmacy, cashier), so its screens are built once every step's API exists, and come out as one flow rather than being retrofitted as each module lands.
+
+| When | Frontend work |
+|---|---|
+| During P3 and P4 | Settle the stack (`SPEC.md` proposes Next.js as a PWA) and set up its repo. Sketch the whole outpatient journey, screen by screen for each role, and walk the pilot's staff through it: the cheapest test of simplicity (`SPEC.md` §7.9). Where a sketch needs something the API cannot give, or asks for something it could derive, the API changes while that is still cheap. |
+| From P5 | Build the outpatient screens against the finished P2–P4 API, then the inpatient screens as P5 lands. |
+| P6 | Reports, offline support at the service points that need it, and the timed simplicity test with real staff before go-live. |
+
+The risk is a crowded P5 and P6. If P5 slips, the inpatient screens start alongside it rather than waiting for it.
 
 ---
 
@@ -77,6 +87,8 @@ Patients and patient numbers; the OPD encounter; a thin admission with bed stays
 - **A test bills a dummy insurer account** for part of an encounter. It proves the account and charge-assignment structures carry a payer split, so P7 needs no rework of charges.
 - Concurrency tests on allocation, charge assignment and refund pass, in the style of school-saas's `allocations.test.ts`.
 
+**Done (2026-11-06):** the six-day admission reconciles (`src/lib/reconciliation.test.ts`), the dummy insurer is billed (`src/lib/billing.test.ts`), and the concurrency tests hold one transaction open and confirm in Postgres that the other waits (`src/lib/concurrency.test.ts`). Also built in P2: M-Pesa C2B and STK push, reversing an approved adjustment, and the daily reconciliation check (decisions of 2026-11-06).
+
 ### P3 · OPD clinical and lab
 
 **Size:** M/L.
@@ -115,6 +127,7 @@ Everything the pilot needs to leave its current system on one day:
 - **Opening stock**, from a physical count on cutover day: per store and batch (batch number, expiry, quantity, cost), loaded as `opening_balance` movements (`SCHEMA.md` §8). Controlled drugs also get an opening entry in their register, matching the old register's closing balance. Without this, stock on hand would be zero on day one and nothing could be dispensed.
 - **Reports a facility must file or run daily:** MOH 705A/705B and 717, revenue and cashier summaries, stock status.
 - **PWA offline support** at the service points that need it.
+- **M-Pesa hardening before real money.** A way for the facility admin to rotate a leaked callback token: a new token, its URLs registered with Safaricom, and the old one kept for a short grace period so callbacks for prompts already sent still land. In that period the old token must accept only callbacks for prompts sent before the rotation, never paybill confirmations, or a leaked token keeps working for its whole length. A way to recover a prompt callback kept as "Could not be recorded" (its own transaction failed, and Safaricom does not call again): replay it with the first attempt's safeguards, or put its payment in the queue. And a decision: may two facilities (a hospital group's branches) share one paybill? Today nothing stops it, but Safaricom registers one set of callback URLs per paybill, so the second registration takes all its confirmations. Either refuse a shortcode another facility holds, or route by account reference. Found in the full review of PR #9.
 - **Backups and a disaster-recovery drill**, and a security review before real patient data arrives.
 - **Migrations that are safe on live data.** Adding an audit action rewrites the `audit_log_action_known` CHECK, which re-scans the whole log while holding a lock that blocks every audit write, and so every request that audits. The drizzle migrator applies all pending migrations in one transaction, so `NOT VALID` followed by `VALIDATE CONSTRAINT` cannot help as things stand. Before go-live: a migrator that commits each migration on its own (or a separate validate step at deploy), or a lookup table of known actions in place of the CHECK. Found in review of PR #4.
 - **Training and the simplicity test** (`SPEC.md` §7.9): new staff in each role do their daily tasks after one short session, watched and timed. Where they get stuck is fixed before go-live.

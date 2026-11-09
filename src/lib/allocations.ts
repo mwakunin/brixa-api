@@ -100,7 +100,7 @@ export async function allocate(
   tx: AppDb,
   facilityId: string,
   input: { paymentId: string; invoiceId: string; amountCents?: number },
-  actor: PatientActor,
+  actor: PatientActor | null,
 ): Promise<{ id: string; amountCents: number }> {
   const payment = await lockPayment(tx, input.paymentId);
   const invoice = await lockInvoice(tx, input.invoiceId, payment.accountId);
@@ -121,12 +121,12 @@ export async function allocate(
     invoiceId: invoice.id,
     accountId: payment.accountId,
     amountCents,
-    allocatedBy: actor.membershipId,
+    allocatedBy: actor?.membershipId ?? null,
   }).returning({ id: allocations.id });
 
   await recordAudit(tx, {
     facilityId,
-    actorId: actor.userId,
+    actorId: actor?.userId ?? null,
     action: "allocation.recorded",
     entityType: "allocation",
     entityId: allocation.id,

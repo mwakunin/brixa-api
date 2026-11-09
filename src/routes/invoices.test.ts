@@ -10,7 +10,8 @@ import { admitPatient, dischargePatient } from "@/lib/encounters";
 import { resetDb } from "@/test/helpers";
 import { at, call, hospital, TODAY } from "@/test/hospital";
 
-const YEAR = TODAY.slice(0, 4);
+/** The Kenyan year now: read when used, since TODAY is re-read for each test. */
+const year = () => TODAY.slice(0, 4);
 
 describe("invoices", () => {
   let h: Hospital;
@@ -52,7 +53,7 @@ describe("invoices", () => {
 
     const finalised = await finalise(body.id);
     expect(finalised.status).toBe(200);
-    expect(await finalised.json()).toMatchObject({ status: "finalised", number: `INV-${YEAR}-000001`, totalCents: 50_800, balanceCents: 50_800 });
+    expect(await finalised.json()).toMatchObject({ status: "finalised", number: `INV-${year()}-000001`, totalCents: 50_800, balanceCents: 50_800 });
   });
 
   it("print what was billed, frozen in the document", async () => {
@@ -62,7 +63,7 @@ describe("invoices", () => {
 
     const [invoice] = await db.select().from(invoices).where(eq(invoices.id, id));
     const [document] = await db.select().from(documents).where(eq(documents.id, invoice.documentId!));
-    expect(document).toMatchObject({ kind: "invoice", number: `INV-${YEAR}-000001` });
+    expect(document).toMatchObject({ kind: "invoice", number: `INV-${year()}-000001` });
     expect(document.content).toMatchObject({
       title: "Invoice",
       fields: expect.arrayContaining([{ label: "Bill to", value: "Test Patient" }, { label: "Patient number", value: "OP0001" }]),
@@ -81,8 +82,8 @@ describe("invoices", () => {
     const first = await (await draft("final", other)).json();
     const second = await (await draft("final")).json();
 
-    expect((await (await finalise(first.id)).json()).number).toBe(`INV-${YEAR}-000001`);
-    expect((await (await finalise(second.id)).json()).number).toBe(`INV-${YEAR}-000002`);
+    expect((await (await finalise(first.id)).json()).number).toBe(`INV-${year()}-000001`);
+    expect((await (await finalise(second.id)).json()).number).toBe(`INV-${year()}-000002`);
   });
 
   it("finalise a final invoice only once every charge is billed", async () => {
@@ -140,7 +141,7 @@ describe("invoices", () => {
     expect((await voidIt(id, h.clerk)).status).toBe(403);
     const voided = await voidIt(id, h.finance);
     expect(voided.status).toBe(200);
-    expect(await voided.json()).toMatchObject({ status: "void", number: `INV-${YEAR}-000001`, voidReason: "Wrong bill", balanceCents: null });
+    expect(await voided.json()).toMatchObject({ status: "void", number: `INV-${year()}-000001`, voidReason: "Wrong bill", balanceCents: null });
     expect(await refusal(await voidIt(id, h.finance))).toEqual([409, "already_void"]);
 
     const [invoice] = await db.select().from(invoices).where(eq(invoices.id, id));
@@ -149,7 +150,7 @@ describe("invoices", () => {
 
     // Its charges are free to be billed again, under a new number.
     const rebilled = await (await draft("final")).json();
-    expect((await (await finalise(rebilled.id)).json()).number).toBe(`INV-${YEAR}-000002`);
+    expect((await (await finalise(rebilled.id)).json()).number).toBe(`INV-${year()}-000002`);
   });
 
   it("are not drafted for a cancelled encounter", async () => {
@@ -208,7 +209,7 @@ describe("invoices", () => {
     expect(invoice.totalCents).toBe(500_000);
     expect(document.content.fields).toContainEqual({
       label: "Visit",
-      value: expect.stringMatching(new RegExp(`^Admission ADM-${YEAR}-0001, .+ to .+$`)),
+      value: expect.stringMatching(new RegExp(`^Admission ADM-${year()}-0001, .+ to .+$`)),
     });
   });
 });

@@ -1,0 +1,488 @@
+import { and, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+
+import type { AppDb } from "@/db";
+
+import { accounts, admissions, allocations, documents, encounters, gatewayExchanges, invoices, memberships, mpesaSettings, mpesaStkRequests, mpesaTransactions, patientNumbers, patients, payments, stkCheckoutId } from "@/db/schema";
+import { runAsFacility } from "@/db/tenant-transaction";
+
+import type { StkCallback } from "./daraja";
+import type { PaymentTarget } from "./mpesa";
+import type { PatientActor } from "./patients";
+
+import { recordAudit } from "./audit";
+import { DarajaError, exchangeOf, neverSent, parseStkCallback, stkPush } from "./daraja";
+import { isUniqueViolation } from "./db-errors";
+import { errorLine } from "./error-summary";
+import { formatKes } from "./money";
+import { callbackUrls, credentialsOf, MpesaError, recordExchange, settleTransaction } from "./mpesa";
+import { enqueue } from "./outbox";
+import { PaymentError } from "./payments";
+import { normalizePhone } from "./phone";
+
+/**
+ * STK push (P2 slice 6): the cashier asks Safaricom to prompt a patient's
+ * phone to pay the paybill. The prompt goes out through the outbox (rule 18)
+ * and is never sent twice: Daraja has no idempotency key, so a repeat could
+ * charge twice. A request is marked `sending`, in its own committed
+ * transaction, before Safaricom is called; a job that finds one `sending`
+ * (a worker that died mid-call) closes it as failed instead of sending
+ * again. Money from a prompt we cannot place still lands in the M-Pesa queue.
+ */
+
+type StkRow = typeof mpesaStkRequests.$inferSelect;
+type TransactionRow = typeof mpesaTransactions.$inferSelect;
+
+/** The most a stored amount may be (an integer column), and more than any one M-Pesa payment. */
+const MAX_AMOUNT_CENTS = 2_000_000_000;
+
+/** Checks the target now, so the cashier hears at once; the callback checks again. */
+async function checkTarget(tx: AppDb, target: PaymentTarget) {
+  const [patient] = await tx.select({ id: patients.id }).from(patients).where(eq(patients.id, target.patientId)).limit(1);
+  if (!patient)
+    throw new PaymentError("patient_not_found");
+  if (target.invoiceId) {
+    const [bill] = await tx
+      .select({ status: invoices.status, patientId: accounts.patientId })
+      .from(invoices)
+      .innerJoin(accounts, eq(accounts.id, invoices.accountId))
+      .where(eq(invoices.id, target.invoiceId))
+      .limit(1);
+    if (!bill)
+      throw new PaymentError("invoice_not_found");
+    if (bill.patientId !== target.patientId)
+      throw new PaymentError("other_patient");
+    if (bill.status !== "finalised")
+      throw new PaymentError("not_finalised");
+  }
+  if (target.encounterId) {
+    const [encounter] = await tx.select().from(encounters).where(eq(encounters.id, target.encounterId)).limit(1);
+    if (!encounter)
+      throw new PaymentError("encounter_not_found");
+    if (encounter.patientId !== target.patientId)
+      throw new PaymentError("other_patient");
+    if (encounter.status === "cancelled")
+      throw new PaymentError("encounter_cancelled");
+  }
+}
+
+/** Queues a prompt to `phone` for `amountCents`, towards `target`. */
+export async function requestStkPush(
+  tx: AppDb,
+  facilityId: string,
+  input: PaymentTarget & { phone: string; amountCents: number },
+  actor: PatientActor,
+): Promise<string> {
+  const [settings] = await tx.select({ shortcode: mpesaSettings.shortcode }).from(mpesaSettings).limit(1);
+  if (!settings)
+    throw new MpesaError("not_set_up");
+  const phone = normalizePhone(input.phone);
+  if (!phone?.startsWith("+2547") && !phone?.startsWith("+2541"))
+    throw new MpesaError("phone_invalid");
+  await checkTarget(tx, input);
+
+  const [request] = await tx.insert(mpesaStkRequests).values({
+    facilityId,
+    patientId: input.patientId,
+    invoiceId: input.invoiceId ?? null,
+    encounterId: input.encounterId ?? null,
+    phone,
+    amountCents: input.amountCents,
+    requestedBy: actor.membershipId,
+  }).returning({ id: mpesaStkRequests.id });
+  await enqueue(tx, { facilityId, operation: "mpesa.stk_push", subjectId: request.id });
+  await recordAudit(tx, {
+    facilityId,
+    actorId: actor.userId,
+    action: "mpesa.stk_requested",
+    entityType: "mpesa_stk_request",
+    entityId: request.id,
+    summary: `Asked for ${formatKes(input.amountCents)} by M-Pesa prompt`,
+    detail: { patientId: input.patientId, amountCents: input.amountCents, invoiceId: input.invoiceId ?? null, encounterId: input.encounterId ?? null },
+  });
+  return request.id;
+}
+
+/** What the payer's statement shows: the bill, admission or patient number. */
+async function accountReference(tx: AppDb, request: StkRow): Promise<string> {
+  if (request.invoiceId) {
+    const [bill] = await tx.select({ number: documents.number }).from(invoices).innerJoin(documents, eq(documents.id, invoices.documentId)).where(eq(invoices.id, request.invoiceId)).limit(1);
+    if (bill)
+      return bill.number;
+  }
+  if (request.encounterId) {
+    const [stay] = await tx.select({ number: admissions.admissionNumber }).from(admissions).where(eq(admissions.encounterId, request.encounterId)).limit(1);
+    if (stay)
+      return stay.number;
+  }
+  const [op] = await tx.select({ number: patientNumbers.number }).from(patientNumbers).where(eq(patientNumbers.patientId, request.patientId)).limit(1);
+  return op?.number ?? "Hospital";
+}
+
+async function closeFailed(tx: AppDb, requestId: string, resultDesc: string, resultCode: number | null = null) {
+  await tx.update(mpesaStkRequests)
+    .set({ status: "failed", resultCode, resultDesc: resultDesc.slice(0, 200), completedAt: new Date() })
+    .where(eq(mpesaStkRequests.id, requestId));
+}
+
+const INTERRUPTED = "Sending was interrupted; if the patient paid, the payment is in the M-Pesa queue";
+
+/**
+ * Claims a queued request for sending, in its own transaction, so a retry of
+ * the job can tell it was already being sent. One found `sending` is closed:
+ * whether Safaricom got it is unknown, and asking again could charge twice.
+ */
+async function claimForSending(facilityId: string, requestId: string) {
+  return runAsFacility(facilityId, async (tx) => {
+    const [request] = await tx.select().from(mpesaStkRequests).where(eq(mpesaStkRequests.id, requestId)).for("update").limit(1);
+    if (request?.status === "sending") {
+      await closeFailed(tx, request.id, INTERRUPTED);
+      return null;
+    }
+    const [settings] = await tx.select().from(mpesaSettings).limit(1);
+    if (!request || request.status !== "queued")
+      return null;
+    if (!settings) {
+      await closeFailed(tx, request.id, "M-Pesa is not set up");
+      return null;
+    }
+    await tx.update(mpesaStkRequests).set({ status: "sending" }).where(eq(mpesaStkRequests.id, request.id));
+    return { request, settings, reference: await accountReference(tx, request) };
+  });
+}
+
+/** Outbox handler: sends a queued prompt once, and records what Safaricom said. */
+export async function sendStkPush(job: { facilityId: string; subjectId: string; finalAttempt?: boolean }): Promise<"done" | "skipped"> {
+  const claimed = await claimForSending(job.facilityId, job.subjectId);
+  if (!claimed)
+    return "skipped";
+  const { request, settings, reference } = claimed;
+
+  let sent: Awaited<ReturnType<typeof stkPush>>;
+  try {
+    sent = await stkPush({
+      shortcode: settings.shortcode,
+      credentials: credentialsOf(settings.credentials),
+      callbackUrl: callbackUrls(settings.callbackToken).stk,
+      phone: request.phone,
+      amountCents: request.amountCents,
+      accountReference: reference,
+      description: "Hospital bill",
+    });
+  }
+  catch (err) {
+    // Nothing reached Safaricom (the token could not be had, and not for want of
+    // valid credentials): the prompt goes back to the queue and the job is retried.
+    // On the last try the prompt is closed instead, so the cashier sees an outcome rather than `queued` for ever.
+    if (neverSent(err) && !(err instanceof DarajaError && err.definitive) && !job.finalAttempt) {
+      await runAsFacility(job.facilityId, async (tx) => {
+        await recordExchange(tx, job.facilityId, { operation: "stk_push", stkRequestId: request.id, error: errorLine(err) });
+        await tx.update(mpesaStkRequests).set({ status: "queued" }).where(eq(mpesaStkRequests.id, request.id));
+      });
+      throw err;
+    }
+    const reason = neverSent(err) && job.finalAttempt
+      ? "M-Pesa could not be reached after several tries; the prompt was not sent"
+      : err instanceof Error ? err.message : "The prompt could not be sent";
+    await runAsFacility(job.facilityId, async (tx) => {
+      await recordExchange(tx, job.facilityId, { operation: "stk_push", stkRequestId: request.id, ...exchangeOf(err), error: errorLine(err) });
+      await closeFailed(tx, request.id, reason);
+    });
+    return "done";
+  }
+
+  // If this write fails the job is retried, finds the request `sending`, and closes it: never a second prompt.
+  // On the last try there is no retry, and `closeAbandonedStkPush` closes it instead.
+  await runAsFacility(job.facilityId, tx => recordSent(tx, job.facilityId, request.id, sent));
+  return "done";
+}
+
+/**
+ * The outbox gave up on a prompt: its last try failed, or its worker died
+ * during it. One still `queued` or `sending` would otherwise wait for ever,
+ * with the cashier polling it, so it is closed, and never sent again.
+ */
+export async function closeAbandonedStkPush(job: { facilityId: string; subjectId: string }) {
+  await runAsFacility(job.facilityId, async (tx) => {
+    const [request] = await tx.select({ status: mpesaStkRequests.status }).from(mpesaStkRequests).where(eq(mpesaStkRequests.id, job.subjectId)).for("update").limit(1);
+    if (request?.status === "sending")
+      await closeFailed(tx, job.subjectId, INTERRUPTED);
+    else if (request?.status === "queued")
+      await closeFailed(tx, job.subjectId, "The prompt could not be sent");
+  });
+}
+
+/**
+ * Serialises the two writers of one checkout: the send recording Safaricom's
+ * answer, and a callback for it. Whichever comes second waits, then sees the
+ * first one's rows, so an early callback is never missed by both. Released
+ * when the transaction ends.
+ */
+export async function lockCheckout(tx: AppDb, facilityId: string, checkoutRequestId: string) {
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`stk:${facilityId}:${checkoutRequestId}`}, 0))`);
+}
+
+/** Records that Safaricom has the prompt, and applies a callback that beat this here. */
+export async function recordSent(tx: AppDb, facilityId: string, requestId: string, sent: Awaited<ReturnType<typeof stkPush>>) {
+  await lockCheckout(tx, facilityId, sent.checkoutRequestId);
+  await recordExchange(tx, facilityId, { operation: "stk_push", stkRequestId: requestId, ...sent });
+  // Safaricom has it, even if another delivery closed the request as interrupted meanwhile: reopened as sent.
+  await tx.update(mpesaStkRequests)
+    .set({ status: "sent", checkoutRequestId: sent.checkoutRequestId, resultCode: null, resultDesc: null, completedAt: null })
+    .where(and(eq(mpesaStkRequests.id, requestId), ne(mpesaStkRequests.status, "completed")));
+  await applyEarlyCallback(tx, facilityId, requestId, sent.checkoutRequestId);
+}
+
+const checkoutOf = stkCheckoutId;
+
+/**
+ * Safaricom can call back before we have recorded the checkout id. Such a
+ * callback was kept with no prompt: a payment in the queue, or a refusal in
+ * the exchanges. Once the checkout id is known, it is applied to its prompt.
+ */
+async function applyEarlyCallback(tx: AppDb, facilityId: string, requestId: string, checkoutRequestId: string) {
+  const [early] = await tx
+    .select()
+    .from(mpesaTransactions)
+    .where(and(eq(mpesaTransactions.source, "stk"), inArray(mpesaTransactions.status, ["unmatched", "allocated"]), sql`${checkoutOf(mpesaTransactions.rawPayload)} = ${checkoutRequestId}`))
+    .for("update")
+    .limit(1);
+  const [request] = await tx.select().from(mpesaStkRequests).where(eq(mpesaStkRequests.id, requestId)).limit(1);
+  // Placed from the queue by a person before the send was recorded: linked, not left `sent`.
+  if (early?.status === "allocated") {
+    if (request.status !== "completed")
+      await linkPlacedTransaction(tx, request, early);
+    return;
+  }
+  if (early) {
+    await settleForRequest(tx, facilityId, request, early);
+    return;
+  }
+  const [kept] = await tx
+    .select({ response: gatewayExchanges.response })
+    .from(gatewayExchanges)
+    .where(and(eq(gatewayExchanges.operation, "stk_callback"), sql`${checkoutOf(gatewayExchanges.response)} = ${checkoutRequestId}`))
+    .orderBy(desc(gatewayExchanges.createdAt))
+    .limit(1);
+  const callback = kept ? parseStkCallback(kept.response) : null;
+  if (!callback)
+    return;
+  if (callback.resultCode !== 0) {
+    await closeFailed(tx, request.id, callback.resultDesc, callback.resultCode);
+    return;
+  }
+  // Paid, and the paybill confirmation of the same payment came first, so the
+  // receipt is on file as that confirmation's: placed against the prompt, or linked if it was placed already.
+  if (!callback.receiptNumber || request.status === "completed")
+    return;
+  const [confirmed] = await tx.select().from(mpesaTransactions).where(eq(mpesaTransactions.transactionId, callback.receiptNumber)).for("update").limit(1);
+  if (confirmed?.status === "allocated")
+    await linkPlacedTransaction(tx, request, confirmed);
+  else if (confirmed?.status === "unmatched")
+    await settleForRequest(tx, facilityId, request, confirmed);
+}
+
+async function actorOf(tx: AppDb, membershipId: string): Promise<PatientActor> {
+  const [membership] = await tx.select({ userId: memberships.userId }).from(memberships).where(eq(memberships.id, membershipId)).limit(1);
+  return { userId: membership.userId, membershipId };
+}
+
+/**
+ * Places a prompt's money towards what the prompt was for, received by the
+ * cashier who asked. A different amount from the one prompted is left in
+ * the queue for a person: the patient may have paid something else.
+ */
+async function settleForRequest(tx: AppDb, facilityId: string, request: StkRow, transaction: TransactionRow): Promise<"paid" | "queued"> {
+  if (request.status === "completed")
+    return "queued";
+  if (transaction.amountCents !== request.amountCents) {
+    await tx.update(mpesaTransactions)
+      .set({ statusReason: `Paid ${formatKes(transaction.amountCents)} against a prompt for ${formatKes(request.amountCents)}; check before placing it` })
+      .where(eq(mpesaTransactions.id, transaction.id));
+    await closeFailed(tx, request.id, "Paid a different amount; the payment is in the M-Pesa queue");
+    return "queued";
+  }
+  const target = { patientId: request.patientId, invoiceId: request.invoiceId ?? undefined, encounterId: request.encounterId ?? undefined };
+  await settleTransaction(tx, facilityId, transaction, target, await actorOf(tx, request.requestedBy));
+  await tx.update(mpesaStkRequests)
+    .set({ status: "completed", resultCode: 0, resultDesc: null, mpesaTransactionId: transaction.id, completedAt: new Date() })
+    .where(eq(mpesaStkRequests.id, request.id));
+  return "paid";
+}
+
+/**
+ * A prompt's receipt that another path placed already (its paybill
+ * confirmation's reference, or a person): completed with that one payment if
+ * it is this patient's, for what the prompt was for, and this amount;
+ * otherwise closed naming it, so the prompt is never left `sent` with no
+ * outcome to come.
+ */
+async function linkPlacedTransaction(tx: AppDb, request: StkRow, transaction: TransactionRow) {
+  const [placed] = await tx
+    .select({ id: payments.id, patientId: accounts.patientId, encounterId: payments.encounterId })
+    .from(payments)
+    .innerJoin(accounts, eq(accounts.id, payments.accountId))
+    .where(and(eq(payments.mpesaTransactionId, transaction.id), isNull(payments.reversedAt)))
+    .limit(1);
+  if (placed?.patientId !== request.patientId) {
+    await closeFailed(tx, request.id, `Paid, but placed on another patient's account as M-Pesa ${transaction.transactionId}; check it`);
+    return;
+  }
+  if (!await placedOnTarget(tx, request, placed)) {
+    await closeFailed(tx, request.id, `Paid, but placed against another bill or visit as M-Pesa ${transaction.transactionId}; check it`);
+    return;
+  }
+  if (transaction.amountCents !== request.amountCents) {
+    await closeFailed(tx, request.id, `Paid ${formatKes(transaction.amountCents)} instead, already placed as M-Pesa ${transaction.transactionId}`);
+    return;
+  }
+  await tx.update(mpesaStkRequests)
+    .set({ status: "completed", resultCode: 0, resultDesc: null, mpesaTransactionId: transaction.id, completedAt: new Date() })
+    .where(eq(mpesaStkRequests.id, request.id));
+}
+
+/**
+ * A prompt for a bill needs the payment on that bill; one for a stay needs it
+ * as that stay's deposit. One for an outpatient visit shows the patient's
+ * number, so its paybill confirmation places patient credit (SCHEMA.md), and
+ * that is accepted as well as a deposit on the visit.
+ */
+async function placedOnTarget(tx: AppDb, request: StkRow, placed: { id: string; encounterId: string | null }) {
+  if (request.invoiceId) {
+    const [allocation] = await tx
+      .select({ id: allocations.id })
+      .from(allocations)
+      .where(and(eq(allocations.paymentId, placed.id), eq(allocations.invoiceId, request.invoiceId), isNull(allocations.reversedAt)))
+      .limit(1);
+    return Boolean(allocation);
+  }
+  if (!request.encounterId || placed.encounterId === request.encounterId)
+    return true;
+  if (placed.encounterId !== null)
+    return false;
+  const [stay] = await tx.select({ id: admissions.encounterId }).from(admissions).where(eq(admissions.encounterId, request.encounterId)).limit(1);
+  return !stay;
+}
+
+export type StkCallbackRecord
+  = | { outcome: "failed" | "unusable" | "queued" }
+    | { outcome: "settle"; requestId: string; transactionId: string };
+
+/**
+ * Safaricom's answer to a prompt, kept in its own transaction: the exchange,
+ * and money received as an M-Pesa transaction. A failure closes the prompt.
+ * Placing the money is a second step (`settleStkCallback`), so if that fails
+ * the payment still waits in the queue. A receipt already on file is
+ * Safaricom repeating itself, or the paybill confirmation of the same
+ * payment arriving first; the latter, still unplaced, is placed against the
+ * prompt.
+ */
+export async function recordStkCallback(
+  tx: AppDb,
+  facilityId: string,
+  shortcode: string,
+  callback: StkCallback,
+  payload: unknown,
+): Promise<StkCallbackRecord> {
+  // Waits for a send recording this checkout id to commit, so the request lookup sees it.
+  if (callback.checkoutRequestId)
+    await lockCheckout(tx, facilityId, callback.checkoutRequestId);
+  const [request] = callback.checkoutRequestId
+    ? await tx.select().from(mpesaStkRequests).where(eq(mpesaStkRequests.checkoutRequestId, callback.checkoutRequestId)).for("update").limit(1)
+    : [];
+  await recordExchange(tx, facilityId, { operation: "stk_callback", stkRequestId: request?.id ?? null, response: payload as Record<string, unknown> });
+
+  if (callback.resultCode !== 0) {
+    if (request?.status === "sent")
+      await closeFailed(tx, request.id, callback.resultDesc, callback.resultCode);
+    return { outcome: "failed" };
+  }
+  // No receipt, or no amount that could be stored: nothing can be booked. The callback is kept above, and the caller logs it.
+  const amountCents = callback.amountCents;
+  if (!callback.receiptNumber || amountCents === null || !Number.isSafeInteger(amountCents) || amountCents <= 0 || amountCents > MAX_AMOUNT_CENTS || amountCents % 100 !== 0)
+    return { outcome: "unusable" };
+
+  let transaction: TransactionRow;
+  try {
+    [transaction] = await tx.transaction(sp => sp.insert(mpesaTransactions).values({
+      facilityId,
+      source: "stk",
+      transactionId: callback.receiptNumber!,
+      shortcode,
+      msisdn: (callback.phone && normalizePhone(callback.phone)) ?? callback.phone ?? request?.phone ?? "unknown",
+      amountCents,
+      transactedAt: callback.transactedAt ?? new Date(),
+      rawPayload: payload as Record<string, unknown>,
+      statusReason: request ? "Paid for an M-Pesa prompt; not yet placed" : "No prompt on record for this payment",
+    }).returning());
+    // Each receipt once, as a paybill confirmation's is: a repeat lands in the catch below.
+    await recordAudit(tx, {
+      facilityId,
+      actorId: null,
+      action: "mpesa.received",
+      entityType: "mpesa_transaction",
+      entityId: transaction.id,
+      summary: `M-Pesa ${transaction.transactionId} received`,
+      detail: { amountCents, source: "stk", stkRequestId: request?.id ?? null },
+    });
+  }
+  catch (err) {
+    if (!isUniqueViolation(err))
+      throw err;
+    [transaction] = await tx.select().from(mpesaTransactions).where(eq(mpesaTransactions.transactionId, callback.receiptNumber)).for("update").limit(1);
+    // The paybill confirmation came first and its reference placed it already.
+    if (transaction?.status === "allocated" && request && request.status !== "completed") {
+      await linkPlacedTransaction(tx, request, transaction);
+      return { outcome: "queued" };
+    }
+    if (!transaction || transaction.status !== "unmatched")
+      return { outcome: "queued" };
+  }
+
+  // A prompt we closed as failed (interrupted, or a timeout) can still have been paid: place it all the same.
+  if (!request || request.status === "completed")
+    return { outcome: "queued" };
+  return { outcome: "settle", requestId: request.id, transactionId: transaction.id };
+}
+
+/** The second step: places a kept STK payment towards its prompt. Safe to repeat. */
+export async function settleStkCallback(tx: AppDb, facilityId: string, requestId: string, transactionId: string): Promise<"paid" | "queued"> {
+  const [request] = await tx.select().from(mpesaStkRequests).where(eq(mpesaStkRequests.id, requestId)).for("update").limit(1);
+  const [transaction] = await tx.select().from(mpesaTransactions).where(eq(mpesaTransactions.id, transactionId)).for("update").limit(1);
+  if (!request || !transaction || request.status === "completed")
+    return "queued";
+  // Placed by another path between the two steps (a person, or its paybill confirmation): linked, not left `sent`.
+  if (transaction.status === "allocated") {
+    await linkPlacedTransaction(tx, request, transaction);
+    return "queued";
+  }
+  if (transaction.status !== "unmatched")
+    return "queued";
+  return settleForRequest(tx, facilityId, request, transaction);
+}
+
+/** A prompt as the cashier polls it, with the payment it became and whether that was reversed. */
+export async function stkRequestView(tx: AppDb, id: string) {
+  const [request] = await tx.select().from(mpesaStkRequests).where(eq(mpesaStkRequests.id, id)).limit(1);
+  if (!request)
+    return null;
+  const [paid] = request.mpesaTransactionId
+    ? await tx
+        .select({ receiptNumber: mpesaTransactions.transactionId, paymentId: payments.id, reversedAt: payments.reversedAt })
+        .from(mpesaTransactions)
+        // This patient's payments only: reversed and placed on someone else from the queue, the money is no longer the prompt's.
+        .leftJoin(payments, and(
+          eq(payments.mpesaTransactionId, mpesaTransactions.id),
+          inArray(payments.accountId, tx.select({ id: accounts.id }).from(accounts).where(eq(accounts.patientId, request.patientId))),
+        ))
+        .where(eq(mpesaTransactions.id, request.mpesaTransactionId))
+        // The live payment if there is one (it may have been reversed and placed again), else the reversed one.
+        .orderBy(sql`${payments.reversedAt} IS NULL DESC`, desc(payments.receivedAt))
+        .limit(1)
+    : [];
+  return {
+    ...request,
+    receiptNumber: paid?.receiptNumber ?? null,
+    paymentId: paid?.paymentId ?? null,
+    paymentReversed: paid?.reversedAt != null,
+  };
+}
