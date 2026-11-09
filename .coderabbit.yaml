@@ -1,5 +1,14 @@
 # CodeRabbit review settings.
 reviews:
+  # Only the most important findings become inline comments; the rest go into
+  # the review summary, where they need no reply.
+  profile: quiet
+  auto_review:
+    # Review once when a PR opens. Later pushes are reviewed only on request
+    # (comment `@coderabbitai review` on the PR). Re-reviewing every push
+    # turned PR #9 into nine rounds and 82 threads, and spends the free tier's
+    # review budget.
+    auto_incremental_review: false
   path_filters:
     # Drizzle's generated migration snapshots and journal: machine-written
     # JSON nobody reviews by hand. The .sql migrations beside them are still
