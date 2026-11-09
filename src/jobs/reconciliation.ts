@@ -14,7 +14,10 @@ import { reconcile } from "@/lib/reconciliation";
  * "money identities drifted" for alerting, with ids and counts only.
  */
 
-/** Findings per insert: well inside Postgres's limit on bind parameters (four per row). */
+/**
+ * Findings per insert (four bind parameters a row) and per resolving update
+ * (one a row): well inside Postgres's limit of 65,535 bind parameters.
+ */
 const FINDINGS_PER_INSERT = 500;
 
 export async function reconcileAll() {
@@ -33,8 +36,8 @@ export async function reconcileAll() {
           .where(and(eq(jobFailures.job, "reconciliation"), isNull(jobFailures.resolvedAt)));
         // In bulk, so a bad night's many findings cost a few statements, not one round trip each.
         const fixed = open.filter(row => !current.has(`${row.subjectId}|${row.error}`)).map(row => row.id);
-        if (fixed.length > 0)
-          await tx.update(jobFailures).set({ resolvedAt: new Date() }).where(inArray(jobFailures.id, fixed));
+        for (let i = 0; i < fixed.length; i += FINDINGS_PER_INSERT)
+          await tx.update(jobFailures).set({ resolvedAt: new Date() }).where(inArray(jobFailures.id, fixed.slice(i, i + FINDINGS_PER_INSERT)));
         for (let i = 0; i < drift.length; i += FINDINGS_PER_INSERT) {
           await tx.insert(jobFailures)
             .values(drift.slice(i, i + FINDINGS_PER_INSERT).map(finding => ({

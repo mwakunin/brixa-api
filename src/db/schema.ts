@@ -1460,7 +1460,8 @@ export const mpesaTransactions = pgTable("mpesa_transactions", {
   unique("mpesa_transactions_facility_id_transaction_id_key").on(t.facilityId, t.transactionId),
   index("mpesa_transactions_status_index").on(t.facilityId, t.status),
   // An early STK callback, found by its checkout id once the send records it.
-  index("mpesa_transactions_stk_checkout_index").on(t.facilityId, stkCheckoutId(t.rawPayload)).where(sql`${t.source} = 'stk'`),
+  // Hash, not btree: a btree entry has a size limit, and an oversized id from a caller would make the insert fail.
+  index("mpesa_transactions_stk_checkout_index").using("hash", stkCheckoutId(t.rawPayload)).where(sql`${t.source} = 'stk'`),
   oneOf("mpesa_transactions_source_known", t.source, ["c2b", "stk"]),
   oneOf("mpesa_transactions_status_known", t.status, ["unmatched", "allocated", "rejected"]),
   check("mpesa_transactions_amount_whole_shillings", sql`${t.amountCents} > 0 AND ${t.amountCents} % 100 = 0`),
@@ -1537,7 +1538,8 @@ export const gatewayExchanges = pgTable("gateway_exchanges", {
   foreignKey({ name: "gateway_exchanges_stk_request_fk", columns: [t.facilityId, t.stkRequestId], foreignColumns: [mpesaStkRequests.facilityId, mpesaStkRequests.id] }),
   index("gateway_exchanges_stk_request_index").on(t.stkRequestId),
   // An early refusal, found by its checkout id once the send records it.
-  index("gateway_exchanges_stk_checkout_index").on(t.facilityId, stkCheckoutId(t.response)).where(sql`${t.operation} = 'stk_callback'`),
+  // Hash, like the transactions' one: kept callbacks must never be refused for their id's size.
+  index("gateway_exchanges_stk_checkout_index").using("hash", stkCheckoutId(t.response)).where(sql`${t.operation} = 'stk_callback'`),
   oneOf("gateway_exchanges_gateway_known", t.gateway, ["daraja"]),
   oneOf("gateway_exchanges_operation_known", t.operation, ["register_urls", "stk_push", "stk_callback", "c2b_confirmation"]),
   check("gateway_exchanges_register_has_no_request", sql`${t.operation} NOT IN ('register_urls', 'c2b_confirmation') OR ${t.stkRequestId} IS NULL`),

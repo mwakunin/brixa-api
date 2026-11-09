@@ -340,7 +340,12 @@ async function linkPlacedTransaction(tx: AppDb, request: StkRow, transaction: Tr
     .where(eq(mpesaStkRequests.id, request.id));
 }
 
-/** A prompt for a bill needs the payment on that bill; one for a stay needs it as that stay's deposit. */
+/**
+ * A prompt for a bill needs the payment on that bill; one for a stay needs it
+ * as that stay's deposit. One for an outpatient visit shows the patient's
+ * number, so its paybill confirmation places patient credit (SCHEMA.md), and
+ * that is accepted as well as a deposit on the visit.
+ */
 async function placedOnTarget(tx: AppDb, request: StkRow, placed: { id: string; encounterId: string | null }) {
   if (request.invoiceId) {
     const [allocation] = await tx
@@ -350,9 +355,12 @@ async function placedOnTarget(tx: AppDb, request: StkRow, placed: { id: string; 
       .limit(1);
     return Boolean(allocation);
   }
-  if (request.encounterId)
-    return placed.encounterId === request.encounterId;
-  return true;
+  if (!request.encounterId || placed.encounterId === request.encounterId)
+    return true;
+  if (placed.encounterId !== null)
+    return false;
+  const [stay] = await tx.select({ id: admissions.encounterId }).from(admissions).where(eq(admissions.encounterId, request.encounterId)).limit(1);
+  return !stay;
 }
 
 export type StkCallbackRecord

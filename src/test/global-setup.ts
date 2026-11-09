@@ -1,6 +1,7 @@
 /* eslint-disable node/no-process-env */
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
+import { Redis } from "ioredis";
 import { Pool } from "pg";
 
 /**
@@ -30,5 +31,19 @@ export default async function setup() {
   }
   finally {
     await pool.end();
+  }
+
+  // Checked once here, so a missing Redis stops the suite at the start instead of failing every test in turn.
+  const redis = new Redis(env.REDIS_URL, { lazyConnect: true, connectTimeout: 5000, maxRetriesPerRequest: 0, retryStrategy: () => null });
+  redis.on("error", () => {});
+  try {
+    await redis.connect();
+    await redis.ping();
+  }
+  catch (err) {
+    throw new Error("Redis for the tests is not reachable; start it with `docker compose up -d redis`", { cause: err });
+  }
+  finally {
+    redis.disconnect();
   }
 }

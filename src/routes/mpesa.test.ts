@@ -1,4 +1,5 @@
 import { eq, sql } from "drizzle-orm";
+import { randomBytes } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Hospital, Person } from "@/test/hospital";
@@ -376,6 +377,24 @@ describe("m-Pesa prompts", () => {
     expect(await db.select().from(payments)).toHaveLength(1);
   });
 
+  it("for an outpatient visit complete their prompt when the paybill confirmation placed the payment as credit first", async () => {
+    await setUp();
+    const patientId = await h.patient();
+    const { id: encounterId } = await (await call("POST", "/encounters", h.facility.id, h.nurse, { patientId, kind: "opd" })).json();
+    const request = await (await prompt({ patientId, phone: "0712345678", amountCents: 60_000, encounterId })).json();
+    daraja();
+    await drainOutbox();
+
+    // A visit's prompt shows the patient's number, so its confirmation places patient credit, not a visit deposit.
+    const [op] = (await pool.query("SELECT number FROM patient_numbers WHERE patient_id = $1 AND kind = 'outpatient'", [patientId])).rows;
+    await post("/c2b/confirmation", confirmation({ TransID: "SKVISIT001", TransAmount: "600.00", BillRefNumber: op.number }));
+    expect(await paymentOf("SKVISIT001")).toMatchObject({ encounterId: null });
+    await paid("ws_CO_1", "SKVISIT001", 600);
+
+    expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).toMatchObject({ status: "completed", receiptNumber: "SKVISIT001" });
+    expect(await db.select().from(payments)).toHaveLength(1);
+  });
+
   it("close their prompt when the paybill confirmation placed a different amount first", async () => {
     await setUp();
     const patientId = await h.patient();
@@ -682,6 +701,16 @@ describe("m-Pesa prompts", () => {
     expect(answer.status).toBe(200);
     expect(await db.select().from(gatewayExchanges).where(eq(gatewayExchanges.operation, "stk_callback"))).toMatchObject([{ error: "Could not be read" }]);
     expect((await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).status).toBe("sent");
+  });
+
+  it("whose callback carries an oversized checkout id still keep it", async () => {
+    await setUp();
+
+    // Incompressible and far past a btree index entry's limit: an index on the id itself would refuse the row.
+    const answer = await callback({ CheckoutRequestID: randomBytes(8_000).toString("base64"), ResultCode: 1032, ResultDesc: "Cancelled" });
+
+    expect(answer.status).toBe(200);
+    expect(await db.select().from(gatewayExchanges).where(eq(gatewayExchanges.operation, "stk_callback"))).toHaveLength(1);
   });
 
   it("whose callback cannot be recorded keep it as Safaricom sent it, since Safaricom does not call again", async () => {

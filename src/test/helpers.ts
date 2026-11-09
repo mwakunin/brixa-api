@@ -20,15 +20,25 @@ import { redis } from "@/lib/redis";
  * a command sent before it is ready is refused; under a full suite's load a
  * fresh worker's first reset can get there first.
  */
+let redisDown: Error | undefined;
+
 async function redisReady() {
   if (redis.status === "ready")
     return;
+  // Waited for once: every later reset fails at once, rather than ten seconds each.
+  if (redisDown)
+    throw redisDown;
   await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`Redis not ready (${redis.status})`)), 10_000);
-    redis.once("ready", () => {
+    const timer = setTimeout(() => {
+      redis.off("ready", onReady);
+      redisDown = new Error(`Redis not ready (${redis.status}); is docker compose up?`);
+      reject(redisDown);
+    }, 10_000);
+    function onReady() {
       clearTimeout(timer);
       resolve();
-    });
+    }
+    redis.once("ready", onReady);
   });
 }
 
