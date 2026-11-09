@@ -469,7 +469,11 @@ export async function stkRequestView(tx: AppDb, id: string) {
     ? await tx
         .select({ receiptNumber: mpesaTransactions.transactionId, paymentId: payments.id, reversedAt: payments.reversedAt })
         .from(mpesaTransactions)
-        .leftJoin(payments, eq(payments.mpesaTransactionId, mpesaTransactions.id))
+        // This patient's payments only: reversed and placed on someone else from the queue, the money is no longer the prompt's.
+        .leftJoin(payments, and(
+          eq(payments.mpesaTransactionId, mpesaTransactions.id),
+          inArray(payments.accountId, tx.select({ id: accounts.id }).from(accounts).where(eq(accounts.patientId, request.patientId))),
+        ))
         .where(eq(mpesaTransactions.id, request.mpesaTransactionId))
         // The live payment if there is one (it may have been reversed and placed again), else the reversed one.
         .orderBy(sql`${payments.reversedAt} IS NULL DESC`, desc(payments.receivedAt))

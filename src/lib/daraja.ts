@@ -339,7 +339,20 @@ export interface StkCallback {
   transactedAt: Date | null;
 }
 
+/**
+ * Null if it cannot be read, including a value that throws when read (an
+ * object whose `valueOf` is no function): the caller keeps it as unreadable.
+ */
 export function parseStkCallback(payload: unknown): StkCallback | null {
+  try {
+    return readStkCallback(payload);
+  }
+  catch {
+    return null;
+  }
+}
+
+function readStkCallback(payload: unknown): StkCallback | null {
   const stk = (payload as { Body?: { stkCallback?: Record<string, unknown> } })?.Body?.stkCallback;
   if (!stk || typeof stk !== "object")
     return null;

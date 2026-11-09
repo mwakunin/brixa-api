@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { EnvSchema } from "./env";
 
@@ -39,6 +39,10 @@ const DEFAULT = "Must not use the development default password from db/roles.sql
 const REPEATED = "Must not repeat the user or password parameter: pg uses the last one";
 
 describe("production database URLs", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("refuse the default passwords db/roles.sql creates", () => {
     const input = production(
       "postgresql://hospital_app:hospital_app@db.example.test/hms",
@@ -77,8 +81,14 @@ describe("production database URLs", () => {
       "postgresql://hospital_app:from-secret-manager-1@db.example.test/hms",
       "postgresql://hospital_auth:from-secret-manager-2@db.example.test/hms",
     );
+    // Three production checks read the process environment itself, to tell "set" from "defaulted".
+    vi.stubEnv("MPESA_ENV", input.MPESA_ENV);
+    vi.stubEnv("TRUST_PROXY_HOPS", input.TRUST_PROXY_HOPS);
+    vi.stubEnv("APP_URL", input.APP_URL);
 
-    expect(issuesAt(input, "APP_DATABASE_URL")).not.toContain(DEFAULT);
-    expect(issuesAt(input, "AUTH_DATABASE_URL")).not.toContain(DEFAULT);
+    // The whole configuration starts, not just "this one complaint is absent".
+    const result = EnvSchema.safeParse(input);
+    expect(result.error?.issues ?? []).toEqual([]);
+    expect(result.success).toBe(true);
   });
 });

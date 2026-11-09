@@ -601,11 +601,13 @@ describe("m-Pesa prompts", () => {
       await callback({ CheckoutRequestID: "ws_CO_bad1", ResultCode: "invalid", ResultDesc: "?" }),
       await callback({ CheckoutRequestID: "ws_CO_bad2", ResultCode: 0, ResultDesc: "Processed", CallbackMetadata: { Item: [null, { Name: "MpesaReceiptNumber", Value: "SKNULLS001" }] } }),
       await callback({ CheckoutRequestID: "ws_CO_bad3", ResultCode: 0, ResultDesc: "Processed", CallbackMetadata: { Item: [{ Name: "Amount", Value: -5 }, { Name: "MpesaReceiptNumber", Value: "SKNEGATIVE" }] } }),
+      // An object no number can be made of: reading it throws, rather than giving NaN.
+      await callback({ CheckoutRequestID: "ws_CO_bad4", ResultCode: { valueOf: 1, toString: 1 }, ResultDesc: "?" }),
     ];
 
-    expect(answers.map(a => a.status)).toEqual([200, 200, 200]);
+    expect(answers.map(a => a.status)).toEqual([200, 200, 200, 200]);
     expect(await db.select().from(mpesaTransactions)).toHaveLength(0);
-    expect(await db.select().from(gatewayExchanges).where(eq(gatewayExchanges.operation, "stk_callback"))).toHaveLength(3);
+    expect(await db.select().from(gatewayExchanges).where(eq(gatewayExchanges.operation, "stk_callback"))).toHaveLength(4);
   });
 
   it("are never sent again once sending began, even if the worker died", async () => {
@@ -767,6 +769,25 @@ describe("m-Pesa prompts", () => {
     expect(fetch.mock.calls.filter(([url]) => String(url).includes("stkpush"))).toHaveLength(0);
     expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json())
       .toMatchObject({ status: "failed", resultDesc: expect.stringContaining("Sending was interrupted") });
+  });
+
+  it("show their own patient's payment, not the one their transaction became after a reversal", async () => {
+    await setUp();
+    const patientId = await h.patient();
+    const request = await (await prompt({ patientId, phone: "0712345678", amountCents: 10_000 })).json();
+    daraja();
+    await drainOutbox();
+    await paid("ws_CO_1", "SKMOVED001", 100);
+    const first = await paymentOf("SKMOVED001");
+
+    // Reversed, and the money placed on someone else from the queue.
+    await call("POST", `/payments/${first.id}/reverse`, h.facility.id, h.finance, { reason: "Wrong patient" });
+    const other = await h.patient();
+    const [transaction] = await db.select().from(mpesaTransactions);
+    expect((await call("POST", `/mpesa/transactions/${transaction.id}/assign`, h.facility.id, h.clerk, { patientId: other })).status).toBe(200);
+
+    expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json())
+      .toMatchObject({ status: "completed", paymentId: first.id, paymentReversed: true });
   });
 
   it("paid in a different amount wait for review, and one accepted without a checkout id fails", async () => {

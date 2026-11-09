@@ -44,7 +44,7 @@ Every external call is an outbox row, drained by `POST /internal/outbox/drain` (
    - `jsonPayload.msg = "outbox job failed permanently"`: a job will not be retried. The line carries `outboxId`, `facilityId` and `operation`; the row's `last_error` says why.
    - `jsonPayload.msg = "outbox nudge failed; the scheduled sweep will deliver"`: Cloud Tasks could not be reached. Worth a look if it persists.
    - `jsonPayload.msg = "job failed for a facility"`: a nightly job (`job`: the bed-day run or the reconciliation check) failed for one facility (`facilityId`). Nights the bed-day run could not price are listed in that facility's `job_failures` instead.
-   - **A scheduled job that failed as a whole**: `resource.type = "cloud_scheduler_job"` with `severity >= ERROR`, i.e. the attempt got no 2xx from `/internal/jobs/…` even after its retries. The run did not finish: facilities whose transaction committed before the failure were checked or charged, the rest were not. Both jobs are idempotent, so running the job again by hand completes the night without repeating anything.
+   - **A scheduled job that failed as a whole**: `resource.type = "cloud_scheduler_job"` with `severity >= ERROR`, i.e. the attempt got no 2xx from `/internal/jobs/…` even after its retries. Whether the run finished is unknown: a timeout or a lost response can come after the work committed, or while the handler is still running. Facilities whose transaction committed were checked or charged; any others were not. Both jobs are idempotent, so running the job again by hand completes the night without repeating anything.
 
 ## 3. File storage
 
