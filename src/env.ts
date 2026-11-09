@@ -29,31 +29,35 @@ function unsetIfBlank<T extends z.ZodType>(schema: T) {
 }
 
 /**
- * The username `pg` will use: a `?user=` parameter wins over the user-info
- * part, as in pg-connection-string. Undefined if the DSN isn't parseable.
+ * A credential as `pg` will use it: a `?user=` or `?password=` parameter wins
+ * over the user-info part, and of repeated parameters the last wins, as in
+ * pg-connection-string. Undefined if the DSN isn't parseable.
  */
-function parseRole(dsn: string | undefined): string | undefined {
+function credentialOf(dsn: string | undefined, name: "user" | "password"): string | undefined {
   if (!dsn)
     return undefined;
   try {
     const url = new URL(dsn);
-    return url.searchParams.get("user") || decodeURIComponent(url.username) || undefined;
+    return url.searchParams.getAll(name).at(-1) || decodeURIComponent(name === "user" ? url.username : url.password) || undefined;
   }
   catch {
     return undefined;
   }
 }
 
-/** The password `pg` will use: a `?password=` parameter wins, as for the user. */
-function parsePassword(dsn: string | undefined): string | undefined {
+const parseRole = (dsn: string | undefined) => credentialOf(dsn, "user");
+const parsePassword = (dsn: string | undefined) => credentialOf(dsn, "password");
+
+/** True if the DSN repeats a `user` or `password` parameter. */
+function repeatsCredential(dsn: string | undefined): boolean {
   if (!dsn)
-    return undefined;
+    return false;
   try {
-    const url = new URL(dsn);
-    return url.searchParams.get("password") || decodeURIComponent(url.password) || undefined;
+    const { searchParams } = new URL(dsn);
+    return searchParams.getAll("user").length > 1 || searchParams.getAll("password").length > 1;
   }
   catch {
-    return undefined;
+    return false;
   }
 }
 
@@ -267,6 +271,13 @@ export const EnvSchema = z.object({
      *   auth = owner  Better Auth could read every tenant table
      *   auth = app    tenant handlers could read session tokens again
      */
+    // Each check below reads the value pg uses, but a DSN that says two things
+    // is refused outright rather than trusted to be read the same way everywhere.
+    for (const key of ["DATABASE_URL", "APP_DATABASE_URL", "AUTH_DATABASE_URL"] as const) {
+      if (repeatsCredential(input[key]))
+        ctx.addIssue({ code: "custom", path: [key], message: "Must not repeat the user or password parameter: pg uses the last one" });
+    }
+
     const roles = [
       ["DATABASE_URL", parseRole(input.DATABASE_URL)],
       ["APP_DATABASE_URL", parseRole(input.APP_DATABASE_URL)],

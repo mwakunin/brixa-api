@@ -323,6 +323,10 @@ export function parseC2bConfirmation(payload: unknown): C2bConfirmation | null {
   };
 }
 
+/** The range of Postgres's signed 32-bit `integer`, the result code's column. */
+const PG_INT_MIN = -(2 ** 31);
+const PG_INT_MAX = 2 ** 31 - 1;
+
 /** An STK push's outcome, as Safaricom calls back with it. */
 export interface StkCallback {
   /** Null if Safaricom left it out: the money, if any, still has to be kept. */
@@ -339,9 +343,9 @@ export function parseStkCallback(payload: unknown): StkCallback | null {
   const stk = (payload as { Body?: { stkCallback?: Record<string, unknown> } })?.Body?.stkCallback;
   if (!stk || typeof stk !== "object")
     return null;
-  // A result code that is not a whole number cannot be stored, so the callback is kept as unreadable instead.
+  // A result code that does not fit Postgres's `integer` cannot be stored, so the callback is kept as unreadable instead.
   const resultCode = Number(stk.ResultCode);
-  if (stk.ResultCode === undefined || stk.ResultCode === null || !Number.isSafeInteger(resultCode))
+  if (stk.ResultCode === undefined || stk.ResultCode === null || !Number.isInteger(resultCode) || resultCode < PG_INT_MIN || resultCode > PG_INT_MAX)
     return null;
   const items = (stk.CallbackMetadata as { Item?: unknown[] } | undefined)?.Item;
   const pick = (name: string) => {

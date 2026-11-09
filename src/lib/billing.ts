@@ -26,7 +26,7 @@ import { applyCredit, lockEncounterCredit } from "./allocations";
 import { recordAudit } from "./audit";
 import { businessDate, printedDate } from "./dates";
 import { issueDocument, voidDocument } from "./documents";
-import { adjustedCents, allocatedCents } from "./invoice-balance";
+import { adjustedCents, allocatedCents, takenOffCents } from "./invoice-balance";
 import { formatKes, printedQuantity } from "./money";
 
 /**
@@ -530,8 +530,8 @@ export async function invoiceDetail(tx: AppDb, invoiceId: string) {
     .orderBy(asc(invoiceAdjustments.requestedAt), asc(invoiceAdjustments.id));
 
   const totalCents = row.invoice.totalCents ?? lines.reduce((sum, l) => sum + l.amountCents, 0);
-  const adjusted = adjustments.filter(a => a.status === "approved" && !a.reversedAt).reduce((sum, a) => sum + a.amountCents, 0);
-  const paidCents = await allocatedCents(tx, invoiceId);
+  // From one snapshot, so the balance never mixes a reversal with a payment that came after it.
+  const { adjustedCents: adjusted, allocatedCents: paidCents } = await takenOffCents(tx, invoiceId);
   return {
     ...row.invoice,
     number: row.number,

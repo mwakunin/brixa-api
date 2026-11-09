@@ -20,7 +20,7 @@ What the API needs from Google Cloud before it can run in production. The code r
 | `STORAGE_DRIVER`, `STORAGE_BUCKET` | `gcs`, and the bucket in §3 |
 | `TASKS_QUEUE`, `TASKS_INVOKER_EMAIL` | The queue and service account in §2 |
 | `CREDENTIALS_ENCRYPTION_KEY` | Base64 of 32 random bytes, from Secret Manager: encrypts each facility's Daraja credentials. Losing it means every facility re-enters them |
-| `MPESA_ENV` | `production` once a facility goes live; `sandbox` until then |
+| `MPESA_ENV` | `sandbox` until the first facility goes live, then `production`. It is one setting for the whole deployment: once it is `production`, every facility's prompts and URL registrations go to Safaricom's live host, so a facility still testing on sandbox credentials stops working. Switch it once, when the first facility goes live, and onboard every later facility with live credentials; test on staging, which keeps `sandbox` |
 | `MPESA_CALLBACK_ALLOWED_IPS` | Optional: Safaricom's published callback addresses. Advisory, never used to refuse |
 
 **M-Pesa callback URLs carry a secret.** Each facility's `/webhooks/mpesa/{token}/…` path holds the token that lets a caller post payment confirmations for it. The API never writes it to its own logs (`loggedPath`) or to `gateway_exchanges`, but **Cloud Run's request logs record every request URL**. Add a Cloud Logging exclusion for `httpRequest.requestUrl =~ "/webhooks/mpesa/"` on the `run.googleapis.com/requests` log, or restrict who may read it.

@@ -4,6 +4,8 @@ import db from "@/db";
 import { mpesaSettings, mpesaTransactions } from "@/db/schema";
 import { runAsFacility } from "@/db/tenant-transaction";
 
+import type { StkCallbackRecord } from "./mpesa-stk";
+
 import { recordAudit } from "./audit";
 import { secretEquals } from "./crypto";
 import { parseC2bConfirmation, parseStkCallback } from "./daraja";
@@ -35,10 +37,10 @@ async function facilityForToken(token: string) {
   return settings && secretEquals(settings.callbackToken, token) ? settings : null;
 }
 
-/** A callback we could not read, kept exactly as sent (rule 18), for a person to recover by hand. */
-async function keepUnparsed(facilityId: string, operation: "c2b_confirmation" | "stk_callback", payload: unknown) {
+/** A callback we could not read or record, kept exactly as sent (rule 18), for a person to recover by hand. */
+async function keepUnparsed(facilityId: string, operation: "c2b_confirmation" | "stk_callback", payload: unknown, error = "Could not be read") {
   await runAsFacility(facilityId, tx =>
-    recordExchange(tx, facilityId, { operation, response: payload as Record<string, unknown>, error: "Could not be read" }));
+    recordExchange(tx, facilityId, { operation, response: payload as Record<string, unknown>, error }));
 }
 
 /** Daraja treats anything else as a failure and retries. */
@@ -150,7 +152,17 @@ export async function onStkCallback(token: string, payload: unknown): Promise<Ca
     return { status: 200, body: ACCEPTED };
   }
   // Kept first, in its own transaction, as a paybill confirmation is: placing it can then fail without losing it.
-  const recorded = await runAsFacility(settings.facilityId, tx => recordStkCallback(tx, settings.facilityId, settings.shortcode, parsed, payload));
+  let recorded: StkCallbackRecord;
+  try {
+    recorded = await runAsFacility(settings.facilityId, tx => recordStkCallback(tx, settings.facilityId, settings.shortcode, parsed, payload));
+  }
+  catch (err) {
+    // Safaricom does not call back again, so what it said is kept by itself for a
+    // person to place. If even that fails, the error stands and nothing is acknowledged.
+    await keepUnparsed(settings.facilityId, "stk_callback", payload, "Could not be recorded");
+    logger.error({ error: errorLine(err), facilityId: settings.facilityId, transactionId: parsed.receiptNumber }, "Failed to record an M-Pesa prompt callback; kept for a person to place");
+    return { status: 200, body: ACCEPTED };
+  }
   if (recorded.outcome === "unusable")
     logger.error({ facilityId: settings.facilityId }, "M-Pesa prompt callback reported success without a receipt or amount");
   if (recorded.outcome === "settle") {

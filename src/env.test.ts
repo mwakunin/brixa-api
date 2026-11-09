@@ -36,6 +36,7 @@ function issuesAt(input: Record<string, unknown>, key: string) {
 }
 
 const DEFAULT = "Must not use the development default password from db/roles.sql in production";
+const REPEATED = "Must not repeat the user or password parameter: pg uses the last one";
 
 describe("production database URLs", () => {
   it("refuse the default passwords db/roles.sql creates", () => {
@@ -56,6 +57,19 @@ describe("production database URLs", () => {
 
     expect(issuesAt(input, "APP_DATABASE_URL")).toContain(DEFAULT);
     expect(issuesAt(input, "AUTH_DATABASE_URL")).toContain(DEFAULT);
+  });
+
+  it("refuse a repeated user or password parameter, since pg takes the last one and the checks could read another", () => {
+    const input = production(
+      "postgresql://db.example.test/hms?user=hospital_app&password=from-secret-manager-1&password=hospital_app",
+      "postgresql://db.example.test/hms?user=hospital_auth&user=hospital&password=from-secret-manager-2",
+    );
+
+    expect(issuesAt(input, "APP_DATABASE_URL")).toContain(REPEATED);
+    expect(issuesAt(input, "AUTH_DATABASE_URL")).toContain(REPEATED);
+    // And each check reads the value pg will use: the last.
+    expect(issuesAt(input, "APP_DATABASE_URL")).toContain(DEFAULT);
+    expect(issuesAt(input, "AUTH_DATABASE_URL")).toContainEqual(expect.stringContaining("Must connect as a different role from DATABASE_URL"));
   });
 
   it("accept passwords set out of band", () => {

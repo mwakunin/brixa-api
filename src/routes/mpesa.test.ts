@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Hospital, Person } from "@/test/hospital";
 
 import app from "@/app";
-import db, { pool } from "@/db";
+import db, { appDb, pool } from "@/db";
 import { admissions, auditLog, documents, gatewayExchanges, mpesaSettings, mpesaTransactions, normalisedNumber, outbox, patientNumbers, payments, stkCheckoutId } from "@/db/schema";
 import { runAsFacility } from "@/db/tenant-transaction";
 import { drainOutbox, MAX_ATTEMPTS } from "@/jobs/outbox-worker";
@@ -95,6 +95,10 @@ async function billed(patientId: string) {
 }
 
 const invoice = async (id: string) => (await call("GET", `/invoices/${id}`, h.facility.id, h.finance)).json();
+async function checkoutOfExchange(id: string) {
+  const [row] = await db.select({ checkout: stkCheckoutId(gatewayExchanges.response) }).from(gatewayExchanges).where(eq(gatewayExchanges.id, id));
+  return row?.checkout;
+}
 async function paymentOf(transactionId: string) {
   return (await db.select().from(payments).innerJoin(mpesaTransactions, eq(mpesaTransactions.id, payments.mpesaTransactionId)).where(eq(mpesaTransactions.transactionId, transactionId)))[0]?.payments;
 }
@@ -629,6 +633,111 @@ describe("m-Pesa prompts", () => {
 
     expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).toMatchObject({ status: "completed", receiptNumber: "SKPLACED01" });
     expect(await db.select().from(payments)).toHaveLength(1);
+  });
+
+  it("paid before the prompt is recorded, after the paybill confirmation of the same payment, are still placed against it", async () => {
+    await setUp();
+    const patientId = await h.patient();
+    const invoiceId = await billed(patientId);
+    const request = await (await prompt({ patientId, phone: "0712345678", amountCents: 50_800, invoiceId })).json();
+
+    // The confirmation's shortened reference names no bill, and the callback finds no prompt yet.
+    await post("/c2b/confirmation", confirmation({ TransID: "SKC2BEARLY", TransAmount: "508.00", BillRefNumber: `NV${year()}000001` }));
+    await paid("ws_CO_1", "SKC2BEARLY", 508);
+    expect(await paymentOf("SKC2BEARLY")).toBeUndefined();
+    daraja();
+    await drainOutbox();
+
+    expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).toMatchObject({ status: "completed", receiptNumber: "SKC2BEARLY" });
+    expect(await invoice(invoiceId)).toMatchObject({ balanceCents: 0 });
+    expect(await db.select().from(payments)).toHaveLength(1);
+  });
+
+  it("paid before the prompt is recorded, after the paybill confirmation placed the payment, are linked to it", async () => {
+    await setUp();
+    const patientId = await h.patient();
+    const { id: encounterId } = await (await call("POST", "/admissions", h.facility.id, h.nurse, { patientId, bedId: h.beds.general })).json();
+    const request = await (await prompt({ patientId, phone: "0712345678", amountCents: 100_000, encounterId })).json();
+
+    await post("/c2b/confirmation", confirmation({ TransID: "SKC2BPLACE", TransAmount: "1000.00", BillRefNumber: `ADM-${year()}-0001` }));
+    expect(await paymentOf("SKC2BPLACE")).toMatchObject({ encounterId });
+    await paid("ws_CO_1", "SKC2BPLACE", 1000);
+    daraja();
+    await drainOutbox();
+
+    expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).toMatchObject({ status: "completed", receiptNumber: "SKC2BPLACE" });
+    expect(await db.select().from(payments)).toHaveLength(1);
+  });
+
+  it("answered with a result code Postgres cannot store keep the callback and acknowledge it", async () => {
+    await setUp();
+    const patientId = await h.patient();
+    const request = await (await prompt({ patientId, phone: "0712345678", amountCents: 10_000 })).json();
+    daraja();
+    await drainOutbox();
+
+    // A whole number, but past a Postgres integer: the update would fail and take the kept callback with it.
+    const answer = await callback({ CheckoutRequestID: "ws_CO_1", ResultCode: 2_147_483_648, ResultDesc: "?" });
+
+    expect(answer.status).toBe(200);
+    expect(await db.select().from(gatewayExchanges).where(eq(gatewayExchanges.operation, "stk_callback"))).toMatchObject([{ error: "Could not be read" }]);
+    expect((await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).status).toBe("sent");
+  });
+
+  it("whose callback cannot be recorded keep it as Safaricom sent it, since Safaricom does not call again", async () => {
+    await setUp();
+    const patientId = await h.patient();
+    await (await prompt({ patientId, phone: "0712345678", amountCents: 10_000 })).json();
+    daraja();
+    await drainOutbox();
+
+    // The callback's own transaction fails; keeping it is a second, separate one.
+    vi.spyOn(appDb, "transaction").mockImplementationOnce(() => Promise.reject(new Error("connection reset")));
+    const answer = await paid("ws_CO_1", "SKLOSTONE1", 100);
+
+    expect(answer.status).toBe(200);
+    const kept = await db.select().from(gatewayExchanges).where(eq(gatewayExchanges.operation, "stk_callback"));
+    expect(kept).toMatchObject([{ error: "Could not be recorded" }]);
+    expect(await checkoutOfExchange(kept[0].id)).toBe("ws_CO_1");
+  });
+
+  it("are closed when the outbox gives up on them after Safaricom's answer could not be recorded", async () => {
+    await setUp();
+    daraja();
+    await drainOutbox();
+    const patientId = await h.patient();
+    const request = await (await prompt({ patientId, phone: "0712345678", amountCents: 10_000 })).json();
+    await pool.query(`UPDATE outbox SET attempts = ${MAX_ATTEMPTS - 1} WHERE operation = 'mpesa.stk_push'`);
+
+    // Claimed (the first transaction), sent, then recording the answer (the second) fails.
+    const real = appDb.transaction.bind(appDb);
+    let opened = 0;
+    vi.spyOn(appDb, "transaction").mockImplementation(((...args: Parameters<typeof real>) => {
+      opened += 1;
+      return opened === 2 ? Promise.reject(new Error("connection reset")) : real(...args);
+    }) as typeof real);
+
+    expect(await drainOutbox()).toMatchObject({ failed: 1 });
+
+    // Never left `sending` with nothing left to move it.
+    expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json())
+      .toMatchObject({ status: "failed", resultDesc: expect.stringContaining("Sending was interrupted") });
+  });
+
+  it("are closed when their worker died on the last try", async () => {
+    await setUp();
+    const patientId = await h.patient();
+    const request = await (await prompt({ patientId, phone: "0712345678", amountCents: 10_000 })).json();
+    // As a worker leaves it that claimed the prompt on its last try and died; its lease has run out.
+    await pool.query("UPDATE mpesa_stk_requests SET status = 'sending' WHERE id = $1", [request.id]);
+    await pool.query(`UPDATE outbox SET attempts = ${MAX_ATTEMPTS}, available_at = now() - interval '1 minute' WHERE operation = 'mpesa.stk_push'`);
+
+    const fetch = daraja();
+    await drainOutbox();
+
+    expect(fetch.mock.calls.filter(([url]) => String(url).includes("stkpush"))).toHaveLength(0);
+    expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json())
+      .toMatchObject({ status: "failed", resultDesc: expect.stringContaining("Sending was interrupted") });
   });
 
   it("paid in a different amount wait for review, and one accepted without a checkout id fails", async () => {

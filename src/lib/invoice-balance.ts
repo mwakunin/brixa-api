@@ -29,7 +29,25 @@ export async function allocatedCents(tx: AppDb, invoiceId: string): Promise<numb
   return row.cents;
 }
 
+/**
+ * Both totals in one statement, so they come from one snapshot. Read one
+ * after the other, a waiver reversed and its restored balance paid in between
+ * could show the invoice as overpaid.
+ */
+export async function takenOffCents(tx: AppDb, invoiceId: string): Promise<{ adjustedCents: number; allocatedCents: number }> {
+  const { rows } = await tx.execute<{ adjusted: string; allocated: string }>(sql`
+    SELECT
+      (SELECT coalesce(sum(${invoiceAdjustments.amountCents}), 0) FROM ${invoiceAdjustments}
+        WHERE ${invoiceAdjustments.invoiceId} = ${invoiceId} AND ${invoiceAdjustments.status} = 'approved' AND ${invoiceAdjustments.reversedAt} IS NULL) AS adjusted,
+      (SELECT coalesce(sum(${allocations.amountCents}), 0) FROM ${allocations}
+        JOIN ${payments} ON ${payments.id} = ${allocations.paymentId}
+        WHERE ${allocations.invoiceId} = ${invoiceId} AND ${allocations.reversedAt} IS NULL AND ${payments.reversedAt} IS NULL) AS allocated
+  `);
+  return { adjustedCents: Number(rows[0].adjusted), allocatedCents: Number(rows[0].allocated) };
+}
+
 /** What is still owed on a finalised invoice of `totalCents`. */
 export async function balanceCents(tx: AppDb, invoice: { id: string; totalCents: number | null }): Promise<number> {
-  return (invoice.totalCents ?? 0) - await adjustedCents(tx, invoice.id) - await allocatedCents(tx, invoice.id);
+  const taken = await takenOffCents(tx, invoice.id);
+  return (invoice.totalCents ?? 0) - taken.adjustedCents - taken.allocatedCents;
 }

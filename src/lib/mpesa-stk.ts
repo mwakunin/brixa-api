@@ -124,6 +124,8 @@ async function closeFailed(tx: AppDb, requestId: string, resultDesc: string, res
     .where(eq(mpesaStkRequests.id, requestId));
 }
 
+const INTERRUPTED = "Sending was interrupted; if the patient paid, the payment is in the M-Pesa queue";
+
 /**
  * Claims a queued request for sending, in its own transaction, so a retry of
  * the job can tell it was already being sent. One found `sending` is closed:
@@ -133,7 +135,7 @@ async function claimForSending(facilityId: string, requestId: string) {
   return runAsFacility(facilityId, async (tx) => {
     const [request] = await tx.select().from(mpesaStkRequests).where(eq(mpesaStkRequests.id, requestId)).for("update").limit(1);
     if (request?.status === "sending") {
-      await closeFailed(tx, request.id, "Sending was interrupted; if the patient paid, the payment is in the M-Pesa queue");
+      await closeFailed(tx, request.id, INTERRUPTED);
       return null;
     }
     const [settings] = await tx.select().from(mpesaSettings).limit(1);
@@ -189,8 +191,24 @@ export async function sendStkPush(job: { facilityId: string; subjectId: string; 
   }
 
   // If this write fails the job is retried, finds the request `sending`, and closes it: never a second prompt.
+  // On the last try there is no retry, and `closeAbandonedStkPush` closes it instead.
   await runAsFacility(job.facilityId, tx => recordSent(tx, job.facilityId, request.id, sent));
   return "done";
+}
+
+/**
+ * The outbox gave up on a prompt: its last try failed, or its worker died
+ * during it. One still `queued` or `sending` would otherwise wait for ever,
+ * with the cashier polling it, so it is closed, and never sent again.
+ */
+export async function closeAbandonedStkPush(job: { facilityId: string; subjectId: string }) {
+  await runAsFacility(job.facilityId, async (tx) => {
+    const [request] = await tx.select({ status: mpesaStkRequests.status }).from(mpesaStkRequests).where(eq(mpesaStkRequests.id, job.subjectId)).for("update").limit(1);
+    if (request?.status === "sending")
+      await closeFailed(tx, job.subjectId, INTERRUPTED);
+    else if (request?.status === "queued")
+      await closeFailed(tx, job.subjectId, "The prompt could not be sent");
+  });
 }
 
 /**
@@ -239,15 +257,28 @@ async function applyEarlyCallback(tx: AppDb, facilityId: string, requestId: stri
     await settleForRequest(tx, facilityId, request, early);
     return;
   }
-  const [refused] = await tx
+  const [kept] = await tx
     .select({ response: gatewayExchanges.response })
     .from(gatewayExchanges)
     .where(and(eq(gatewayExchanges.operation, "stk_callback"), sql`${checkoutOf(gatewayExchanges.response)} = ${checkoutRequestId}`))
     .orderBy(desc(gatewayExchanges.createdAt))
     .limit(1);
-  const callback = refused ? parseStkCallback(refused.response) : null;
-  if (callback && callback.resultCode !== 0)
+  const callback = kept ? parseStkCallback(kept.response) : null;
+  if (!callback)
+    return;
+  if (callback.resultCode !== 0) {
     await closeFailed(tx, request.id, callback.resultDesc, callback.resultCode);
+    return;
+  }
+  // Paid, and the paybill confirmation of the same payment came first, so the
+  // receipt is on file as that confirmation's: placed against the prompt, or linked if it was placed already.
+  if (!callback.receiptNumber || request.status === "completed")
+    return;
+  const [confirmed] = await tx.select().from(mpesaTransactions).where(eq(mpesaTransactions.transactionId, callback.receiptNumber)).for("update").limit(1);
+  if (confirmed?.status === "allocated")
+    await linkPlacedTransaction(tx, request, confirmed);
+  else if (confirmed?.status === "unmatched")
+    await settleForRequest(tx, facilityId, request, confirmed);
 }
 
 async function actorOf(tx: AppDb, membershipId: string): Promise<PatientActor> {
