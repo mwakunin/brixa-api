@@ -105,7 +105,7 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
 | A | 1b Service points and queues | Service points; queue entries for triage and consultation only (the lab, pharmacy and cashier lists are derived from the work waiting); the attending clinician, derived; a nightly run closes outpatient visits still open after their day. A visit closing itself once nothing is pending waits for 4a, when "pending" (orders not done) exists |
 | A | 1c Consultation fee and paying | A fee item per clinic, charged once per visit per clinic when the patient joins its queue; the cashier's "due now" list; the cashier bills what is unbilled whenever the patient pays, on an interim invoice, or at the end on the final invoice |
 | A | 2 Triage | Vitals as observations (marked entered in error, never edited); allergies; triage priority orders the consultation queue |
-| A | 3a Diagnoses | `icd_codes`, the first shared reference table; search by name; diagnoses copy the code and title |
+| A | 3a Diagnoses | `icd_codes`, the first shared reference table, loaded from WHO's ICD-11 release; search by name; diagnoses copy the code and title |
 | A | 3b Clinical notes | Signed notes frozen and corrected by addendum; clinical reads limited to clinical roles and audited |
 | B | 4a Orders and lab catalogue | Orders and their items (lab, medication, service); lab tests with analytes and reference ranges; lab and service items charged at order, the charge cancelled with an order not yet done; walk-in lab clients with an outside requester |
 | B | 4b Prescriptions | The shared `drug_catalogue` at generic level; medication items with quantities in dose units, so the units-of-sale question (`SPEC.md` §4, question 2) stays with P4; a printed `RX-` prescription with the prescriber's licence and the patient's allergies; no charge until dispensing (P4) |
@@ -129,7 +129,9 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
   - Break-glass alerts go to an in-app list for the attending clinician and the facility admin.
 - **One lab member on night duty:** a result released unverified, with a reason, and verified by the next person on duty. This changes `SCHEMA.md` §8 ("a result reaches the clinician only once verified").
 
-**Still open:** ICD-10 or ICD-11 (`SPEC.md` §4, question 8; DHA's claims guide points to ICD-11); the pilot's MOH 705 and 717 forms, so P3 captures what P6 reports need (§9, question 10); whether SMS reminders need the patient's consent; drug-interaction and dose data (none in v1 without a licensed source).
+**Decided 2026-11-10:** diagnoses are coded in ICD-11 (`SPEC.md` §4, question 8).
+
+**Still open:** the pilot's MOH 705 and 717 forms, so P3 captures what P6 reports need (§9, question 10); whether SMS reminders need the patient's consent; drug-interaction and dose data (none in v1 without a licensed source).
 
 ### P4 · Pharmacy and stores
 

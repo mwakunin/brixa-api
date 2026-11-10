@@ -67,7 +67,7 @@ These are load-bearing. Do not deviate without discussion.
 5. **Nothing hard-deletes.** Patients, encounters, notes, orders, results, charges, invoices, payments, claims and stock movements are only status-transitioned, reversed or superseded. The runtime role holds no `DELETE` on domain tables. Any exception must be listed explicitly here. There are none yet.
 6. **Every money row belongs to one debtor account** (patient or payer). Invoices, payments, allocations, adjustments and refunds carry `account_id` in three-column foreign keys, `(facility_id, id, account_id)`, so applying one account's money to another account's bill cannot be stored (`SCHEMA.md` §7.1, M1). Every encounter has a billing plan; self-pay is a plan, not the absence of one.
 7. **Snapshot what is printed, billed or claimed.** Charges copy the price at capture and invoice lines copy it from the charge; neither joins the price list (`SPEC.md` D3). Receipts, prescriptions, invoices, claims, verified results, signed notes and discharge summaries freeze when finalised. A later price or catalogue change must never alter a past document.
-8. **Store coded clinical data**: ICD codes for diagnoses (ICD-10 vs ICD-11 is open: `SPEC.md` §4), intervention and procedure codes, catalogue codes for services and drugs, and the practitioner's licence number on clinical acts. Claims and MOH reporting need them.
+8. **Store coded clinical data**: ICD-11 codes for diagnoses (decided 2026-11-10, `SPEC.md` §4), intervention and procedure codes, catalogue codes for services and drugs, and the practitioner's licence number on clinical acts. Claims and MOH reporting need them.
 9. **Audit reads as well as writes.** `audit_log` is append-only, written inside the same transaction as the action. The runtime role holds `INSERT` and `SELECT` only. Record who *viewed* a patient record or document, not just who changed one.
 10. **No patient data outside the database.** No names, phone numbers, national IDs, member numbers, diagnoses, or clinical details in logs, Redis keys, queue payloads, URLs, or file names and object keys. Use IDs only. Payloads sent to payers are stored in `gateway_exchanges` in the database, never in logs.
 11. **Files: store the object key, never a URL.** The bucket comes from environment config. Access is a permission check, then an audit entry, then a short-lived signed URL. Never persist signed URLs.
@@ -214,7 +214,7 @@ See `SPEC.md` sections 4 and 5. Do not resolve these in code without asking:
 - Pilot hospital
 - Medical-records retention requirements
 - PPB dispensing record obligations
-- ICD-10 vs ICD-11 for diagnoses and claims
+- Which intervention and procedure codes SHA claims require (diagnoses are ICD-11, decided 2026-11-10)
 - What DHA certification requires of this product (classification, whether clinical modules are judged, cost, re-certification)
 - eTIMS (D7 is decided as "follow the tax adviser"; the answer is not in yet)
 
