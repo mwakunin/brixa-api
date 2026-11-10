@@ -35,7 +35,9 @@ Every external call is an outbox row, drained by `POST /internal/outbox/drain` (
 4. **Cloud Scheduler job**, the nightly bed-day run, at 00:15 Africa/Nairobi: `POST {BETTER_AUTH_URL}/internal/jobs/bed-days`, with the same OIDC token and audience. It charges every open admission's nights so far; it is idempotent, so a retry or a second run charges nothing twice.
 5. **Cloud Scheduler job**, the daily reconciliation check, at 02:00 Africa/Nairobi: `POST {BETTER_AUTH_URL}/internal/jobs/reconciliation`, same token and audience. It checks every facility's money identities (M2, M3, M4, M-Pesa); a finding stays in `job_failures` until fixed, and is logged as `money identities drifted`, which should alert.
 
-   Both nightly jobs need **retries**: Cloud Scheduler's default is none, so a run that fails as a whole (the database unreachable before any facility is checked) would wait for the next night. Set e.g. `--max-retry-attempts=3 --min-backoff=5m --max-backoff=30m`. Both jobs are idempotent, so a retry repeats nothing.
+   **The nightly close of outpatient visits**, at 03:00 Africa/Nairobi: `POST {BETTER_AUTH_URL}/internal/jobs/close-visits`, same token and audience. It closes every outpatient visit opened before that day and still open, so yesterday's patients leave the queues; emergency attendances and admissions are left alone.
+
+   The nightly jobs need **retries**: Cloud Scheduler's default is none, so a run that fails as a whole (the database unreachable before any facility is checked) would wait for the next night. Set e.g. `--max-retry-attempts=3 --min-backoff=5m --max-backoff=30m`. All of them are idempotent, so a retry repeats nothing.
 6. **IAM for the Cloud Run runtime service account:**
    - `roles/cloudtasks.enqueuer` on the queue
    - `roles/iam.serviceAccountUser` on the invoker account, so a task can carry its token

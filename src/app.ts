@@ -19,6 +19,7 @@ import mpesa from "@/routes/mpesa/mpesa.index";
 import patients from "@/routes/patients/patients.index";
 import payments from "@/routes/payments/payments.index";
 import prices from "@/routes/prices/prices.index";
+import queues from "@/routes/queues/queues.index";
 import refunds from "@/routes/refunds/refunds.index";
 import shifts from "@/routes/shifts/shifts.index";
 import staff from "@/routes/staff/staff.index";
@@ -78,6 +79,7 @@ const tenantRoutes = [
   documents,
   patients,
   encounters,
+  queues,
   wards,
   prices,
   charges,

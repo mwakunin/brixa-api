@@ -321,7 +321,9 @@ describe("union-typed columns", () => {
     it("refuses a membership with no roles at all", async () => {
       const facility = await makeFacility();
       const person = await signedInUser();
-      const membership = await addMembership(person.id, facility.id, ["doctor"]);
+      // Not a clinical role: emptying a doctor's roles would also break the
+      // licence CHECK, and Postgres names whichever it checks first.
+      const membership = await addMembership(person.id, facility.id, ["cashier"]);
 
       const err = await refusalOf(() => db.update(memberships)
         .set({ roles: [] })

@@ -67,6 +67,11 @@ const OWNER_ALLOWLIST = new Map([
     + "facility whose check failed, and checks each facility as that tenant",
   ],
   [
+    "jobs/visits.ts",
+    "the nightly close serves every facility; it lists them, and records a "
+    + "facility whose run failed, and closes each facility's visits as that tenant",
+  ],
+  [
     "jobs/outbox-worker.ts",
     "the worker drains every facility's queue; it claims and records jobs by "
     + "id and reads no facility data on this connection",

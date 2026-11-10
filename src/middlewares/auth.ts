@@ -2,9 +2,11 @@ import { createMiddleware } from "hono/factory";
 import * as HttpStatusCodes from "stoker/http-status-codes";
 import * as HttpStatusPhrases from "stoker/http-status-phrases";
 
-import type { AppBindings, MembershipRole, TenantBindings, UserRole } from "@/lib/types";
+import type { ClinicalRole } from "@/lib/professions";
+import type { AppBindings, Membership, MembershipRole, TenantBindings, UserRole } from "@/lib/types";
 
 import { auth } from "@/lib/auth";
+import { businessDate, printedDate } from "@/lib/dates";
 
 /**
  * Resolves the Better Auth session (if any) onto the context. Always runs and
@@ -69,15 +71,44 @@ export function requireRole(...allowed: UserRole[]) {
  */
 export function requireMembershipRole(...allowed: MembershipRole[]) {
   return createMiddleware<TenantBindings>(async (c, next) => {
-    const roles = c.var.membership?.roles ?? [];
+    if (!holdsAnyOf(c.var.membership, allowed))
+      return c.json({ message: HttpStatusPhrases.FORBIDDEN }, HttpStatusCodes.FORBIDDEN);
 
-    if (!roles.some(role => allowed.includes(role))) {
+    await next();
+  });
+}
+
+/**
+ * For a clinical act (rule 25): `requireMembershipRole` over clinical roles
+ * only, and a practising licence still valid on today's Kenyan date. A
+ * licence is valid through its last day.
+ *
+ * The refusal says why in plain words and who can help (SPEC.md §7.9), with
+ * `licence_expired` as its code. Only clinical roles may be listed, so an
+ * admin who is also a doctor acts clinically on their licence, never on
+ * their admin role.
+ */
+export function requireClinicalRole(...allowed: ClinicalRole[]) {
+  return createMiddleware<TenantBindings>(async (c, next) => {
+    const membership = c.var.membership;
+    if (!holdsAnyOf(membership, allowed))
+      return c.json({ message: HttpStatusPhrases.FORBIDDEN }, HttpStatusCodes.FORBIDDEN);
+
+    const expiresOn = membership.licenceExpiresOn;
+    if (!expiresOn || expiresOn < businessDate()) {
+      const lapsed = expiresOn
+        ? `Your practising licence on record expired on ${printedDate(expiresOn)}.`
+        : "No practising licence is on record for you.";
       return c.json(
-        { message: HttpStatusPhrases.FORBIDDEN },
+        { message: `${lapsed} Ask the facility admin to record your current licence.`, code: "licence_expired" },
         HttpStatusCodes.FORBIDDEN,
       );
     }
 
     await next();
   });
+}
+
+function holdsAnyOf(membership: Membership | undefined, allowed: readonly MembershipRole[]): membership is Membership {
+  return (membership?.roles ?? []).some(role => allowed.includes(role));
 }

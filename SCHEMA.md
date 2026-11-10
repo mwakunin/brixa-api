@@ -33,7 +33,7 @@ Every table carries `facility_id` except the shared reference group.
 
 | Module | Tables |
 |---|---|
-| Tenancy and access | `facilities` (kmhfr_code, level, SHA contract ref), `memberships` (roles[], cadre, licence body and number), `departments`, `service_points`, `number_series`, `audit_log`, `outbox`, `job_failures`, `files` |
+| Tenancy and access | `facilities` (kmhfr_code, level, SHA contract ref), `memberships` (roles[], licence number and expiry; cadre and council derived, §8), `departments`, `service_points`, `number_series`, `audit_log`, `outbox`, `job_failures`, `files` |
 | Shared reference (no `facility_id`; read-only to the app role) | `icd_codes`, `drug_catalogue`, `sha_tariffs` (versioned), `payer_registry` |
 | Patients | `patients`, `patient_numbers`, `patient_identifiers` (incl. SHA number, client-registry ID), `patient_contacts` (next of kin; guardian for minors), `patient_alerts` (allergies and similar), `consents` |
 | Encounters | `encounters` (opd \| ipd \| emergency), `appointments`, `queue_entries`, `observations`, `diagnoses`, `clinical_notes`, `orders`, `order_items`, `procedures_performed` |
@@ -435,6 +435,75 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 - `bed_stays`: `started_at`, `ended_at`, and a generated `during` tstzrange carrying the two exclusion constraints (no bed holds two patients at once; no admission is in two beds at once), with `btree_gist`. A transfer ends one stay and starts the next at the same instant; discharge or cancellation ends the last. A trigger refuses any change to a stay that has ended.
 - Reading an encounter, or a patient's list of encounters, is audited as `encounter.viewed`.
 - Roles: visits are opened and closed by records clerks, nurses, doctors, clinical officers and the facility admin; ward nurses can also admit, transfer and discharge. Every member may read.
+
+**As built (P3, slice 1a): practitioners.** Rule 25, decided 2026-11-10 (`ROADMAP.md` P3):
+
+- `memberships` and `invitations` gain `licence_profession`, `licence_number` (stored uppercase, without spaces or dots) and `licence_expires_on` (the last Kenyan day it is valid). This replaces the "cadre, licence body" columns sketched in §3.
+- **One licence per member, in their own profession; their roles may span professions.** A nurse who also dispenses at night holds `nurse` and `pharm_tech` under her nursing licence. The council follows from the profession (`src/lib/professions.ts`):
+
+  | Profession | Its roles | Council |
+  |---|---|---|
+  | `medical_practitioner` | `doctor` | KMPDC |
+  | `clinical_officer` | `clinical_officer` | COC |
+  | `nurse` | `nurse`, `ward_nurse` | NCK |
+  | `laboratory` | `lab_tech`, `lab_supervisor` | KMLTTB |
+  | `pharmacy` | `pharmacist`, `pharm_tech` | PPB |
+
+- **The profession is derived when it can be:** a request may leave it out when the clinical roles belong to one profession, and must give it when they span several.
+- **CHECKs on both tables:**
+  - a licence is present exactly when a clinical role is held, with its profession, number and expiry always together (`*_licence_iff_clinical`);
+  - the profession is a known one (`*_licence_profession_known`);
+  - the number has the normalised shape (`*_licence_number_shape`).
+- **Inviting:**
+  - a clinical role needs the licence, and any other role refuses one;
+  - a licence already lapsed is refused;
+  - the membership takes the licence on acceptance;
+  - an active membership keeps its licence unless the invitation brings one, and a former member comes back with exactly what the invitation offers.
+- `GET /staff/members` (facility admin) lists active members, each with their licence, its council and a derived state: `valid`, `expiring` within 30 days, or `expired`.
+- `PUT /staff/members/{id}/licence` records a renewal (the profession is kept unless given), audited as `membership.licence_changed` with the old and new values.
+- **`PUT /staff/members/{id}/roles`** (facility admin) replaces a member's roles, audited as `membership.roles_changed` with the old and new roles and licence:
+  - gaining a clinical role needs a licence unless one is on record, and losing every clinical role clears it;
+  - the facility's last admin cannot lose the admin role. Every active admin membership is locked, by id, before the count, so two admins demoting each other at once queue and the second is refused (tested).
+- **`requireClinicalRole(...)`** guards clinical routes from slice 2 on: one of the named clinical roles, and a licence valid on today's Kenyan date (valid through its last day). Otherwise it answers 403, code `licence_expired`, saying when the licence lapsed and that the facility admin can record the current one.
+- **Not yet:**
+  - ending a membership;
+  - a check against the health worker registry (AfyaConnect);
+  - whether a nurse's pharmacy role may also dispense controlled drugs, which P4 decides with the register (rule 12).
+
+**As built (P3, slice 1b): service points and queues.** Decided 2026-11-10 (`ROADMAP.md` P3):
+
+- `service_points`: a facility's triage desks and clinics. `kind` is `triage` or `consultation`; the name is unique per facility. Set up by the facility admin, renamed or retired, never removed. One with patients still in its queue cannot be retired.
+- **Only triage and consultation have queues.** The lab, pharmacy and cashier lists will be derived from the work waiting for them (orders not done, charges not paid), so no queue rows are kept for them.
+- `queue_entries`: one patient's turn at one point during a visit.
+  - Lifecycle: `waiting` → `serving` → `done`, or `waiting` → `left` (went unseen) or `cancelled` (sent in error).
+  - Columns: `joined_at`/`joined_by`; `serving_at`/`served_by` (who called the patient in); `ended_at`/`ended_by` (null when the nightly run ended it). A CHECK ties them to the status.
+  - **One queue at a time:** a partial unique index allows one live (`waiting` or `serving`) entry per encounter. Moving on is finishing here and joining the next, in one step.
+- **The trigger `queue_entries_lifecycle`** holds the lifecycle for every role, the owner included:
+  - an entry is inserted `waiting`, into an open `opd` or `emergency` encounter, at a service point in use;
+  - it moves only along the lifecycle above;
+  - its visit, point and joining never change, nor does who served the patient;
+  - an ended entry never changes, and no entry is deleted.
+- **Opening a visit joins a queue in the same step:**
+  - `queueAt` names the point, and `null` joins none (a walk-in for the lab);
+  - left out, the patient joins the facility's triage point when it has exactly one.
+- **Who:**
+  - the queue staff (records clerks, nurses, ward nurses, doctors, clinical officers, the facility admin) view queues, send patients to one, and take a waiting patient out;
+  - calling a patient in and finishing with them is a clinical act: a doctor, clinical officer, nurse or ward nurse with a current licence (`requireClinicalRole`).
+- **Locks:** every change locks the encounter first, then the entry (M8), so two clinicians calling the same patient queue and the second is refused (tested), and a visit cannot close while its patient is being queued.
+- **Ending a visit:**
+  - closing a visit is refused while its patient is in a queue (`still_queued`), so nobody waits for a call that cannot come;
+  - cancelling a visit opened in error cancels its entry.
+- **The attending clinician is derived, not stored:** whoever most recently called the patient in at a consultation point. The encounter's detail shows it, with the queue the patient is in now.
+- **Reading a queue** (`GET /service-points/{id}/queue`) lists those being seen, then those waiting by arrival, each with name, OP number, sex and age. It is audited as `queue.viewed`, since it names patients and where they are.
+- **The nightly close** (`POST /internal/jobs/close-visits`, `src/jobs/visits.ts`):
+  - closes every `opd` visit opened before that Kenyan day and still open, with `closed_by` null (the `encounters_lifecycle` CHECK now allows that for a closed visit) and an audit entry with no actor;
+  - a waiting patient's entry becomes `left`, and one still being seen becomes `done`;
+  - emergency attendances and admissions are left alone, since they may run overnight;
+  - a facility whose run fails is a `job_failures` row (`visit_close`).
+- **Not yet:**
+  - a visit closing itself once nothing is pending, which needs orders (4a);
+  - a triage priority ordering the consultation queue (slice 2);
+  - the consultation fee charged on joining a clinic (1c).
 
 **Clinical record.** `observations` (vitals and charted values, with `entered_in_error` instead of deletion), `diagnoses` (ICD code, provisional \| final \| secondary), `clinical_notes` (`signed_at`, `addendum_of`: a signed note is corrected only by an addendum), `orders` and `order_items` (lab, imaging, procedure, medication, service; medication items carry dose, route, frequency and duration). Every clinical act records the acting membership, whose licence details live on `memberships` (rule 25).
 

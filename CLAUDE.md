@@ -175,6 +175,7 @@ The detail is in `SCHEMA.md`. In short:
 | Appointment reminder | Cloud Tasks, scheduled at booking | Verify the appointment is still valid, send SMS |
 | Expiry scan, low stock | Scheduler, nightly | Fan out per facility; flag batches nearing expiry and items below reorder level |
 | Reconciliation check | Scheduler, daily | Check identities M7 per facility; alert on drift |
+| Visit close | Scheduler, nightly | Fan out per facility; close outpatient visits still open after their day, ending their queue entries |
 | Daily report | Scheduler, daily | Fan out per facility; generate the summary |
 
 **File storage.** One bucket per environment, not per facility. Tenant-prefixed random keys, e.g. `tenants/{facilityId}/patients/{patientId}/{uuid}`. Public access prevention on, uniform bucket-level access, versioning and soft delete on, Data Access audit logs on. Sign URLs via the service account's IAM `signBlob` permission, not key files. Validate file type and size; strip image EXIF data; scan external documents. Keep all access behind a small storage interface (`put`, `get`, `createSignedUrl`, `delete`): `src/lib/storage.ts`, with `newObjectKey` for keys and `src/lib/object-storage.ts` for the configured driver. Bucket location cannot be changed after creation.

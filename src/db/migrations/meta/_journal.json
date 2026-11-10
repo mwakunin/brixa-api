@@ -281,6 +281,27 @@
       "when": 1794231198636,
       "tag": "0039_stk_checkout_hash_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1794318580594,
+      "tag": "0040_practitioner_licences",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1794320791392,
+      "tag": "0041_queues",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1794320797585,
+      "tag": "0042_queues_rls",
+      "breakpoints": true
     }
   ]
 }
