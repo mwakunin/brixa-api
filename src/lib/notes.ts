@@ -216,7 +216,12 @@ export async function addAddendum(tx: AppDb, facilityId: string, noteId: string,
   return addendum;
 }
 
-/** Marks a signed note entered in error (the wrong patient's record), for a stated reason. It stays on the record, marked. */
+/**
+ * Marks a signed note entered in error (the wrong patient's record), for a
+ * stated reason. It stays on the record, marked. An addendum may be marked
+ * too, e.g. one added to the wrong patient's note: it stays under its note,
+ * shown marked.
+ */
 export async function markNoteEnteredInError(tx: AppDb, facilityId: string, noteId: string, reason: string, actor: PatientActor, now = new Date()) {
   const current = await lockNote(tx, noteId, actor);
   if (current.status !== "signed")
@@ -280,7 +285,13 @@ export async function notesOf(tx: AppDb, encounterId: string, reader: PatientAct
     .map(({ addendumOf: _, ...note }) => ({
       ...note,
       kind: note.kind as NoteKind,
-      addenda: addenda.filter(a => a.addendumOf === note.id).map(a => ({ id: a.id, text: a.text!, writtenBy: a.writtenBy, signedAt: a.signedAt! })),
+      addenda: addenda.filter(a => a.addendumOf === note.id).map(a => ({
+        id: a.id,
+        text: a.text!,
+        writtenBy: a.writtenBy,
+        signedAt: a.signedAt!,
+        enteredInError: a.enteredInError,
+      })),
     }));
 }
 

@@ -506,7 +506,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - closes every `opd` visit opened before that Kenyan day and still open, with `closed_by` null (the `encounters_lifecycle` CHECK now allows that for a closed visit) and an audit entry with no actor;
   - a waiting patient's entry becomes `left`, and one still being seen becomes `done`;
   - emergency attendances and admissions are left alone, since they may run overnight;
-  - a facility whose run fails is a `job_failures` row (`visit_close`). A later successful run for that facility resolves the failures recorded before it began, but not one an overlapping run recorded since.
+  - each visit is closed in its own transaction, so one that cannot be closed leaves the rest closed. It becomes a `job_failures` row (`visit_close`) naming the visit; a facility whose visits cannot even be listed becomes one with no subject. A later run for that facility with no failure resolves the failures recorded before it began, but not one an overlapping run recorded since.
 - **Not yet:**
   - a visit closing itself once nothing is pending, which needs orders (4a);
   - a triage priority ordering the consultation queue (slice 2).
@@ -603,7 +603,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - a draft may be discarded, which keeps it on the record, unshown, and never deletes it;
   - a draft is started only on an open encounter, and may be signed after the visit closes, for notes finished the next morning.
 - **Corrections are addenda**, written signed by any note-writing clinician and shown under the note. An addendum is never added to another addendum.
-- **A signed note written on the wrong patient's record is marked entered in error**, with a reason, and stays on the record; it then takes no addendum.
+- **A signed note written on the wrong patient's record is marked entered in error**, with a reason, and stays on the record; it then takes no addendum. An addendum may be marked too (one added to the wrong patient's note), and is shown marked under its note.
 - **The trigger `clinical_notes_lifecycle`** holds all of this for every role:
   - drafts are written as drafts, and addenda signed, to a signed note on the same encounter;
   - whose note it is, its kind and its encounter never change;

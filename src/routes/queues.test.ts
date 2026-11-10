@@ -328,6 +328,35 @@ describe("the nightly close of outpatient visits", () => {
     expect(await closeStaleVisits()).toMatchObject({ closed: 0 });
   });
 
+  it("closes each visit on its own, so one that fails leaves the rest closed and is named", async () => {
+    const c = await clinic();
+    const broken = await c.visit({ queueAt: null });
+    const fine = await c.visit({ queueAt: null });
+    for (const v of [broken, fine])
+      await pool.query("UPDATE encounters SET started_at = started_at - interval '1 day' WHERE id = $1", [v.id]);
+    // A visit the database refuses to close, as a stand-in for any failure.
+    await pool.query(`CREATE FUNCTION test_refuse_close() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN IF NEW.id = '${broken.id}' AND NEW.status = 'closed' THEN RAISE EXCEPTION 'refused for the test'; END IF; RETURN NEW; END $$`);
+    await pool.query("CREATE TRIGGER test_refuse_close BEFORE UPDATE ON encounters FOR EACH ROW EXECUTE FUNCTION test_refuse_close()");
+    try {
+      expect(await closeStaleVisits()).toMatchObject({ closed: 1, failed: 1 });
+    }
+    finally {
+      await pool.query("DROP TRIGGER test_refuse_close ON encounters");
+      await pool.query("DROP FUNCTION test_refuse_close()");
+    }
+
+    const { rows: statuses } = await pool.query("SELECT id, status FROM encounters WHERE id = ANY($1)", [[broken.id, fine.id]]);
+    expect(Object.fromEntries(statuses.map(r => [r.id, r.status]))).toEqual({ [broken.id]: "open", [fine.id]: "closed" });
+    const { rows: failures } = await pool.query("SELECT subject_id, resolved_at FROM job_failures WHERE job = 'visit_close'");
+    expect(failures).toEqual([{ subject_id: broken.id, resolved_at: null }]);
+
+    // The next clean run closes it and resolves the failure.
+    expect(await closeStaleVisits()).toMatchObject({ closed: 1, failed: 0 });
+    const { rows: [resolved] } = await pool.query("SELECT resolved_at IS NOT NULL AS resolved FROM job_failures WHERE job = 'visit_close'");
+    expect(resolved.resolved).toBe(true);
+  });
+
   it("resolves a facility's earlier failure once a later run succeeds, not one recorded since", async () => {
     const c = await clinic();
     await pool.query(

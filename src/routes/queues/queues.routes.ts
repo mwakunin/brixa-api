@@ -156,6 +156,7 @@ export const viewQueue = createRoute({
   request: { headers: facilityHeaders, params: IdParamsSchema },
   responses: {
     [HttpStatusCodes.OK]: jsonContent(QueueViewSchema, "The queue"),
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(IdParamsSchema), "Invalid request"),
     ...tenantResponses,
   },
 });
@@ -175,6 +176,7 @@ export const joinQueue = createRoute({
   responses: {
     [HttpStatusCodes.CREATED]: jsonContent(QueueEntrySchema, "Waiting"),
     ...refusals,
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(JoinBodySchema), "Invalid request"),
     ...tenantResponses,
   },
 });
@@ -190,6 +192,7 @@ export const serve = createRoute({
   responses: {
     [HttpStatusCodes.OK]: jsonContent(QueueEntrySchema, "Being seen"),
     ...refusals,
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(IdParamsSchema), "Invalid request"),
     ...tenantResponses,
   },
 });
@@ -205,6 +208,7 @@ export const finish = createRoute({
   responses: {
     [HttpStatusCodes.OK]: jsonContent(z.object({ finished: QueueEntrySchema, next: QueueEntrySchema.nullable() }), "Done"),
     ...refusals,
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(FinishBodySchema), "Invalid request"),
     ...tenantResponses,
   },
 });
@@ -219,6 +223,7 @@ export const removeFromQueue = createRoute({
   responses: {
     [HttpStatusCodes.OK]: jsonContent(QueueEntrySchema, "Taken out"),
     ...refusals,
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(RemoveBodySchema), "Invalid request"),
     ...tenantResponses,
   },
 });

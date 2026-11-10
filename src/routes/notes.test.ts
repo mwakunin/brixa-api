@@ -104,6 +104,23 @@ describe("clinical notes", () => {
     expect(shown.examination).toBe("Temp 38.6, no neck stiffness");
   });
 
+  it("show an addendum marked entered in error as such, under its note", async () => {
+    const c = await clinic();
+    const visit = await c.visit();
+    const note = await start(c, c.officer, visit.id);
+    await at(c, c.officer, "POST", `/notes/${note.id}/sign`);
+    const withAddendum = await (await at(c, c.doctor, "POST", `/notes/${note.id}/addenda`, { text: "Start AL" })).json();
+    const addendumId = withAddendum.addenda[0].id;
+
+    const marked = await at(c, c.doctor, "POST", `/notes/${addendumId}/entered-in-error`, { reason: "Added to the wrong patient's note" });
+
+    expect(marked.status).toBe(200);
+    const [shown] = await notesAs(c, c.officer, visit.id);
+    expect(shown.enteredInError).toBeNull();
+    expect(shown.addenda).toEqual([expect.objectContaining({ id: addendumId, enteredInError: { at: expect.any(String), reason: "Added to the wrong patient's note" } })]);
+    expect((await (await at(c, c.doctor, "POST", `/notes/${addendumId}/entered-in-error`, { reason: "Again" })).json()).code).toBe("entered_in_error");
+  });
+
   it("let a draft be discarded, never deleted, and no longer shown", async () => {
     const c = await clinic();
     const visit = await c.visit();

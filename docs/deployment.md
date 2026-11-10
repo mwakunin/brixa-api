@@ -17,7 +17,7 @@ What the API needs from Google Cloud before it can run in production. The code r
 | `DATABASE_URL`, `APP_DATABASE_URL`, `AUTH_DATABASE_URL` | Three different roles (`db/roles.sql`); TLS is enforced (`src/db/connection.ts`) |
 | `REDIS_URL` | Upstash, `rediss://` (TLS required) |
 | `RESEND_API_KEY`, `RESEND_FROM_EMAIL` | Required |
-| `STORAGE_DRIVER`, `STORAGE_BUCKET` | `gcs`, and the bucket in §3 |
+| `STORAGE_DRIVER`, `STORAGE_BUCKET` | `gcs`, and the bucket in §4 |
 | `TASKS_QUEUE`, `TASKS_INVOKER_EMAIL` | The queue and service account in §2 |
 | `CREDENTIALS_ENCRYPTION_KEY` | Base64 of 32 random bytes, from Secret Manager: encrypts each facility's Daraja credentials. Losing it means every facility re-enters them |
 | `MPESA_ENV` | `sandbox` until the first facility goes live, then `production`. It is one setting for the whole deployment: once it is `production`, every facility's prompts and URL registrations go to Safaricom's live host, so a facility still testing on sandbox credentials stops working. Switch it once, when the first facility goes live, and onboard every later facility with live credentials; test on staging, which keeps `sandbox` |

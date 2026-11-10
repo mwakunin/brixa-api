@@ -46,7 +46,11 @@ function noteJson(n: Shown) {
     updatedAt: n.updatedAt.toISOString(),
     signedAt: n.signedAt?.toISOString() ?? null,
     enteredInError: n.enteredInError && { at: n.enteredInError.at.toISOString(), reason: n.enteredInError.reason },
-    addenda: n.addenda.map(a => ({ ...a, signedAt: a.signedAt.toISOString() })),
+    addenda: n.addenda.map(a => ({
+      ...a,
+      signedAt: a.signedAt.toISOString(),
+      enteredInError: a.enteredInError && { at: a.enteredInError.at.toISOString(), reason: a.enteredInError.reason },
+    })),
   };
 }
 

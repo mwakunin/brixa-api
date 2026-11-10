@@ -56,7 +56,13 @@ const NoteSchema = z.object({
   updatedAt: z.string(),
   signedAt: z.string().nullable(),
   enteredInError: z.object({ at: z.string(), reason: z.string() }).nullable(),
-  addenda: z.array(z.object({ id: z.uuid(), text: z.string(), writtenBy: AuthorSchema, signedAt: z.string() })),
+  addenda: z.array(z.object({
+    id: z.uuid(),
+    text: z.string(),
+    writtenBy: AuthorSchema,
+    signedAt: z.string(),
+    enteredInError: z.object({ at: z.string(), reason: z.string() }).nullable(),
+  })),
 });
 
 const refusals = {
@@ -146,8 +152,8 @@ export const markEnteredInError = createRoute({
   tags,
   method: "post",
   path: "/notes/{id}/entered-in-error",
-  summary: "Mark a signed note entered in error",
-  description: "For a note written on the wrong patient's record. It stays on the record, marked, with the reason.",
+  summary: "Mark a signed note or addendum entered in error",
+  description: "For one written on the wrong patient's record. It stays on the record, marked, with the reason; an addendum is answered with its note.",
   middleware: [noteStaff] as const,
   request: {
     headers: facilityHeaders,
