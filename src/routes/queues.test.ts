@@ -222,6 +222,20 @@ describe("a visit's queue", () => {
     expect(entry).toMatchObject({ status: "cancelled", endedBy: c.clerk.actor.membershipId });
   });
 
+  it("will not cancel a visit while its patient is being seen", async () => {
+    const c = await clinic();
+    await c.point("Triage", "triage");
+    const visit = await c.visit();
+    await post(c, `/queue-entries/${visit.queue.entryId}/serve`, c.nurse);
+
+    const refused = await post(c, `/encounters/${visit.id}/cancel`, c.clerk, { reason: "Wrong patient" });
+    expect(refused.status).toBe(409);
+    expect((await refused.json()).code).toBe("being_seen");
+
+    await post(c, `/queue-entries/${visit.queue.entryId}/finish`, c.nurse, {});
+    expect((await post(c, `/encounters/${visit.id}/cancel`, c.clerk, { reason: "Wrong patient" })).status).toBe(200);
+  });
+
   it("is for queue staff, audited, and this facility's alone", async () => {
     const c = await clinic();
     const triage = await c.point("Triage", "triage");

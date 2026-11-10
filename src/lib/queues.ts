@@ -50,6 +50,7 @@ export type QueueErrorCode
     | "entry_not_found"
     | "not_waiting"
     | "not_serving"
+    | "being_seen"
     | "fee_unpriced"
     | "not_a_clinic"
     | "not_a_consultation_item";
@@ -70,6 +71,7 @@ export class QueueError extends Error {
       entry_not_found: "No such queue entry",
       not_waiting: "The patient is no longer waiting in this queue",
       not_serving: "The patient is not being seen in this queue",
+      being_seen: "The patient is being seen; the clinician finishes with them first",
       fee_unpriced: "This clinic's consultation fee has no price today; the facility admin or finance manager sets it",
       not_a_clinic: "Only a clinic charges a consultation fee; triage has none",
       not_a_consultation_item: "That item is not an active consultation item",
@@ -393,14 +395,17 @@ export async function removeFromQueue(
 
 /**
  * Ends an encounter's live entry as the encounter ends: the caller holds the
- * encounter's lock. Cancelling a visit opened in error cancels its entry; the
- * nightly run (no actor) marks a waiting patient as having left and a patient
- * still being seen as done.
+ * encounter's lock. Cancelling a visit opened in error cancels its waiting
+ * entry, and is refused while a clinician is seeing the patient: once seen,
+ * the visit is no longer simply a mistake. The nightly run (no actor) marks a
+ * waiting patient as having left and a patient still being seen as done.
  */
 export async function endLiveEntry(tx: AppDb, facilityId: string, encounterId: string, actor: PatientActor | null, at: Date) {
   const [live] = await tx.select().from(queueEntries).where(and(eq(queueEntries.encounterId, encounterId), inArray(queueEntries.status, LIVE))).for("update");
   if (!live)
     return;
+  if (actor && live.status === "serving")
+    throw new QueueError("being_seen");
   const status = actor ? "cancelled" : live.status === "serving" ? "done" : "left";
   await tx.update(queueEntries)
     .set({ status, endedAt: at, endedBy: actor?.membershipId ?? null })

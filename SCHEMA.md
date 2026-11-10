@@ -465,6 +465,12 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - gaining a clinical role needs a licence unless one is on record, and losing every clinical role clears it;
   - the facility's last admin cannot lose the admin role. Every active admin membership is locked, by id, before the count, so two admins demoting each other at once queue and the second is refused (tested).
 - **`requireClinicalRole(...)`** guards clinical routes from slice 2 on: one of the named clinical roles, and a licence valid on today's Kenyan date (valid through its last day). Otherwise it answers 403, code `licence_expired`, saying when the licence lapsed and that the facility admin can record the current one.
+- **Rows from before licences:** migration 0040 adds the two `*_licence_iff_clinical` CHECKs `NOT VALID`.
+  - They hold for every row written or changed from then on, and an older clinical membership stays as it was.
+  - That member cannot act clinically until the admin records a licence, which makes the row valid.
+  - A pending clinical invitation without a licence is revoked by the migration, with an audit entry, to be sent again with it.
+  - Once no such row is left, `VALIDATE CONSTRAINT` makes both CHECKs whole.
+  - This was checked against a database migrated from 0039 with such rows.
 - **Not yet:**
   - ending a membership;
   - a check against the health worker registry (AfyaConnect);
@@ -492,7 +498,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 - **Locks:** every change locks the encounter first, then the entry (M8), so two clinicians calling the same patient queue and the second is refused (tested), and a visit cannot close while its patient is being queued.
 - **Ending a visit:**
   - closing a visit is refused while its patient is in a queue (`still_queued`), so nobody waits for a call that cannot come;
-  - cancelling a visit opened in error cancels its entry.
+  - cancelling a visit opened in error cancels its waiting entry, and is refused while a clinician is seeing the patient (`being_seen`): they finish with the patient first.
 - **The attending clinician is derived, not stored:** whoever most recently called the patient in at a consultation point. The encounter's detail shows it, with the queue the patient is in now.
 - **Reading a queue** (`GET /service-points/{id}/queue`) lists those being seen, then those waiting by arrival, each with name, OP number, sex and age. It is audited as `queue.viewed`, since it names patients and where they are.
 - **The nightly close** (`POST /internal/jobs/close-visits`, `src/jobs/visits.ts`):
@@ -506,7 +512,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 
 **As built (P3, slice 1c): consultation fees and paying.** Decided 2026-11-10 (`ROADMAP.md` P3, `SPEC.md` §2):
 
-- **A clinic's fee:** `service_points.consultation_item_id` names the billable item being seen at that clinic is charged as.
+- **A clinic's fee:** `service_points.consultation_item_id` names the billable item that a consultation at that clinic is charged as.
   - The facility admin sets it, to an active `consultation` item. A CHECK keeps it off triage points.
   - Its price comes from the cash list on the day, as a ward's bed-day does. A change applies to patients who join from then on.
 - **Charged as the patient joins the clinic's queue**, so a patient paying as they go can pay before they are seen (rule 16: the clinic's work raises it). The charge's source is its queue entry: `charges.queue_entry_id`, a typed source alongside `bed_stay_id`.
