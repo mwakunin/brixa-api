@@ -14,7 +14,7 @@ There is no `{ success, data, error, meta }` envelope. Each response's shape is 
 | Outcome | Status | Body |
 |---|---|---|
 | Success | 200 / 201 | The resource itself, or a named list: `{ encounters: [...] }` |
-| Refusal | What the route declares, usually 409 | `{ message, code }` (`RefusalSchema`) |
+| Refusal | What the route declares, usually 409 | `{ message, code }` (`RefusalSchema`), plus any fields the route declares for that refusal: a possible duplicate patient also carries `candidates` |
 | Not found, or not yours | 404 | `{ message }` only |
 | Validation failure | 422 | Stoker's `defaultHook` shape: `{ success: false, error: { name: "ValidationError", issues } }`. Reuse it when a lib refusal is really about one field |
 | Unexpected error | 500 | `{ message, requestId }` from `onError` |

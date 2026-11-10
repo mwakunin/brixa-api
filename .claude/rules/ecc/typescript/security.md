@@ -12,7 +12,7 @@ paths:
 - Read configuration from `@/env`, which is validated with Zod at start-up. Never read `process.env` directly: ESLint's `node/no-process-env` is an error, disabled only in `src/env.ts` and test setup.
 - Add a new variable to `EnvSchema` in [src/env.ts](../../../../src/env.ts). A credential production cannot run without also goes in `PRODUCTION_REQUIRED`, so the API refuses to start without it.
 - Per-facility secrets (M-Pesa credentials) are stored in the database, encrypted with `encryptSecret` from `src/lib/crypto.ts`, never in env.
-- Compare secrets and tokens with `secretEquals` (constant time), never `===`.
+- Compare secrets and tokens with `secretEquals`, never `===`. It is constant-time only for inputs of equal length and reveals the expected length, so use it for fixed-length tokens such as `generateCallbackToken`'s. Where a secret's length is itself sensitive, compare digests of fixed length instead.
 
 ```typescript
 // NEVER

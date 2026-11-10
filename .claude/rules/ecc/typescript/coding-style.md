@@ -82,25 +82,27 @@ function rename(user: Readonly<User>, name: string): User {
 A database error's message carries its SQL and its parameters, so it can hold patient data. It must never reach a log line, a response body or a stored column (`CLAUDE.md` rule 10).
 
 - A lib module refuses by throwing its own error class with a `code` union (`PatientError`, `EncounterError`, `BillingError`). Do not return error values.
-- A handler catches only its module's error class and maps it to the refusal its route declares. A not-found code answers 404 with `{ message }` only, so a stranger learns nothing. Anything else is rethrown.
+- A handler catches its module's error class, plus any database constraint violations it recognizes (`isCheckViolation` and `pgConstraintName` from `src/lib/db-errors.ts`, as the patients handler does), and maps them to the refusals its route declares. A not-found code answers 404 with `{ message }` only, so a stranger learns nothing. Anything else is rethrown.
 - Unexpected errors go to `onError` ([src/lib/on-error.ts](../../../../src/lib/on-error.ts)), which logs `summarizeError(err)` and answers with a fixed message and the request id. Do not catch an error just to log it and rethrow.
 - When logging or storing an error yourself, use `summarizeError` (log) or `errorLine` (a column such as `outbox.last_error`) from `src/lib/error-summary.ts`. Never log `err`, `err.message` or `err.detail`.
 - If you must wrap an error, pass `{ cause: err }` so the original is kept.
 
 ```typescript
-// lib: refuse with the module's error class
-export class PatientError extends Error {
-  constructor(readonly code: "not_found" | "possible_duplicate") {
-    super({ not_found: "No such patient", possible_duplicate: "This looks like a patient already on file" }[code]);
-    this.name = "PatientError";
+// lib: refuse with the module's error class (src/lib/encounters.ts, shortened)
+export class EncounterError extends Error {
+  constructor(readonly code: "not_found" | "bed_not_found" | "bed_occupied") {
+    super(/* a message per code, written for the caller */);
+    this.name = "EncounterError";
   }
 }
 
-// handler: map the module's refusals, rethrow the rest
+// handler: map the module's refusals, rethrow the rest (encounters.handlers.ts)
+const NOT_FOUND = new Set(["not_found", "bed_not_found"]);
+
 function refusal(c: Context<TenantBindings>, err: unknown) {
-  if (!(err instanceof PatientError))
+  if (!(err instanceof EncounterError))
     return null;
-  if (err.code === "not_found")
+  if (NOT_FOUND.has(err.code))
     return c.json({ message: HttpStatusPhrases.NOT_FOUND }, HttpStatusCodes.NOT_FOUND);
   return c.json({ message: err.message, code: err.code }, HttpStatusCodes.CONFLICT);
 }
