@@ -18,7 +18,7 @@ import {
 
 import type { DocumentContent } from "@/lib/document-content";
 
-import { CLINICAL_ROLES, LICENCE_NUMBER_PATTERN } from "@/lib/professions";
+import { CLINICAL_ROLES, LICENCE_NUMBER_PATTERN, PROFESSIONS } from "@/lib/professions";
 import { VITAL_SIGNS } from "@/lib/vital-signs";
 
 import { account, session, user, verification } from "./auth-schema";
@@ -124,6 +124,9 @@ function textArray(name: string, values: readonly string[]) {
  *
  *   licence_iff_clinical a licence exactly when a clinical role is held, and
  *                        its profession, number and expiry always together
+ *   licence_fits_roles   the licence's profession is that of a role held, so
+ *                        it covers other professions' roles only alongside
+ *                        one of its own
  *   licence_number_shape as `normaliseLicenceNumber` leaves it
  *
  * Every operand is non-null (`roles` is NOT NULL, and `IS NULL` never is), so
@@ -131,7 +134,15 @@ function textArray(name: string, values: readonly string[]) {
  */
 function licenceChecks(table: string, t: { roles: unknown; licenceProfession: unknown; licenceNumber: unknown; licenceExpiresOn: unknown }) {
   const { roles, licenceProfession, licenceNumber, licenceExpiresOn } = t;
+  const fits = Object.entries(PROFESSIONS).map(([profession, p]) => {
+    assertDdlSafe(table, [profession]);
+    return sql`WHEN ${sql.raw(`'${profession}'`)} THEN ${roles} && ${textArray(table, p.roles)}`;
+  });
   return [
+    check(
+      `${table}_licence_fits_roles`,
+      sql`${licenceProfession} IS NULL OR (CASE ${licenceProfession} ${sql.join(fits, sql` `)} ELSE false END)`,
+    ),
     check(
       `${table}_licence_iff_clinical`,
       sql`(${roles} && ${textArray(table, CLINICAL_ROLES)}) = (${licenceNumber} IS NOT NULL)

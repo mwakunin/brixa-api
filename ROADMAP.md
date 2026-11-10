@@ -123,7 +123,7 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
   - Prescribing for a child needs a weight taken that day.
   - Lab analytes carry critical limits, and verifying a critical result records who was told and when.
   - The ordering clinician gets a results-to-review list and acknowledges each result.
-  - NEWS2 is calculated for adults at triage.
+  - Abnormal vital signs are flagged for adults; children's thresholds depend on age and need care.
   - Sensitive billable items print under a neutral name.
   - Sensitivity comes from ICD codes, lab tests and clinics.
   - Break-glass alerts go to an in-app list for the attending clinician and the facility admin.
@@ -149,7 +149,7 @@ Main store, pharmacy and ward sub-stores; transfers; goods received; batches and
 
 **Size:** L.
 
-Bed board; transfers; nursing notes; observation charts; the medication administration record (MAR); ward rounds; the discharge summary.
+Bed board; transfers; nursing notes; observation charts, with the NEWS2 early-warning score for adults (moved here from P3 on 2026-11-10: it is built for spotting deterioration on the wards, and outpatient triage uses the emergency/urgent/routine priority instead); the medication administration record (MAR); ward rounds; the discharge summary.
 
 **Exit:** admission to discharge with a signed discharge summary and no paper.
 

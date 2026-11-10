@@ -140,6 +140,34 @@ describe("vital signs", () => {
     expect((await call("POST", `/encounters/${visit.id}/observations`, other.id, stranger, readings)).status).toBe(404);
   });
 
+  it("keep a visit from being cancelled, until they are marked entered in error", async () => {
+    const c = await clinic();
+    const visit = await c.visit();
+    const [reading] = (await (await at(c, c.nurse, "POST", `/encounters/${visit.id}/observations`, { readings: [{ code: "pulse", value: 80 }] })).json()).observations;
+    const cancel = () => at(c, c.clerk, "POST", `/encounters/${visit.id}/cancel`, { reason: "Wrong patient" });
+
+    const refused = await cancel();
+    expect(refused.status).toBe(409);
+    expect((await refused.json()).code).toBe("has_clinical_records");
+
+    await at(c, c.nurse, "POST", `/observations/${reading.id}/entered-in-error`, { reason: "Wrong patient's record" });
+    expect((await cancel()).status).toBe(200);
+  });
+
+  it("keep a visit from being cancelled after its triage entry is finished", async () => {
+    const c = await clinic();
+    const triage = await c.point("Triage", "triage");
+    const visit = await c.visit({ queueAt: triage });
+    await at(c, c.nurse, "POST", `/queue-entries/${visit.queue.entryId}/serve`);
+    await at(c, c.nurse, "POST", `/encounters/${visit.id}/observations`, { readings: [{ code: "temperature", value: 38.4 }] });
+    await at(c, c.nurse, "POST", `/queue-entries/${visit.queue.entryId}/finish`, {});
+
+    const refused = await at(c, c.clerk, "POST", `/encounters/${visit.id}/cancel`, { reason: "Opened in error" });
+
+    expect(refused.status).toBe(409);
+    expect((await refused.json()).code).toBe("has_clinical_records");
+  });
+
   it("are guarded by the database: plausible values, marked never edited, never deleted", async () => {
     const c = await clinic();
     const visit = await c.visit();

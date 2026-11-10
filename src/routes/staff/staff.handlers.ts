@@ -26,6 +26,7 @@ const LICENCE_FIELD: Partial<Record<PractitionerErrorCode, string[]>> = {
   licence_required: [],
   licence_not_needed: [],
   profession_required: ["profession"],
+  profession_mismatch: ["profession"],
   licence_expired: ["expiresOn"],
   licence_number_invalid: ["number"],
 };

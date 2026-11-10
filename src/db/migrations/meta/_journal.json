@@ -330,6 +330,13 @@
       "when": 1794328531148,
       "tag": "0046_triage_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1794330538672,
+      "tag": "0047_licence_fits_roles",
+      "breakpoints": true
     }
   ]
 }

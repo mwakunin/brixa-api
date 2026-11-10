@@ -35,18 +35,18 @@ Every external call is an outbox row, drained by `POST /internal/outbox/drain` (
 4. **Cloud Scheduler job**, the nightly bed-day run, at 00:15 Africa/Nairobi: `POST {BETTER_AUTH_URL}/internal/jobs/bed-days`, with the same OIDC token and audience. It charges every open admission's nights so far; it is idempotent, so a retry or a second run charges nothing twice.
 5. **Cloud Scheduler job**, the daily reconciliation check, at 02:00 Africa/Nairobi: `POST {BETTER_AUTH_URL}/internal/jobs/reconciliation`, same token and audience. It checks every facility's money identities (M2, M3, M4, M-Pesa); a finding stays in `job_failures` until fixed, and is logged as `money identities drifted`, which should alert.
 
-   **The nightly close of outpatient visits**, at 03:00 Africa/Nairobi: `POST {BETTER_AUTH_URL}/internal/jobs/close-visits`, same token and audience. It closes every outpatient visit opened before that day and still open, so yesterday's patients leave the queues; emergency attendances and admissions are left alone.
+6. **Cloud Scheduler job**, the nightly close of outpatient visits, at 03:00 Africa/Nairobi: `POST {BETTER_AUTH_URL}/internal/jobs/close-visits`, same token and audience. It closes every outpatient visit opened before that day and still open, so yesterday's patients leave the queues; emergency attendances and admissions are left alone. A facility's failure stays in `job_failures` until a later run for it succeeds.
 
-   The nightly jobs need **retries**: Cloud Scheduler's default is none, so a run that fails as a whole (the database unreachable before any facility is checked) would wait for the next night. Set e.g. `--max-retry-attempts=3 --min-backoff=5m --max-backoff=30m`. All of them are idempotent, so a retry repeats nothing.
-6. **IAM for the Cloud Run runtime service account:**
+   The three nightly jobs (steps 4 to 6) need **retries**: Cloud Scheduler's default is none, so a run that fails as a whole (the database unreachable before any facility is checked) would wait for the next night. Set e.g. `--max-retry-attempts=3 --min-backoff=5m --max-backoff=30m`. All three are idempotent, so a retry repeats nothing.
+7. **IAM for the Cloud Run runtime service account:**
    - `roles/cloudtasks.enqueuer` on the queue
    - `roles/iam.serviceAccountUser` on the invoker account, so a task can carry its token
-7. **Alerts** (log-based, on the JSON lines the API writes):
+8. **Alerts** (log-based, on the JSON lines the API writes):
    - `jsonPayload.msg = "money identities drifted"`: the daily check found money that does not add up. The line names the facility and the ids; `job_failures` holds each finding until it is fixed.
    - `jsonPayload.msg = "outbox job failed permanently"`: a job will not be retried. The line carries `outboxId`, `facilityId` and `operation`; the row's `last_error` says why.
    - `jsonPayload.msg = "outbox nudge failed; the scheduled sweep will deliver"`: Cloud Tasks could not be reached. Worth a look if it persists.
-   - `jsonPayload.msg = "job failed for a facility"`: a nightly job (`job`: the bed-day run or the reconciliation check) failed for one facility (`facilityId`). Nights the bed-day run could not price are listed in that facility's `job_failures` instead.
-   - **A scheduled job that failed as a whole**: `resource.type = "cloud_scheduler_job"` with `severity >= ERROR`, i.e. the attempt got no 2xx from `/internal/jobs/…` even after its retries. Whether the run finished is unknown: a timeout or a lost response can come after the work committed, or while the handler is still running. Facilities whose transaction committed were checked or charged; any others were not. Both jobs are idempotent, so running the job again by hand completes the night without repeating anything.
+   - `jsonPayload.msg = "job failed for a facility"`: a nightly job (`job`: `bed_day_accrual`, `reconciliation` or `visit_close`) failed for one facility (`facilityId`). Nights the bed-day run could not price are listed in that facility's `job_failures` instead.
+   - **A scheduled job that failed as a whole**: `resource.type = "cloud_scheduler_job"` with `severity >= ERROR`, i.e. the attempt got no 2xx from `/internal/jobs/…` even after its retries. Whether the run finished is unknown: a timeout or a lost response can come after the work committed, or while the handler is still running. Facilities whose transaction committed were checked or charged; any others were not. All three jobs are idempotent, so running the job again by hand completes the night without repeating anything.
 
 ## 3. File storage
 

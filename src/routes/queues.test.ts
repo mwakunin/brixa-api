@@ -328,6 +328,21 @@ describe("the nightly close of outpatient visits", () => {
     expect(await closeStaleVisits()).toMatchObject({ closed: 0 });
   });
 
+  it("resolves a facility's earlier failure once a later run succeeds, not one recorded since", async () => {
+    const c = await clinic();
+    await pool.query(
+      `INSERT INTO job_failures (facility_id, job, error, failed_at) VALUES
+         ($1, 'visit_close', 'earlier', now() - interval '1 day'),
+         ($1, 'visit_close', 'overlapping', now() + interval '1 hour')`,
+      [c.facility.id],
+    );
+
+    await closeStaleVisits();
+
+    const { rows } = await pool.query("SELECT error, resolved_at IS NOT NULL AS resolved FROM job_failures WHERE job = 'visit_close' ORDER BY error");
+    expect(rows).toEqual([{ error: "earlier", resolved: true }, { error: "overlapping", resolved: false }]);
+  });
+
   it("is an internal job, called by Cloud Scheduler alone", async () => {
     expect((await app.request("/internal/jobs/close-visits", { method: "POST" })).status).toBe(401);
   });

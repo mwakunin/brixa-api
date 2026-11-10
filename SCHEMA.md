@@ -450,6 +450,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   | `pharmacy` | `pharmacist`, `pharm_tech` | PPB |
 
 - **The profession is derived when it can be:** a request may leave it out when the clinical roles belong to one profession, and must give it when they span several.
+- **The licence must be in the profession of a role held** (`*_licence_fits_roles`, and the service). A licence covers another profession's roles only alongside one of its own, never instead of it: a nurse made a doctor needs a doctor's licence, and a changed set of roles keeps the licence on record only while it still fits.
 - **CHECKs on both tables:**
   - a licence is present exactly when a clinical role is held, with its profession, number and expiry always together (`*_licence_iff_clinical`);
   - the profession is a known one (`*_licence_profession_known`);
@@ -505,7 +506,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - closes every `opd` visit opened before that Kenyan day and still open, with `closed_by` null (the `encounters_lifecycle` CHECK now allows that for a closed visit) and an audit entry with no actor;
   - a waiting patient's entry becomes `left`, and one still being seen becomes `done`;
   - emergency attendances and admissions are left alone, since they may run overnight;
-  - a facility whose run fails is a `job_failures` row (`visit_close`).
+  - a facility whose run fails is a `job_failures` row (`visit_close`). A later successful run for that facility resolves the failures recorded before it began, but not one an overlapping run recorded since.
 - **Not yet:**
   - a visit closing itself once nothing is pending, which needs orders (4a);
   - a triage priority ordering the consultation queue (slice 2).
@@ -538,9 +539,10 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - A set taken together shares its `observed_at`, which falls within the encounter and never in the future.
   - Blood pressure needs both readings.
 - **Ranges catch typing slips, not illness.** A value outside what a real reading can be is refused by the route and by the `observations_value_plausible` CHECK, which is built from the same list. A value inside it is stored however abnormal.
-  - Normal-range flags and scores (NEWS2) are not built: they depend on age and are still to confirm (`ROADMAP.md` P3).
+  - Normal-range flags are not built: they depend on age and are still to confirm. NEWS2 belongs to the ward observation charts (P5, decided 2026-11-10).
   - Codes are this system's own. Mapping to LOINC waits for DHA's vital-sign profiles.
 - **A wrong reading is marked entered in error**, with a reason, and stays on the record. The trigger `observations_error_only` refuses any other change, and any deletion, for every role.
+- **A visit with readings still standing cannot be cancelled** as opened in error (`has_clinical_records`), whether or not its queue entry is finished. Once every reading is marked entered in error (the wrong patient's record), it can be.
 - **Allergies** (`patient_allergies`, per patient rather than per visit): `category` (drug, food, environment, other), `allergen` as told, optional `reaction` and `severity`.
   - **"No known allergies"** is its own row (`none_known`), at most one standing per patient (partial unique index), since "asked, and none" differs from "never asked". An empty list means nobody has asked.
   - Recording an allergy ends a standing "no known allergies"; "no known allergies" is refused while an allergy stands.

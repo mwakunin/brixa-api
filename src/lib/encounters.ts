@@ -11,6 +11,7 @@ import { recordAudit } from "./audit";
 import { accrueBedDays, liveChargeCount } from "./charges";
 import { isExclusionViolation, isUniqueViolation } from "./db-errors";
 import { issueNumber } from "./number-series";
+import { hasStandingObservations } from "./observations";
 import { attendingOf, defaultTriagePoint, endLiveEntry, joinLocked, liveEntryOf } from "./queues";
 import { bedOccupied, bedWithWard } from "./wards";
 
@@ -43,6 +44,7 @@ export class EncounterError extends Error {
     | "same_bed"
     | "parent_mismatch"
     | "has_charges"
+    | "has_clinical_records"
     | "still_queued") {
     super({
       patient_not_found: "No such patient",
@@ -58,6 +60,7 @@ export class EncounterError extends Error {
       same_bed: "The patient is already in that bed",
       parent_mismatch: "That visit belongs to another patient",
       has_charges: "This encounter has charges; cancel them first",
+      has_clinical_records: "This encounter has vital signs on record; mark them entered in error first if it was opened by mistake",
       still_queued: "The patient is still in a queue; finish with them or take them out of it first",
     }[code]);
     this.name = "EncounterError";
@@ -199,7 +202,9 @@ export async function closeEncounter(tx: AppDb, facilityId: string, id: string, 
  * Cancels an encounter opened by mistake, for a stated reason. A cancelled
  * admission leaves its bed at once, and a cancelled visit its queue. One with
  * charges still standing cannot be cancelled: the charges are cancelled
- * first, each for its own reason.
+ * first, each for its own reason. Nor can one with clinical records still
+ * standing (vital signs so far): a visit with care recorded was not simply a
+ * mistake, and the records are marked entered in error first if it was.
  */
 export async function cancelEncounter(tx: AppDb, facilityId: string, id: string, reason: string, actor: PatientActor, at = new Date()) {
   const encounter = await lockEncounter(tx, id);
@@ -207,6 +212,8 @@ export async function cancelEncounter(tx: AppDb, facilityId: string, id: string,
   await endLiveEntry(tx, facilityId, id, actor, at);
   if (await liveChargeCount(tx, id) > 0)
     throw new EncounterError("has_charges");
+  if (await hasStandingObservations(tx, id))
+    throw new EncounterError("has_clinical_records");
 
   if (encounter.kind === "ipd") {
     const [admission] = await tx.select({ id: admissions.id }).from(admissions).where(eq(admissions.encounterId, id)).limit(1);

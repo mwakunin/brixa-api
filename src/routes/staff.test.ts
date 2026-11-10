@@ -202,6 +202,21 @@ describe("changing a member's roles", () => {
     expect(await stored(member.id)).toMatchObject({ roles: ["cashier"], licenceProfession: null, licenceNumber: null, licenceExpiresOn: null });
   });
 
+  it("needs a new licence when the roles no longer fit the one on record", async () => {
+    const facility = await makeFacility();
+    const admin = await adminOf(facility.id);
+    const nurse = await memberWith(facility.id, ["nurse"], { number: "NCK1", expiresOn: addDays(businessDate(), 200) });
+
+    const keptNursing = await setRoles(facility.id, admin, nurse.id, { roles: ["doctor"] });
+    expect(keptNursing.status).toBe(422);
+    expect((await keptNursing.json()).error.issues[0].path).toEqual(["licence"]);
+    const wrongProfession = await setRoles(facility.id, admin, nurse.id, { roles: ["doctor"], licence: { profession: "nurse", number: "NCK1", expiresOn: addDays(businessDate(), 200) } });
+    expect((await wrongProfession.json()).error.issues[0].path).toEqual(["licence", "profession"]);
+
+    const doctor = await setRoles(facility.id, admin, nurse.id, { roles: ["doctor"], licence: { number: "A777", expiresOn: addDays(businessDate(), 200) } });
+    expect((await doctor.json()).licence).toMatchObject({ profession: "medical_practitioner", council: "KMPDC", number: "A777" });
+  });
+
   it("never leaves the facility without an admin", async () => {
     const facility = await makeFacility();
     const admin = await adminOf(facility.id);
@@ -285,13 +300,18 @@ describe("the database's licence guards", () => {
 
   it.each([
     ["a clinical role without a licence", ["doctor"], null, null, null, "memberships_licence_iff_clinical"],
-    ["a licence without a clinical role", ["cashier"], "nurse", "A1", expiresOn, "memberships_licence_iff_clinical"],
+    ["a licence without a clinical role", ["cashier"], null, "A1", expiresOn, "memberships_licence_iff_clinical"],
     ["a number without its expiry", ["doctor"], "medical_practitioner", "A1", null, "memberships_licence_iff_clinical"],
     ["a number without its profession", ["doctor"], null, "A1", expiresOn, "memberships_licence_iff_clinical"],
-    ["a profession it does not know", ["doctor"], "herbalist", "A1", expiresOn, "memberships_licence_profession_known"],
+    // Unknown, so it fits no role either; Postgres names whichever CHECK it meets first.
+    ["a profession it does not know", ["doctor"], "herbalist", "A1", expiresOn, /^memberships_licence_(profession_known|fits_roles)$/],
+    ["a licence in a profession no role belongs to", ["doctor"], "nurse", "A1", expiresOn, "memberships_licence_fits_roles"],
     ["a number as typed, not normalised", ["doctor"], "medical_practitioner", "a 1", expiresOn, "memberships_licence_number_shape"],
   ])("refuses %s", async (_, roles, profession, number, expires, constraint) => {
-    await expect(insertMembership(roles, profession, number, expires)).rejects.toMatchObject({ code: "23514", constraint });
+    await expect(insertMembership(roles, profession, number, expires)).rejects.toMatchObject({
+      code: "23514",
+      constraint: typeof constraint === "string" ? constraint : expect.stringMatching(constraint),
+    });
   });
 
   it("allows an admin who is also a doctor, and roles from two professions under one licence", async () => {

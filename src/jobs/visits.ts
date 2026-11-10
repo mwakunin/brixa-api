@@ -1,4 +1,4 @@
-import { and, eq, lt } from "drizzle-orm";
+import { and, eq, isNull, lt } from "drizzle-orm";
 
 import db from "@/db";
 import { encounters, facilities, jobFailures } from "@/db/schema";
@@ -16,12 +16,15 @@ import { logger } from "@/lib/logger";
  *
  * Facility by facility, each in its own tenant transaction; a facility whose
  * run fails is recorded in `job_failures` and logged for an alert, and the
- * others carry on. Idempotent: a closed visit is skipped. The OWNER
+ * others carry on. A facility's later successful run resolves the failures
+ * recorded before it began, but not one an overlapping run recorded since.
+ * Idempotent: a closed visit is skipped. The OWNER
  * connection only lists facilities and records such a failure. Cloud
  * Scheduler calls it through `POST /internal/jobs/close-visits`.
  */
 export async function closeStaleVisits(now = new Date()) {
   const tally = { facilities: 0, closed: 0, failed: 0 };
+  const runStartedAt = new Date();
   const dayStart = startOfBusinessDay(businessDate(now));
   const all = await db.select({ id: facilities.id }).from(facilities);
 
@@ -38,6 +41,9 @@ export async function closeStaleVisits(now = new Date()) {
           if (await closeStaleVisit(tx, facility.id, id, now))
             closed += 1;
         }
+        await tx.update(jobFailures)
+          .set({ resolvedAt: new Date() })
+          .where(and(eq(jobFailures.job, "visit_close"), isNull(jobFailures.resolvedAt), lt(jobFailures.failedAt, runStartedAt)));
         return closed;
       });
     }

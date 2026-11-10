@@ -1,4 +1,4 @@
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 
@@ -50,6 +50,16 @@ export class ObservationError extends Error {
 export interface Reading {
   code: VitalSign;
   value: number;
+}
+
+/** Whether any reading on the encounter still stands (not marked entered in error). */
+export async function hasStandingObservations(tx: AppDb, encounterId: string): Promise<boolean> {
+  const [row] = await tx
+    .select({ id: observations.id })
+    .from(observations)
+    .where(and(eq(observations.encounterId, encounterId), isNull(observations.enteredInErrorAt)))
+    .limit(1);
+  return Boolean(row);
 }
 
 /** Whether a reading is one a real patient could give: not a judgement of normal. */

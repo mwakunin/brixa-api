@@ -553,6 +553,7 @@ describe("a facility admin inviting staff", () => {
 
     expect(await refusedAt({ roles: ["cashier"], licence })).toEqual(["licence"]);
     expect(await refusedAt({ roles: ["nurse", "pharm_tech"], licence })).toEqual(["licence", "profession"]);
+    expect(await refusedAt({ roles: ["doctor"], licence: { ...licence, profession: "pharmacy" } })).toEqual(["licence", "profession"]);
     expect(await refusedAt({ roles: ["doctor"], licence: { ...licence, expiresOn: addDays(businessDate(), -1) } })).toEqual(["licence", "expiresOn"]);
     expect(await refusedAt({ roles: ["doctor"], licence: { ...licence, number: "A 12#4" } })).toEqual(["licence", "number"]);
 

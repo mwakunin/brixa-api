@@ -56,6 +56,7 @@ export type PractitionerErrorCode
     | "licence_required"
     | "licence_not_needed"
     | "profession_required"
+    | "profession_mismatch"
     | "licence_expired"
     | "licence_number_invalid"
     | "not_clinical"
@@ -66,6 +67,7 @@ const MESSAGES: Record<PractitionerErrorCode, string> = {
   licence_required: "A clinical role needs the person's practising licence number and expiry date",
   licence_not_needed: "Only a clinical role carries a practising licence",
   profession_required: "These roles span professions; say which profession the licence is held in",
+  profession_mismatch: "The licence must be in the profession of one of the clinical roles held",
   licence_expired: "That licence has already expired; enter the renewed one",
   licence_number_invalid: "A licence number has letters, digits, / and - only",
   not_clinical: "This member holds no clinical role, so has no licence to renew",
@@ -121,6 +123,10 @@ function checkedLicence(licence: LicenceInput, roles: readonly MembershipRole[],
   const profession = licence.profession ?? (derived.length === 1 ? derived[0] : null);
   if (!profession)
     throw new PractitionerError("profession_required");
+  // A licence covers roles of other professions only alongside one of its own
+  // (a nurse who also dispenses), never instead of it (rule 25).
+  if (!derived.includes(profession))
+    throw new PractitionerError("profession_mismatch");
   const number = normaliseLicenceNumber(licence.number);
   if (!new RegExp(LICENCE_NUMBER_PATTERN).test(number))
     throw new PractitionerError("licence_number_invalid");
@@ -249,8 +255,8 @@ export async function setLicence(
 /**
  * Gives a member a new set of roles.
  *
- * Gaining a clinical role needs a licence, unless they already hold one;
- * losing every clinical role clears it. The facility always keeps an admin:
+ * Gaining a clinical role needs a licence, unless they already hold one that
+ * fits the new roles; losing every clinical role clears it. The facility always keeps an admin:
  * every active admin membership is locked (by id) before the count, so two
  * admins demoting each other at once queue, and the second sees the first's
  * change and is refused.
@@ -278,8 +284,11 @@ export async function changeRoles(
   if (member.roles.includes("facility_admin") && !input.roles.includes("facility_admin") && otherAdmins.length === 0)
     throw new PractitionerError("last_admin");
 
+  // The licence on record carries over only while it still fits the roles:
+  // a nurse made a doctor needs a doctor's licence.
   const held = licenceOf(member);
-  const licence = input.licence || !input.roles.some(isClinicalRole) || !held
+  const heldFits = held !== null && professionsOf(input.roles).includes(held.profession);
+  const licence = input.licence || !input.roles.some(isClinicalRole) || !heldFits
     ? licenceFor(input.roles, input.licence, today)
     : held;
 
