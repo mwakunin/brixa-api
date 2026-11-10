@@ -337,6 +337,20 @@
       "when": 1794330538672,
       "tag": "0047_licence_fits_roles",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1794331924033,
+      "tag": "0048_diagnoses",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1794331930189,
+      "tag": "0049_diagnoses_rls",
+      "breakpoints": true
     }
   ]
 }

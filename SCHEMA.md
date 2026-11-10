@@ -558,6 +558,38 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - pharmacists and pharmacy technicians may also record and remove allergies;
   - only clinical roles read either, as decided (2026-11-10). Each read is audited, as `encounter.viewed` and `patient.viewed`.
 
+**As built (P3, slice 3a): diagnoses in ICD-11.** Decided 2026-11-10 (`SPEC.md` §4, question 8):
+
+- **`icd_codes`**, the first shared reference table (CLAUDE.md rule 1): no `facility_id`, no row-level security, and `SELECT` only for the app role.
+  - It holds the categories of ICD-11 MMS chapters 01–25: `code`, `title`, `uri` (the linearization URI, which residual codes have even without a foundation URI), `chapter`, `is_leaf`, `is_residual`, `release`, `retired_at`.
+  - Extension codes (chapter X) qualify other codes and are never a diagnosis alone. The supplementary chapters (V, 26) are not loaded either.
+  - The 2026-01 release gives 17,255 codes, 14,793 of them leaves.
+- **Loaded per environment by `pnpm icd11:load <file>`** (`src/lib/icd11-load.ts`, on the owner connection), from the `.txt` in WHO's release zip, unmodified.
+  - The release is read from the file's `Version:` column, and a release older than one already loaded is refused.
+  - One transaction; a code a newer release no longer has is marked retired, never deleted.
+- **WHO's licence** (CC BY-ND 3.0 IGO, icd.who.int) allows storing the classification in software provided each code keeps its title and URI, and the classification is not altered. So:
+  - titles are kept as WHO wrote them (only the file's "- " depth markers are dropped);
+  - `is_residual` and `retired_at` are this system's own fields;
+  - a diagnosis copies all three of code, title and URI.
+  - Mapping ICD-11 to another classification needs WHO's written agreement, which matters for the MOH 705 report in P6 (`ROADMAP.md` P3, still open).
+- **Search** (`GET /icd-codes?q=`, clinical roles, not audited since it involves no patient data):
+  - each word typed matches the start of a word in the title, or the text matches the start of a code (exact code first);
+  - only leaves still in the current release, at most 20;
+  - a GIN index on `to_tsvector('simple', title)`, the very expression the query uses.
+  - WHO's synonym index is in its online API only, so titles are what is searched for now.
+- **`diagnoses`**, on an encounter:
+  - the code (foreign key to `icd_codes`) with its title, URI and release copied as diagnosed (rule 7), so a later release never changes the record;
+  - `certainty` (provisional or confirmed) and `rank` (principal or secondary), with at most one standing principal per encounter (partial unique index). The first diagnosis is the principal; a later one is secondary unless made principal, which demotes the other.
+  - Recorded only on an open encounter, and only under a leaf code still in the current release; the same code twice is refused.
+  - **Confirmed once**, also after the visit has closed (a result arrives the next day). **Ended once**, as ruled out or entered in error; an ended diagnosis stays on the record and never changes.
+  - Every change locks the encounter first (M8).
+  - The trigger `diagnoses_lifecycle` holds all of this for every role, and refuses deletion.
+- **Who:**
+  - doctors, clinical officers and nurses (in nurse-led clinics) diagnose, under a current licence;
+  - clinical roles read diagnoses, audited as `encounter.viewed`.
+- **Cancelling a visit** is refused while a diagnosis stands (`has_clinical_records`), as for vital signs.
+- **Not yet:** postcoordinated (cluster) codes, and marking sensitive codes for break-glass (slice 7).
+
 **Clinical record.** `observations` (vitals and charted values, with `entered_in_error` instead of deletion), `diagnoses` (ICD code, provisional \| final \| secondary), `clinical_notes` (`signed_at`, `addendum_of`: a signed note is corrected only by an addendum), `orders` and `order_items` (lab, imaging, procedure, medication, service; medication items carry dose, route, frequency and duration). Every clinical act records the acting membership, whose licence details live on `memberships` (rule 25).
 
 **Inpatient.** `admissions` is 1:1 with an ipd encounter and carries the admission number. `bed_stays` holds a `tstzrange` with two `EXCLUDE` constraints: no bed holds two patients at once, and no admission is in two beds at once. A transfer ends one stay and starts the next. `medication_administrations` records each dose against its order item (given \| held \| refused \| missed). `discharge_summaries` are immutable once signed.

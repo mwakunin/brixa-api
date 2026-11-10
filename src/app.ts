@@ -6,6 +6,7 @@ import createApp from "@/lib/create-app";
 import adjustments from "@/routes/adjustments/adjustments.index";
 import allergies from "@/routes/allergies/allergies.index";
 import charges from "@/routes/charges/charges.index";
+import diagnoses from "@/routes/diagnoses/diagnoses.index";
 import documents from "@/routes/documents/documents.index";
 import encounters from "@/routes/encounters/encounters.index";
 import facility from "@/routes/facility/facility.index";
@@ -84,6 +85,7 @@ const tenantRoutes = [
   queues,
   observations,
   allergies,
+  diagnoses,
   wards,
   prices,
   charges,

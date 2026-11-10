@@ -361,6 +361,10 @@ export const auditLog = pgTable("audit_log", {
     | "observation.entered_in_error"
     | "allergy.recorded"
     | "allergy.removed"
+    | "diagnosis.recorded"
+    | "diagnosis.confirmed"
+    | "diagnosis.principal_set"
+    | "diagnosis.ended"
   >().notNull(),
   /** What it happened to. Not a foreign key: the log outlives what it names. */
   entityType: text().notNull(),
@@ -456,6 +460,10 @@ export const auditLog = pgTable("audit_log", {
     "observation.entered_in_error",
     "allergy.recorded",
     "allergy.removed",
+    "diagnosis.recorded",
+    "diagnosis.confirmed",
+    "diagnosis.principal_set",
+    "diagnosis.ended",
   ]),
 ]);
 
@@ -1345,6 +1353,99 @@ export const patientAllergies = pgTable("patient_allergies", {
   ),
 ]);
 
+/**
+ * ICD-11 for Mortality and Morbidity Statistics (MMS), the diagnosis codes
+ * SHA claims and MOH reports use (SPEC.md §4, question 8, decided
+ * 2026-11-10). A shared reference table (CLAUDE.md rule 1): no `facility_id`,
+ * read-only to the app role, loaded by `pnpm icd11:load` from WHO's release
+ * file (`lib/icd11-load.ts`).
+ *
+ * WHO's licence (CC BY-ND 3.0 IGO, icd.who.int) lets software store the
+ * classification provided each code keeps its title and URI, which is why
+ * all three are here, and why a diagnosis copies all three. Chapters 01–25
+ * only: extension codes (X) qualify other codes and are never a diagnosis on
+ * their own, and the supplementary chapters (V, 26) are not loaded.
+ * `is_residual` and `retired_at` are this system's own fields, not WHO's.
+ */
+export const icdCodes = pgTable("icd_codes", {
+  /** e.g. `1F40.0`. */
+  code: text().primaryKey(),
+  /** As WHO titles it, without the depth markers its file prefixes. */
+  title: text().notNull(),
+  /** The MMS linearization URI, which every code has (residual ones have no foundation URI). */
+  uri: text().notNull(),
+  /** `01` to `25`. */
+  chapter: text().notNull(),
+  /** Only a leaf is coded as a diagnosis: a code with children is too broad. */
+  isLeaf: boolean().notNull(),
+  /** "Other specified" (`.Y`) or "unspecified" (`.Z`). */
+  isResidual: boolean().notNull(),
+  /** The release this code was last loaded from, e.g. `2026-01`. */
+  release: text().notNull(),
+  /** Set when a later release no longer has the code. Past diagnoses keep it. */
+  retiredAt: timestamp({ withTimezone: true }),
+}, t => [
+  check("icd_codes_code_shape", sql`${t.code} ~ '^[0-9A-Z]{4}(\\.[0-9A-Z]{1,2})*$'`),
+  check("icd_codes_chapter_shape", sql`${t.chapter} ~ '^(0[1-9]|1[0-9]|2[0-5])$'`),
+  check("icd_codes_release_shape", sql`${t.release} ~ '^[0-9]{4}-[0-9]{2}$'`),
+  check("icd_codes_uri_shape", sql`${t.uri} LIKE 'http://id.who.int/icd/release/11/%'`),
+]);
+
+/**
+ * A diagnosis made during an encounter, coded in ICD-11 (rule 8). The code's
+ * title, URI and release are copied as diagnosed (rule 7, and WHO's licence),
+ * so a later release never changes what was recorded.
+ *
+ * Provisional or confirmed; principal or secondary, with at most one standing
+ * principal per encounter (what a claim names first). It moves only forward:
+ * a provisional diagnosis is confirmed once; the principal may be moved to
+ * another; a diagnosis is ended once, as ruled out or entered in error, and
+ * never edited or deleted (trigger, migration 0049).
+ */
+export const diagnoses = pgTable("diagnoses", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  encounterId: uuid().notNull(),
+  icdCode: text().notNull().references(() => icdCodes.code),
+  icdTitle: text().notNull(),
+  icdUri: text().notNull(),
+  icdRelease: text().notNull(),
+  certainty: text().$type<"provisional" | "confirmed">().notNull(),
+  rank: text().$type<"principal" | "secondary">().notNull(),
+  diagnosedAt: timestamp({ withTimezone: true }).notNull(),
+  /** The membership that made it (rule 25). */
+  diagnosedBy: uuid().notNull(),
+  /** When a provisional diagnosis was confirmed, and by whom. */
+  confirmedAt: timestamp({ withTimezone: true }),
+  confirmedBy: uuid(),
+  endedAt: timestamp({ withTimezone: true }),
+  endedBy: uuid(),
+  endReason: text().$type<"ruled_out" | "entered_in_error">(),
+}, t => [
+  unique("diagnoses_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({ name: "diagnoses_encounter_fk", columns: [t.facilityId, t.encounterId], foreignColumns: [encounters.facilityId, encounters.id] }),
+  foreignKey({ name: "diagnoses_diagnosed_by_fk", columns: [t.facilityId, t.diagnosedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "diagnoses_confirmed_by_fk", columns: [t.facilityId, t.confirmedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "diagnoses_ended_by_fk", columns: [t.facilityId, t.endedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  index("diagnoses_encounter_index").on(t.facilityId, t.encounterId, t.diagnosedAt),
+  uniqueIndex("diagnoses_one_standing_principal")
+    .on(t.encounterId)
+    .where(sql`${t.rank} = 'principal' AND ${t.endedAt} IS NULL`),
+  oneOf("diagnoses_certainty_known", t.certainty, ["provisional", "confirmed"]),
+  oneOf("diagnoses_rank_known", t.rank, ["principal", "secondary"]),
+  oneOf("diagnoses_end_reason_known", t.endReason, ["ruled_out", "entered_in_error"]),
+  check(
+    "diagnoses_confirmation",
+    sql`(${t.confirmedAt} IS NULL AND ${t.confirmedBy} IS NULL)
+      OR (${t.confirmedAt} IS NOT NULL AND ${t.confirmedBy} IS NOT NULL AND ${t.certainty} = 'confirmed')`,
+  ),
+  check(
+    "diagnoses_end_complete",
+    sql`(${t.endedAt} IS NULL AND ${t.endedBy} IS NULL AND ${t.endReason} IS NULL)
+      OR (${t.endedAt} IS NOT NULL AND ${t.endedBy} IS NOT NULL AND ${t.endReason} IS NOT NULL)`,
+  ),
+]);
+
 // ---------------------------------------------------------------------------
 // Charges (SCHEMA.md §7.2)
 // ---------------------------------------------------------------------------
@@ -2094,6 +2195,7 @@ export const TENANT_TABLES = [
   "queue_entries",
   "observations",
   "patient_allergies",
+  "diagnoses",
   "billable_items",
   "price_lists",
   "price_changes",

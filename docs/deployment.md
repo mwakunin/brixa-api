@@ -48,7 +48,16 @@ Every external call is an outbox row, drained by `POST /internal/outbox/drain` (
    - `jsonPayload.msg = "job failed for a facility"`: a nightly job (`job`: `bed_day_accrual`, `reconciliation` or `visit_close`) failed for one facility (`facilityId`). Nights the bed-day run could not price are listed in that facility's `job_failures` instead.
    - **A scheduled job that failed as a whole**: `resource.type = "cloud_scheduler_job"` with `severity >= ERROR`, i.e. the attempt got no 2xx from `/internal/jobs/…` even after its retries. Whether the run finished is unknown: a timeout or a lost response can come after the work committed, or while the handler is still running. Facilities whose transaction committed were checked or charged; any others were not. All three jobs are idempotent, so running the job again by hand completes the night without repeating anything.
 
-## 3. File storage
+## 3. Reference data
+
+**ICD-11**, which diagnoses are coded in, is loaded once per environment and again for each new release (`SCHEMA.md` §8, slice 3a):
+
+1. Download WHO's release file: `https://icdcdn.who.int/static/releasefiles/<release>/SimpleTabulation-ICD-11-MMS-en.zip` (2026-01 at the time of writing; WHO publishes one each January).
+2. Unzip it and load the `.txt` inside, unmodified, on the owner connection: `pnpm icd11:load SimpleTabulation-ICD-11-MMS-en.txt`. It reports the release and how many codes it loaded and retired; an older release than one already loaded is refused.
+
+Until it has run, diagnoses cannot be recorded: the code search finds nothing. ICD-11 is © WHO 2019, licensed under CC BY-ND 3.0 IGO.
+
+## 4. File storage
 
 One bucket per environment (`STORAGE_BUCKET`). **Its location cannot be changed after creation, so create it only once the residency answer is in.**
 
@@ -60,7 +69,7 @@ One bucket per environment (`STORAGE_BUCKET`). **Its location cannot be changed 
 
 Object keys are `tenants/{facilityId}/.../{uuid}` and name ids only (`src/lib/storage.ts`).
 
-## 4. Database
+## 5. Database
 
 - PostgreSQL on the host the residency answer chooses (`SPEC.md` §4, question 4), with production and staging on the same kind of host.
 - Run `db/roles.sql` once as an administrator, replacing the passwords in the same run (the recipe is in the file).

@@ -67,6 +67,12 @@ const OWNER_ALLOWLIST = new Map([
     + "facility whose check failed, and checks each facility as that tenant",
   ],
   [
+    "lib/icd11-load.ts",
+    "ICD-11 codes are shared reference data with no facility (CLAUDE.md rule "
+    + "1); the app role may only read them, so the release loader writes them "
+    + "as the owner, from the command line",
+  ],
+  [
     "jobs/visits.ts",
     "the nightly close serves every facility; it lists them, and records a "
     + "facility whose run failed, and closes each facility's visits as that tenant",

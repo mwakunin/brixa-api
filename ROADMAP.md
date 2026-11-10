@@ -131,7 +131,7 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
 
 **Decided 2026-11-10:** diagnoses are coded in ICD-11 (`SPEC.md` §4, question 8).
 
-**Still open:** the pilot's MOH 705 and 717 forms, so P3 captures what P6 reports need (§9, question 10); whether SMS reminders need the patient's consent; drug-interaction and dose data (none in v1 without a licensed source).
+**Still open:** whether the MOH 705 report's grouping of ICD-11 codes into MOH's condition list needs WHO's written agreement, since WHO's licence puts mappings between classifications outside it (`SCHEMA.md` §8, slice 3a); the pilot's MOH 705 and 717 forms, so P3 captures what P6 reports need (§9, question 10); whether SMS reminders need the patient's consent; drug-interaction and dose data (none in v1 without a licensed source).
 
 ### P4 · Pharmacy and stores
 
