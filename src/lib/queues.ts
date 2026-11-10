@@ -2,11 +2,12 @@ import { and, asc, count, desc, eq, inArray, isNotNull, sql } from "drizzle-orm"
 
 import type { AppDb } from "@/db";
 
-import { encounters, memberships, patientNumbers, patients, queueEntries, servicePoints, user } from "@/db/schema";
+import { billableItems, encounters, memberships, patientNumbers, patients, queueEntries, servicePoints, user } from "@/db/schema";
 
 import type { PatientActor } from "./patients";
 
 import { recordAudit } from "./audit";
+import { cancelEntryFee, captureConsultationFee, ChargeError } from "./charges";
 import { ageInYears } from "./dates";
 import { isUniqueViolation, pgConstraintName } from "./db-errors";
 
@@ -17,7 +18,9 @@ import { isUniqueViolation, pgConstraintName } from "./db-errors";
  * A patient is in one queue at a time. Opening a visit puts them in the
  * facility's triage queue when it has exactly one triage point; staff then
  * call them in, see them, and send them on to the next queue, or take them
- * out if they left unseen or were sent there in error. The lab, the pharmacy
+ * out if they left unseen or were sent there in error. Joining a clinic with
+ * a fee charges it, once per visit; leaving unseen cancels it while it is
+ * unbilled. The lab, the pharmacy
  * and the cashier have no queues here: their lists come from the work
  * waiting for them (ROADMAP.md P3).
  *
@@ -46,7 +49,10 @@ export type QueueErrorCode
     | "already_queued"
     | "entry_not_found"
     | "not_waiting"
-    | "not_serving";
+    | "not_serving"
+    | "fee_unpriced"
+    | "not_a_clinic"
+    | "not_a_consultation_item";
 
 export const QUEUE_NOT_FOUND: ReadonlySet<QueueErrorCode> = new Set(["service_point_not_found", "encounter_not_found", "entry_not_found"]);
 
@@ -64,6 +70,9 @@ export class QueueError extends Error {
       entry_not_found: "No such queue entry",
       not_waiting: "The patient is no longer waiting in this queue",
       not_serving: "The patient is not being seen in this queue",
+      fee_unpriced: "This clinic's consultation fee has no price today; the facility admin or finance manager sets it",
+      not_a_clinic: "Only a clinic charges a consultation fee; triage has none",
+      not_a_consultation_item: "That item is not an active consultation item",
     }[code]);
     this.name = "QueueError";
   }
@@ -100,12 +109,16 @@ export async function createServicePoint(
   return point;
 }
 
-/** Renames or retires a service point. One with patients still in its queue stays in use. */
+/**
+ * Renames or retires a service point, or sets a clinic's consultation fee
+ * item (null for none). One with patients still in its queue stays in use. A
+ * fee change applies to patients who join from now on.
+ */
 export async function updateServicePoint(
   tx: AppDb,
   facilityId: string,
   id: string,
-  input: { name?: string; isActive?: boolean },
+  input: { name?: string; isActive?: boolean; consultationItemId?: string | null },
   actor: PatientActor,
 ) {
   const [current] = await tx.select().from(servicePoints).where(eq(servicePoints.id, id)).for("update").limit(1);
@@ -113,6 +126,13 @@ export async function updateServicePoint(
     throw new QueueError("service_point_not_found");
   if (input.isActive === false && current.isActive && await liveCount(tx, id) > 0)
     throw new QueueError("still_waiting");
+  if (input.consultationItemId) {
+    if (current.kind !== "consultation")
+      throw new QueueError("not_a_clinic");
+    const [item] = await tx.select().from(billableItems).where(eq(billableItems.id, input.consultationItemId)).limit(1);
+    if (!item || item.category !== "consultation" || !item.isActive)
+      throw new QueueError("not_a_consultation_item");
+  }
 
   let point: typeof servicePoints.$inferSelect;
   try {
@@ -132,8 +152,8 @@ export async function updateServicePoint(
     entityId: id,
     summary: `Updated service point ${point.name}`,
     detail: {
-      before: { name: current.name, isActive: current.isActive },
-      after: { name: point.name, isActive: point.isActive },
+      before: { name: current.name, isActive: current.isActive, consultationItemId: current.consultationItemId },
+      after: { name: point.name, isActive: point.isActive, consultationItemId: point.consultationItemId },
     },
   });
   return point;
@@ -161,6 +181,7 @@ export async function listServicePoints(tx: AppDb) {
       id: servicePoints.id,
       name: servicePoints.name,
       kind: servicePoints.kind,
+      consultationItemId: servicePoints.consultationItemId,
       isActive: servicePoints.isActive,
       waiting: sql<number>`coalesce(${waiting.n}, 0)::int`,
     })
@@ -245,6 +266,23 @@ export async function joinLocked(
     summary: `Joined the queue at ${point.name}`,
     detail: { encounterId: encounter.id, servicePointId },
   });
+
+  if (point.kind === "consultation" && point.consultationItemId) {
+    try {
+      await captureConsultationFee(tx, facilityId, {
+        encounterId: encounter.id,
+        queueEntryId: entry.id,
+        servicePointId,
+        billableItemId: point.consultationItemId,
+        at,
+      }, actor);
+    }
+    catch (err) {
+      if (err instanceof ChargeError && err.code === "not_covered")
+        throw new QueueError("fee_unpriced");
+      throw err;
+    }
+  }
   return entry;
 }
 
@@ -349,6 +387,7 @@ export async function removeFromQueue(
     summary: outcome === "left" ? "The patient left without being seen" : "Taken out of a queue they were sent to in error",
     detail: { encounterId: entry.encounterId, servicePointId: entry.servicePointId, outcome },
   });
+  await cancelEntryFee(tx, facilityId, entryId, outcome === "left" ? "Left without being seen" : "Sent to this clinic in error", actor);
   return removed;
 }
 
@@ -358,7 +397,7 @@ export async function removeFromQueue(
  * nightly run (no actor) marks a waiting patient as having left and a patient
  * still being seen as done.
  */
-export async function endLiveEntry(tx: AppDb, encounterId: string, actor: PatientActor | null, at: Date) {
+export async function endLiveEntry(tx: AppDb, facilityId: string, encounterId: string, actor: PatientActor | null, at: Date) {
   const [live] = await tx.select().from(queueEntries).where(and(eq(queueEntries.encounterId, encounterId), inArray(queueEntries.status, LIVE))).for("update");
   if (!live)
     return;
@@ -366,6 +405,9 @@ export async function endLiveEntry(tx: AppDb, encounterId: string, actor: Patien
   await tx.update(queueEntries)
     .set({ status, endedAt: at, endedBy: actor?.membershipId ?? null })
     .where(eq(queueEntries.id, live.id));
+  // A fee stands only for a patient who was seen.
+  if (status !== "done")
+    await cancelEntryFee(tx, facilityId, live.id, actor ? "The visit was cancelled" : "Left without being seen; closed by the nightly run", actor);
 }
 
 // ---------------------------------------------------------------------------
@@ -418,7 +460,7 @@ export async function viewQueue(tx: AppDb, facilityId: string, servicePointId: s
   });
 
   return {
-    servicePoint: { id: point.id, name: point.name, kind: point.kind, isActive: point.isActive },
+    servicePoint: { id: point.id, name: point.name, kind: point.kind, consultationItemId: point.consultationItemId, isActive: point.isActive },
     entries: rows.map(r => ({
       entryId: r.entryId,
       encounterId: r.encounterId,

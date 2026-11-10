@@ -13,5 +13,7 @@ router.openapi(routes.listInvoices, handlers.listInvoices);
 router.openapi(routes.getInvoice, handlers.getInvoice);
 router.openapi(routes.finaliseInvoice, handlers.finaliseInvoice);
 router.openapi(routes.voidInvoice, handlers.voidInvoice);
+router.openapi(routes.billDueNow, handlers.billDueNow);
+router.openapi(routes.listDue, handlers.listDue);
 
 export default router;

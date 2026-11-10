@@ -167,6 +167,56 @@ export const voidInvoice = createRoute({
   },
 });
 
+export const billDueNow = createRoute({
+  tags,
+  method: "post",
+  path: "/encounters/{id}/bill-now",
+  summary: "Bill what is due now",
+  description:
+    "For a patient paying as they go: every charge not yet billed, on one "
+    + "invoice drafted and finalised in a single step, ready to take payment "
+    + "against. An interim invoice before the final one, a supplementary one "
+    + "after it.",
+  middleware: [billersOnly] as const,
+  request: { headers: facilityHeaders, params: IdParamsSchema },
+  responses: {
+    [HttpStatusCodes.CREATED]: jsonContent(InvoiceSchema, "Billed and numbered"),
+    [HttpStatusCodes.CONFLICT]: jsonContent(RefusalSchema, "Nothing to bill, or a final invoice still in draft"),
+    ...tenantResponses,
+  },
+});
+
+const DueVisitSchema = z.object({
+  encounterId: z.uuid(),
+  kind: z.enum(["opd", "emergency"]),
+  startedAt: z.string(),
+  patient: z.object({ id: z.uuid(), name: z.string(), opNumber: z.string().nullable() }),
+  /** Charges no live invoice asks for yet. */
+  unbilledCents: z.number().int(),
+  /** What the visit's finalised bills still owe. */
+  owedCents: z.number().int(),
+  dueCents: z.number().int(),
+});
+
+export const listDue = createRoute({
+  tags,
+  method: "get",
+  path: "/cashier/due",
+  summary: "Visits with money due",
+  description:
+    "The cashier's list: every open outpatient visit or emergency attendance "
+    + "with charges not yet billed or bills not yet paid, oldest first. "
+    + "Audited, since it names patients.",
+  middleware: [billersOnly] as const,
+  request: { headers: facilityHeaders },
+  responses: {
+    [HttpStatusCodes.OK]: jsonContent(z.object({ visits: z.array(DueVisitSchema) }), "Oldest first"),
+    ...tenantResponses,
+  },
+});
+
+export type BillDueNowRoute = typeof billDueNow;
+export type ListDueRoute = typeof listDue;
 export type DraftInvoiceRoute = typeof draftInvoice;
 export type ListInvoicesRoute = typeof listInvoices;
 export type GetInvoiceRoute = typeof getInvoice;

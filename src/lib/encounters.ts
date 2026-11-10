@@ -203,9 +203,10 @@ export async function closeEncounter(tx: AppDb, facilityId: string, id: string, 
  */
 export async function cancelEncounter(tx: AppDb, facilityId: string, id: string, reason: string, actor: PatientActor, at = new Date()) {
   const encounter = await lockEncounter(tx, id);
+  // Its queue first: cancelling the entry cancels the fee it raised, if unbilled.
+  await endLiveEntry(tx, facilityId, id, actor, at);
   if (await liveChargeCount(tx, id) > 0)
     throw new EncounterError("has_charges");
-  await endLiveEntry(tx, id, actor, at);
 
   if (encounter.kind === "ipd") {
     const [admission] = await tx.select({ id: admissions.id }).from(admissions).where(eq(admissions.encounterId, id)).limit(1);
@@ -240,7 +241,7 @@ export async function closeStaleVisit(tx: AppDb, facilityId: string, id: string,
   if (!encounter || encounter.status !== "open" || encounter.kind !== "opd")
     return false;
 
-  await endLiveEntry(tx, id, null, at);
+  await endLiveEntry(tx, facilityId, id, null, at);
   await tx.update(encounters).set({ status: "closed", endedAt: at, closedBy: null }).where(eq(encounters.id, id));
   await recordAudit(tx, {
     facilityId,

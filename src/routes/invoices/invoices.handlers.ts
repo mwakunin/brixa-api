@@ -11,11 +11,14 @@ import type { TenantBindings, TenantRouteHandler } from "@/lib/types";
 import { encounters } from "@/db/schema";
 import { recordAudit } from "@/lib/audit";
 import * as billing from "@/lib/billing";
+import { dueNow } from "@/lib/cashier";
 
 import type {
+  BillDueNowRoute,
   DraftInvoiceRoute,
   FinaliseInvoiceRoute,
   GetInvoiceRoute,
+  ListDueRoute,
   ListInvoicesRoute,
   VoidInvoiceRoute,
 } from "./invoices.routes";
@@ -84,6 +87,19 @@ export const draftInvoice: TenantRouteHandler<DraftInvoiceRoute> = async (c) => 
   if (result.refused)
     return result.refused as never;
   return c.json(invoiceJson(result.detail), HttpStatusCodes.CREATED);
+};
+
+export const billDueNow: TenantRouteHandler<BillDueNowRoute> = async (c) => {
+  const { id } = c.req.valid("param");
+  const result = await answer(c, () => billing.billDueNow(c.var.db, c.var.facility.id, id, actorOf(c)));
+  if (result.refused)
+    return result.refused as never;
+  return c.json(invoiceJson(result.detail), HttpStatusCodes.CREATED);
+};
+
+export const listDue: TenantRouteHandler<ListDueRoute> = async (c) => {
+  const visits = await dueNow(c.var.db, c.var.facility.id, actorOf(c));
+  return c.json({ visits: visits.map(v => ({ ...v, startedAt: v.startedAt.toISOString() })) }, HttpStatusCodes.OK);
 };
 
 export const finaliseInvoice: TenantRouteHandler<FinaliseInvoiceRoute> = async (c) => {

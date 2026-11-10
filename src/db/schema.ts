@@ -343,6 +343,8 @@ export const auditLog = pgTable("audit_log", {
     | "queue.finished"
     | "queue.removed"
     | "queue.viewed"
+    | "charge.captured"
+    | "billing.due_listed"
   >().notNull(),
   /** What it happened to. Not a foreign key: the log outlives what it names. */
   entityType: text().notNull(),
@@ -432,6 +434,8 @@ export const auditLog = pgTable("audit_log", {
     "queue.finished",
     "queue.removed",
     "queue.viewed",
+    "charge.captured",
+    "billing.due_listed",
   ]),
 ]);
 
@@ -1108,18 +1112,29 @@ export const bedStays = pgTable("bed_stays", {
  * Only triage and consultation have queues of their own. The lab, the
  * pharmacy and the cashier work from what is waiting for them (orders not
  * yet done, charges not yet paid), so their lists are derived, not stored.
+ *
+ * A clinic may name the billable item its consultation is charged as; its
+ * price comes from the price list on the day, as a ward's bed-day does.
  */
 export const servicePoints = pgTable("service_points", {
   id: uuid().primaryKey().defaultRandom(),
   facilityId: uuid().notNull().references(() => facilities.id),
   name: text().notNull(),
   kind: text().$type<"triage" | "consultation">().notNull(),
+  /** What being seen here is charged as, once per visit; null for no fee. */
+  consultationItemId: uuid(),
   isActive: boolean().default(true).notNull(),
   createdAt: createdAt(),
 }, t => [
   unique("service_points_facility_id_id_key").on(t.facilityId, t.id),
   unique("service_points_facility_id_name_key").on(t.facilityId, t.name),
+  foreignKey({
+    name: "service_points_consultation_item_fk",
+    columns: [t.facilityId, t.consultationItemId],
+    foreignColumns: [billableItems.facilityId, billableItems.id],
+  }),
   oneOf("service_points_kind_known", t.kind, ["triage", "consultation"]),
+  check("service_points_fee_at_a_clinic", sql`${t.kind} = 'consultation' OR ${t.consultationItemId} IS NULL`),
   check("service_points_name_present", sql`length(btrim(${t.name})) > 0`),
 ]);
 
@@ -1206,12 +1221,15 @@ export const charges = pgTable("charges", {
   /** The Kenyan day the service was given; for a bed-day, the night it began. */
   serviceDate: date({ mode: "string" }).notNull(),
   bedStayId: uuid(),
+  /** The consultation fee for being seen at a clinic (P3): its queue entry. */
+  queueEntryId: uuid(),
   /** Why it was posted by hand, when it has no source. */
   manualReason: text(),
   /** Who posted it; null when the system captured it (a bed-day). */
   capturedBy: uuid(),
   capturedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
   cancelledAt: timestamp({ withTimezone: true }),
+  /** Null when the system cancelled it: the nightly run, for a patient who left unseen. */
   cancelledBy: uuid(),
   cancellationReason: text(),
 }, t => [
@@ -1220,11 +1238,14 @@ export const charges = pgTable("charges", {
   foreignKey({ name: "charges_item_fk", columns: [t.facilityId, t.billableItemId], foreignColumns: [billableItems.facilityId, billableItems.id] }),
   foreignKey({ name: "charges_price_fk", columns: [t.facilityId, t.priceListItemId], foreignColumns: [priceListItems.facilityId, priceListItems.id] }),
   foreignKey({ name: "charges_bed_stay_fk", columns: [t.facilityId, t.bedStayId], foreignColumns: [bedStays.facilityId, bedStays.id] }),
+  foreignKey({ name: "charges_queue_entry_fk", columns: [t.facilityId, t.queueEntryId], foreignColumns: [queueEntries.facilityId, queueEntries.id] }),
   foreignKey({ name: "charges_captured_by_fk", columns: [t.facilityId, t.capturedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
   foreignKey({ name: "charges_cancelled_by_fk", columns: [t.facilityId, t.cancelledBy], foreignColumns: [memberships.facilityId, memberships.id] }),
   index("charges_encounter_index").on(t.facilityId, t.encounterId, t.serviceDate),
   // One bed-day per admission per night, however often accrual runs.
   uniqueIndex("charges_one_bed_day_per_night").on(t.encounterId, t.serviceDate).where(sql`${t.bedStayId} IS NOT NULL`),
+  // One fee per turn at a clinic; once per visit per clinic is the service's, under the encounter's lock.
+  uniqueIndex("charges_one_per_queue_entry").on(t.queueEntryId).where(sql`${t.queueEntryId} IS NOT NULL`),
   check("charges_quantity_positive", sql`${t.quantity} > 0`),
   check("charges_unit_price_nonnegative", sql`${t.unitPriceCents} >= 0`),
   // Whole shillings: neither cash nor M-Pesa carries cents (SPEC.md D2).
@@ -1232,15 +1253,15 @@ export const charges = pgTable("charges", {
   // At most one source; none means a manual posting, which needs a reason and a person.
   check(
     "charges_source_or_reason",
-    sql`num_nonnulls(${t.bedStayId}) <= 1
-      AND ((num_nonnulls(${t.bedStayId}) = 0) = (${t.manualReason} IS NOT NULL AND length(btrim(${t.manualReason})) > 0))`,
+    sql`num_nonnulls(${t.bedStayId}, ${t.queueEntryId}) <= 1
+      AND ((num_nonnulls(${t.bedStayId}, ${t.queueEntryId}) = 0) = (${t.manualReason} IS NOT NULL AND length(btrim(${t.manualReason})) > 0))`,
   ),
   check("charges_manual_has_person", sql`${t.manualReason} IS NULL OR ${t.capturedBy} IS NOT NULL`),
   check(
     "charges_cancellation_complete",
     sql`(${t.cancelledAt} IS NULL AND ${t.cancelledBy} IS NULL AND ${t.cancellationReason} IS NULL)
-      OR (${t.cancelledAt} IS NOT NULL AND ${t.cancelledBy} IS NOT NULL
-          AND ${t.cancellationReason} IS NOT NULL AND length(btrim(${t.cancellationReason})) > 0)`,
+      OR (${t.cancelledAt} IS NOT NULL AND ${t.cancellationReason} IS NOT NULL AND length(btrim(${t.cancellationReason})) > 0
+          AND (${t.cancelledBy} IS NOT NULL OR ${t.queueEntryId} IS NOT NULL))`,
   ),
 ]);
 

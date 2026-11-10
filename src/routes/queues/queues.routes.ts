@@ -30,6 +30,8 @@ const ServicePointSchema = z.object({
   id: z.uuid(),
   name: z.string(),
   kind: z.enum(["triage", "consultation"]),
+  /** A clinic's consultation fee item, charged once per visit when the patient joins its queue. */
+  consultationItemId: z.uuid().nullable(),
   isActive: z.boolean(),
 });
 
@@ -65,8 +67,15 @@ const QueueViewSchema = z.object({
 });
 
 const CreateBodySchema = z.object({ name: oneLine(80), kind: z.enum(["triage", "consultation"]) });
-const UpdateBodySchema = z.object({ name: oneLine(80).optional(), isActive: z.boolean().optional() })
-  .refine(b => b.name !== undefined || b.isActive !== undefined, "Change the name, whether it is in use, or both");
+const UpdateBodySchema = z.object({
+  name: oneLine(80).optional(),
+  isActive: z.boolean().optional(),
+  /** A clinic's fee item (a consultation item), or null for no fee. Applies to patients who join from now on. */
+  consultationItemId: z.uuid().nullable().optional(),
+}).refine(
+  b => b.name !== undefined || b.isActive !== undefined || b.consultationItemId !== undefined,
+  "Change the name, whether it is in use, or the consultation fee",
+);
 const JoinBodySchema = z.object({ servicePointId: z.uuid() });
 const FinishBodySchema = z.object({
   /** Where the patient goes next, e.g. from triage to a clinic. Leave out when they go nowhere else. */
@@ -117,8 +126,8 @@ export const updateServicePoint = createRoute({
   tags,
   method: "patch",
   path: "/service-points/{id}",
-  summary: "Rename or retire a service point",
-  description: "A point with patients still in its queue cannot be retired.",
+  summary: "Change a service point",
+  description: "Rename it, retire it, or set a clinic's consultation fee. A point with patients still in its queue cannot be retired.",
   middleware: [adminOnly] as const,
   request: { headers: facilityHeaders, params: IdParamsSchema, body: jsonContentRequired(UpdateBodySchema, "The change") },
   responses: {
@@ -154,7 +163,7 @@ export const joinQueue = createRoute({
     "For an open outpatient visit or emergency attendance whose patient is in "
     + "no queue: back to a clinic with results, or straight to one. Opening a "
     + "visit already joins triage; finishing in one queue can send the patient "
-    + "to the next.",
+    + "to the next. Joining a clinic with a fee charges it, once per visit.",
   middleware: [queueStaff] as const,
   request: { headers: facilityHeaders, params: IdParamsSchema, body: jsonContentRequired(JoinBodySchema, "Where to") },
   responses: {

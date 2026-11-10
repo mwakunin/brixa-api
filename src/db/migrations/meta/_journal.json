@@ -302,6 +302,20 @@
       "when": 1794320797585,
       "tag": "0042_queues_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1794323499217,
+      "tag": "0043_consultation_fees",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1794323503353,
+      "tag": "0044_consultation_fees_rls",
+      "breakpoints": true
     }
   ]
 }

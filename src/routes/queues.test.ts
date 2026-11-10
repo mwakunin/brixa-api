@@ -71,8 +71,8 @@ describe("service points", () => {
     const listed = await (await call("GET", "/service-points", c.facility.id, c.cashier)).json();
 
     expect(listed.servicePoints).toEqual([
-      { id: triage, name: "Triage", kind: "triage", isActive: true, waiting: 0 },
-      { id: gopd, name: "General OPD", kind: "consultation", isActive: true, waiting: 1 },
+      { id: triage, name: "Triage", kind: "triage", consultationItemId: null, isActive: true, waiting: 0 },
+      { id: gopd, name: "General OPD", kind: "consultation", consultationItemId: null, isActive: true, waiting: 1 },
       expect.objectContaining({ name: "MCH", waiting: 0 }),
     ]);
     const again = await post(c, "/service-points", c.admin, { name: "MCH", kind: "consultation" });

@@ -306,7 +306,7 @@ Re-pricing an encounter (for example, coverage confirmed after the charges were 
 | `invoice_lines` | `kind` (itemised \| package \| rebill), description and code snapshot, `quantity`, `unit_price_cents`, `amount_cents`. Package lines carry the SHA package/tariff reference. Rebill lines carry `source_adjustment_id` (§7.5). |
 | `charge_assignments` | `charge_id`, `invoice_line_id`, `amount_cents`, `mode` (itemised \| absorbed). Splits a charge across accounts: an insurer's 80% and the patient's 20% co-pay are two assignments of one charge. |
 
-- **The running bill** for a long admission is a derived, unnumbered view of charges and their likely split, plus deposit top-up requests. Numbered interim invoices exist only where a payer requires them (pilot question).
+- **The running bill** for a long admission is a derived, unnumbered view of charges and their likely split, plus deposit top-up requests. For an admission, numbered interim invoices exist only where a payer requires them (pilot question). An outpatient paying as they go is billed on an interim invoice at each point instead (P3, slice 1c, §8).
 - **Package lines absorb charges.** A SHA package line (for example per-diem × days) is linked to the charges it covers through `absorbed` assignments. The contractual allowance (absorbed charges minus the package amount) is **derived, never stored**. Whether the remainder may be billed to a secondary payer or the patient depends on SHA's top-up rules (verify, `SPEC.md` §10).
 - An encounter cannot be final-billed while any live charge is not fully assigned (M4).
 
@@ -502,8 +502,28 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - a facility whose run fails is a `job_failures` row (`visit_close`).
 - **Not yet:**
   - a visit closing itself once nothing is pending, which needs orders (4a);
-  - a triage priority ordering the consultation queue (slice 2);
-  - the consultation fee charged on joining a clinic (1c).
+  - a triage priority ordering the consultation queue (slice 2).
+
+**As built (P3, slice 1c): consultation fees and paying.** Decided 2026-11-10 (`ROADMAP.md` P3, `SPEC.md` §2):
+
+- **A clinic's fee:** `service_points.consultation_item_id` names the billable item being seen at that clinic is charged as.
+  - The facility admin sets it, to an active `consultation` item. A CHECK keeps it off triage points.
+  - Its price comes from the cash list on the day, as a ward's bed-day does. A change applies to patients who join from then on.
+- **Charged as the patient joins the clinic's queue**, so a patient paying as they go can pay before they are seen (rule 16: the clinic's work raises it). The charge's source is its queue entry: `charges.queue_entry_id`, a typed source alongside `bed_stay_id`.
+  - **Once per visit per clinic:** a patient sent back with results is not charged again unless the earlier fee was cancelled, and a referral to another clinic with a fee is charged there. The service checks this under the encounter's lock; `charges_one_per_queue_entry` allows one fee per turn.
+  - **A fee with no price refuses the join** (`fee_unpriced`), and the request writes nothing, so the setup is fixed rather than the fee lost (rule 21).
+- **Leaving unseen cancels the fee while it is unbilled.** That covers taken out of the queue as left or sent in error, the visit cancelled as opened in error, or the nightly close finding the patient still waiting. A fee already billed stands, and is credited or refunded like any billed charge.
+  - The nightly run cancels with `cancelled_by` null. The `charges_cancellation_complete` CHECK now allows that only for a fee, a charge with a queue entry.
+  - `charges_cancel_only` freezes `queue_entry_id` with the other columns.
+- **Paying, both ways and with no setting:**
+  - `POST /encounters/{id}/bill-now` bills every charge not yet billed, drafted and finalised in one step. It is an interim invoice before the final one, and a supplementary one after it.
+  - A patient billed at the end gets the final invoice as in P2.
+  - Credit paid towards the visit is applied as the invoice is finalised, as in P2.
+- **The cashier's list** (`GET /cashier/due`, billers) shows every open outpatient visit or emergency attendance with money due, oldest first.
+  - What is due is the charges no live invoice asks for, plus what its finalised patient bills still owe.
+  - It is derived (rule 4) and audited as `billing.due_listed`.
+  - Admissions keep their own running bill and are not listed.
+- **Not yet:** the lab's warning on a test not yet paid for (5a).
 
 **Clinical record.** `observations` (vitals and charted values, with `entered_in_error` instead of deletion), `diagnoses` (ICD code, provisional \| final \| secondary), `clinical_notes` (`signed_at`, `addendum_of`: a signed note is corrected only by an addendum), `orders` and `order_items` (lab, imaging, procedure, medication, service; medication items carry dose, route, frequency and duration). Every clinical act records the acting membership, whose licence details live on `memberships` (rule 25).
 
