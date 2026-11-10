@@ -365,6 +365,12 @@ export const auditLog = pgTable("audit_log", {
     | "diagnosis.confirmed"
     | "diagnosis.principal_set"
     | "diagnosis.ended"
+    | "note.drafted"
+    | "note.edited"
+    | "note.signed"
+    | "note.discarded"
+    | "note.addendum_added"
+    | "note.entered_in_error"
   >().notNull(),
   /** What it happened to. Not a foreign key: the log outlives what it names. */
   entityType: text().notNull(),
@@ -464,6 +470,12 @@ export const auditLog = pgTable("audit_log", {
     "diagnosis.confirmed",
     "diagnosis.principal_set",
     "diagnosis.ended",
+    "note.drafted",
+    "note.edited",
+    "note.signed",
+    "note.discarded",
+    "note.addendum_added",
+    "note.entered_in_error",
   ]),
 ]);
 
@@ -1446,6 +1458,83 @@ export const diagnoses = pgTable("diagnoses", {
   ),
 ]);
 
+/**
+ * A clinical note on an encounter (P3 slice 3b): a consultation note in the
+ * sections of an outpatient card, a nursing note, or an addendum to a signed
+ * note. `status` is lifecycle only.
+ *
+ * A note is drafted and edited by its author alone, then signed, which
+ * freezes it (rule 19): a signed note is corrected only by an addendum, which
+ * is written signed. A draft may be discarded, never deleted. A signed note
+ * written on the wrong patient's record is marked entered in error, with a
+ * reason, and stays on the record. The trigger `clinical_notes_lifecycle`
+ * (migration 0051) holds all of this for every role.
+ */
+export const clinicalNotes = pgTable("clinical_notes", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  encounterId: uuid().notNull(),
+  kind: text().$type<"consultation" | "nursing" | "addendum">().notNull(),
+  /** The signed note an addendum corrects or adds to. */
+  addendumOf: uuid(),
+  /** A consultation note's sections; at least one is written. */
+  presentingComplaint: text(),
+  history: text(),
+  examination: text(),
+  plan: text(),
+  /** A nursing note's or an addendum's text. */
+  text: text(),
+  status: text().$type<"draft" | "signed" | "discarded">().notNull(),
+  /** The author: the membership that wrote it and signs it (rule 25). */
+  writtenBy: uuid().notNull(),
+  createdAt: timestamp({ withTimezone: true }).notNull(),
+  updatedAt: timestamp({ withTimezone: true }).notNull(),
+  signedAt: timestamp({ withTimezone: true }),
+  discardedAt: timestamp({ withTimezone: true }),
+  enteredInErrorAt: timestamp({ withTimezone: true }),
+  enteredInErrorBy: uuid(),
+  enteredInErrorReason: text(),
+}, t => [
+  unique("clinical_notes_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({ name: "clinical_notes_encounter_fk", columns: [t.facilityId, t.encounterId], foreignColumns: [encounters.facilityId, encounters.id] }),
+  foreignKey({ name: "clinical_notes_addendum_of_fk", columns: [t.facilityId, t.addendumOf], foreignColumns: [t.facilityId, t.id] }),
+  foreignKey({ name: "clinical_notes_written_by_fk", columns: [t.facilityId, t.writtenBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "clinical_notes_entered_in_error_by_fk", columns: [t.facilityId, t.enteredInErrorBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  index("clinical_notes_encounter_index").on(t.facilityId, t.encounterId, t.createdAt),
+  index("clinical_notes_addendum_of_index").on(t.facilityId, t.addendumOf),
+  oneOf("clinical_notes_kind_known", t.kind, ["consultation", "nursing", "addendum"]),
+  oneOf("clinical_notes_status_known", t.status, ["draft", "signed", "discarded"]),
+  check(
+    "clinical_notes_shape",
+    sql`(${t.kind} = 'consultation' AND ${t.text} IS NULL AND ${t.addendumOf} IS NULL
+          AND num_nonnulls(${t.presentingComplaint}, ${t.history}, ${t.examination}, ${t.plan}) >= 1)
+      OR (${t.kind} = 'nursing' AND ${t.text} IS NOT NULL AND ${t.addendumOf} IS NULL
+          AND num_nonnulls(${t.presentingComplaint}, ${t.history}, ${t.examination}, ${t.plan}) = 0)
+      OR (${t.kind} = 'addendum' AND ${t.text} IS NOT NULL AND ${t.addendumOf} IS NOT NULL
+          AND num_nonnulls(${t.presentingComplaint}, ${t.history}, ${t.examination}, ${t.plan}) = 0)`,
+  ),
+  check(
+    "clinical_notes_text_present",
+    sql`(${t.text} IS NULL OR length(btrim(${t.text})) > 0)
+      AND (${t.presentingComplaint} IS NULL OR length(btrim(${t.presentingComplaint})) > 0)
+      AND (${t.history} IS NULL OR length(btrim(${t.history})) > 0)
+      AND (${t.examination} IS NULL OR length(btrim(${t.examination})) > 0)
+      AND (${t.plan} IS NULL OR length(btrim(${t.plan})) > 0)`,
+  ),
+  check(
+    "clinical_notes_lifecycle",
+    sql`(${t.status} = 'draft' AND ${t.signedAt} IS NULL AND ${t.discardedAt} IS NULL)
+      OR (${t.status} = 'signed' AND ${t.signedAt} IS NOT NULL AND ${t.discardedAt} IS NULL)
+      OR (${t.status} = 'discarded' AND ${t.discardedAt} IS NOT NULL AND ${t.signedAt} IS NULL)`,
+  ),
+  check(
+    "clinical_notes_error_complete",
+    sql`(${t.enteredInErrorAt} IS NULL AND ${t.enteredInErrorBy} IS NULL AND ${t.enteredInErrorReason} IS NULL)
+      OR (${t.enteredInErrorAt} IS NOT NULL AND ${t.enteredInErrorBy} IS NOT NULL AND ${t.status} = 'signed'
+          AND ${t.enteredInErrorReason} IS NOT NULL AND length(btrim(${t.enteredInErrorReason})) > 0)`,
+  ),
+]);
+
 // ---------------------------------------------------------------------------
 // Charges (SCHEMA.md §7.2)
 // ---------------------------------------------------------------------------
@@ -2196,6 +2285,7 @@ export const TENANT_TABLES = [
   "observations",
   "patient_allergies",
   "diagnoses",
+  "clinical_notes",
   "billable_items",
   "price_lists",
   "price_changes",

@@ -590,6 +590,33 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 - **Cancelling a visit** is refused while a diagnosis stands (`has_clinical_records`), as for vital signs.
 - **Not yet:** postcoordinated (cluster) codes, and marking sensitive codes for break-glass (slice 7).
 
+**As built (P3, slice 3b): clinical notes.** Decided 2026-11-10 (`ROADMAP.md` P3):
+
+- **`clinical_notes`, three kinds:**
+  - a **consultation** note, in the sections of an outpatient card: presenting complaint, history, examination, plan (at least one);
+  - a **nursing** note: text;
+  - an **addendum** to a signed note: text, with `addendum_of`.
+  - `clinical_notes_shape` holds each kind to its content.
+- **Draft, then signed** (`status`: draft, signed, discarded, lifecycle only):
+  - the author drafts and saves (each save replaces the draft's content), then signs, which freezes the note (rule 19);
+  - a draft is the author's alone: anyone else is answered as if it did not exist, and it is not listed for them;
+  - a draft may be discarded, which keeps it on the record, unshown, and never deletes it;
+  - a draft is started only on an open encounter, and may be signed after the visit closes, for notes finished the next morning.
+- **Corrections are addenda**, written signed by any note-writing clinician and shown under the note. An addendum is never added to another addendum.
+- **A signed note written on the wrong patient's record is marked entered in error**, with a reason, and stays on the record; it then takes no addendum.
+- **The trigger `clinical_notes_lifecycle`** holds all of this for every role:
+  - drafts are written as drafts, and addenda signed, to a signed note on the same encounter;
+  - whose note it is, its kind and its encounter never change;
+  - a signed note changes only by being marked entered in error, once;
+  - a discarded draft never changes, and nothing is deleted.
+- **Who:**
+  - consultation notes: doctors, clinical officers and nurses (nurse-led clinics);
+  - nursing notes: nurses and ward nurses;
+  - all under a current licence (`requireClinicalRole`, then `NOTE_WRITERS` per kind).
+  - Clinical roles read signed notes, audited as `encounter.viewed`. Each write is audited without the note's text, which stays in this table only (rule 10).
+- **Cancelling a visit** is refused while a draft, or a signed note not marked entered in error, stands (`has_clinical_records`), as for vital signs and diagnoses.
+- **Not yet:** sensitive notes and break-glass (slice 7); note templates by clinic, which the frontend can offer over these sections.
+
 **Clinical record.** `observations` (vitals and charted values, with `entered_in_error` instead of deletion), `diagnoses` (ICD code, provisional \| final \| secondary), `clinical_notes` (`signed_at`, `addendum_of`: a signed note is corrected only by an addendum), `orders` and `order_items` (lab, imaging, procedure, medication, service; medication items carry dose, route, frequency and duration). Every clinical act records the acting membership, whose licence details live on `memberships` (rule 25).
 
 **Inpatient.** `admissions` is 1:1 with an ipd encounter and carries the admission number. `bed_stays` holds a `tstzrange` with two `EXCLUDE` constraints: no bed holds two patients at once, and no admission is in two beds at once. A transfer ends one stay and starts the next. `medication_administrations` records each dose against its order item (given \| held \| refused \| missed). `discharge_summaries` are immutable once signed.

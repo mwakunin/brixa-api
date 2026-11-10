@@ -18,6 +18,7 @@ import invoices from "@/routes/invoices/invoices.index";
 import localFiles from "@/routes/local-files.route";
 import me from "@/routes/me/me.index";
 import mpesa from "@/routes/mpesa/mpesa.index";
+import notes from "@/routes/notes/notes.index";
 import observations from "@/routes/observations/observations.index";
 import patients from "@/routes/patients/patients.index";
 import payments from "@/routes/payments/payments.index";
@@ -86,6 +87,7 @@ const tenantRoutes = [
   observations,
   allergies,
   diagnoses,
+  notes,
   wards,
   prices,
   charges,
