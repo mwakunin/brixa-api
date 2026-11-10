@@ -45,6 +45,8 @@ export const QueueEntrySchema = z.object({
   /** The membership that called the patient in. */
   servedBy: z.uuid().nullable(),
   endedAt: z.string().nullable(),
+  /** Set by triage as it finishes with the patient. */
+  priority: z.enum(["emergency", "urgent", "routine"]).nullable(),
 });
 
 const QueueViewSchema = z.object({
@@ -56,6 +58,8 @@ const QueueViewSchema = z.object({
     joinedAt: z.string(),
     servingAt: z.string().nullable(),
     servedBy: z.object({ membershipId: z.uuid(), name: z.string() }).nullable(),
+    /** From the visit's triage; null if not triaged. Orders the waiting patients. */
+    priority: z.enum(["emergency", "urgent", "routine"]).nullable(),
     patient: z.object({
       id: z.uuid(),
       name: z.string(),
@@ -80,6 +84,8 @@ const JoinBodySchema = z.object({ servicePointId: z.uuid() });
 const FinishBodySchema = z.object({
   /** Where the patient goes next, e.g. from triage to a clinic. Leave out when they go nowhere else. */
   nextServicePointId: z.uuid().optional(),
+  /** Triage only: how soon the patient must be seen. Orders the clinic queues for the rest of the visit. */
+  priority: z.enum(["emergency", "urgent", "routine"]).optional(),
 });
 const RemoveBodySchema = z.object({
   /** `left`: the patient went without being seen. `cancelled`: they were sent here in error. */
@@ -193,7 +199,7 @@ export const finish = createRoute({
   method: "post",
   path: "/queue-entries/{id}/finish",
   summary: "Finish with a patient",
-  description: "Optionally sends them on to the next queue in the same step.",
+  description: "Optionally sends them on to the next queue in the same step. Triage also sets how soon they must be seen.",
   middleware: [servingStaff] as const,
   request: { headers: facilityHeaders, params: IdParamsSchema, body: jsonContentRequired(FinishBodySchema, "Where next, if anywhere") },
   responses: {

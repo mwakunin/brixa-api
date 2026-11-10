@@ -4,6 +4,7 @@ import env from "@/env";
 import configureOpenAPI from "@/lib/configure-open-api";
 import createApp from "@/lib/create-app";
 import adjustments from "@/routes/adjustments/adjustments.index";
+import allergies from "@/routes/allergies/allergies.index";
 import charges from "@/routes/charges/charges.index";
 import documents from "@/routes/documents/documents.index";
 import encounters from "@/routes/encounters/encounters.index";
@@ -16,6 +17,7 @@ import invoices from "@/routes/invoices/invoices.index";
 import localFiles from "@/routes/local-files.route";
 import me from "@/routes/me/me.index";
 import mpesa from "@/routes/mpesa/mpesa.index";
+import observations from "@/routes/observations/observations.index";
 import patients from "@/routes/patients/patients.index";
 import payments from "@/routes/payments/payments.index";
 import prices from "@/routes/prices/prices.index";
@@ -80,6 +82,8 @@ const tenantRoutes = [
   patients,
   encounters,
   queues,
+  observations,
+  allergies,
   wards,
   prices,
   charges,

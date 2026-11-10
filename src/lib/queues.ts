@@ -32,6 +32,7 @@ import { isUniqueViolation, pgConstraintName } from "./db-errors";
 
 type EntryRow = typeof queueEntries.$inferSelect;
 export type ServicePointKind = (typeof servicePoints.$inferSelect)["kind"];
+export type Priority = NonNullable<EntryRow["priority"]>;
 
 const LIVE = ["waiting", "serving"] as const;
 
@@ -51,6 +52,7 @@ export type QueueErrorCode
     | "not_waiting"
     | "not_serving"
     | "being_seen"
+    | "priority_at_triage_only"
     | "fee_unpriced"
     | "not_a_clinic"
     | "not_a_consultation_item";
@@ -72,6 +74,7 @@ export class QueueError extends Error {
       not_waiting: "The patient is no longer waiting in this queue",
       not_serving: "The patient is not being seen in this queue",
       being_seen: "The patient is being seen; the clinician finishes with them first",
+      priority_at_triage_only: "Only triage sets how soon the patient must be seen",
       fee_unpriced: "This clinic's consultation fee has no price today; the facility admin or finance manager sets it",
       not_a_clinic: "Only a clinic charges a consultation fee; triage has none",
       not_a_consultation_item: "That item is not an active consultation item",
@@ -327,21 +330,31 @@ export async function serve(tx: AppDb, facilityId: string, entryId: string, acto
   return serving;
 }
 
-/** Finishes with a patient, and sends them on to `nextServicePointId` if given, in one step. */
+/**
+ * Finishes with a patient, and sends them on to `nextServicePointId` if
+ * given, in one step. Triage also says how soon they must be seen
+ * (`priority`), which orders the clinic queues for the rest of the visit.
+ */
 export async function finish(
   tx: AppDb,
   facilityId: string,
   entryId: string,
-  nextServicePointId: string | undefined,
+  input: { nextServicePointId?: string; priority?: Priority },
   actor: PatientActor,
   at = new Date(),
 ): Promise<{ finished: EntryRow; next: EntryRow | null }> {
   const entry = await lockEntry(tx, entryId);
   if (entry.status !== "serving")
     throw new QueueError("not_serving");
+  if (input.priority) {
+    const [point] = await tx.select({ kind: servicePoints.kind }).from(servicePoints).where(eq(servicePoints.id, entry.servicePointId));
+    if (point.kind !== "triage")
+      throw new QueueError("priority_at_triage_only");
+  }
+  const nextServicePointId = input.nextServicePointId;
 
   const [finished] = await tx.update(queueEntries)
-    .set({ status: "done", endedAt: at, endedBy: actor.membershipId })
+    .set({ status: "done", endedAt: at, endedBy: actor.membershipId, priority: input.priority ?? null })
     .where(eq(queueEntries.id, entryId))
     .returning();
 
@@ -352,7 +365,7 @@ export async function finish(
     entityType: "queue_entry",
     entityId: entryId,
     summary: "Finished with the patient",
-    detail: { encounterId: entry.encounterId, servicePointId: entry.servicePointId, nextServicePointId: nextServicePointId ?? null },
+    detail: { encounterId: entry.encounterId, servicePointId: entry.servicePointId, nextServicePointId: nextServicePointId ?? null, priority: input.priority ?? null },
   });
 
   if (!nextServicePointId)
@@ -420,8 +433,21 @@ export async function endLiveEntry(tx: AppDb, facilityId: string, encounterId: s
 // ---------------------------------------------------------------------------
 
 /**
- * A service point's queue: those being seen, then those waiting, by arrival.
- * Audited, since it names patients and where they are (rule 9).
+ * The visit's priority from triage: its latest triage entry's, derived per
+ * row rather than copied onto each later entry, so a patient sent back to a
+ * clinic after the lab keeps it.
+ */
+const triagePriority = sql<Priority | null>`(
+  SELECT t.priority FROM queue_entries t
+  JOIN service_points tp ON tp.id = t.service_point_id
+  WHERE t.encounter_id = ${queueEntries.encounterId} AND tp.kind = 'triage' AND t.status = 'done' AND t.priority IS NOT NULL
+  ORDER BY t.ended_at DESC LIMIT 1
+)`;
+
+/**
+ * A service point's queue: those being seen, then those waiting, the most
+ * urgent first (emergency, urgent, then routine or not triaged), each by
+ * arrival. Audited, since it names patients and where they are (rule 9).
  */
 export async function viewQueue(tx: AppDb, facilityId: string, servicePointId: string, actor: PatientActor, today?: string) {
   const [point] = await tx.select().from(servicePoints).where(eq(servicePoints.id, servicePointId)).limit(1);
@@ -437,6 +463,7 @@ export async function viewQueue(tx: AppDb, facilityId: string, servicePointId: s
       servingAt: queueEntries.servingAt,
       servedBy: queueEntries.servedBy,
       servedByName: user.name,
+      priority: triagePriority,
       patientId: patients.id,
       givenName: patients.givenName,
       middleNames: patients.middleNames,
@@ -452,7 +479,12 @@ export async function viewQueue(tx: AppDb, facilityId: string, servicePointId: s
     .leftJoin(memberships, eq(memberships.id, queueEntries.servedBy))
     .leftJoin(user, eq(user.id, memberships.userId))
     .where(and(eq(queueEntries.servicePointId, servicePointId), inArray(queueEntries.status, LIVE)))
-    .orderBy(desc(sql`${queueEntries.status} = 'serving'`), asc(queueEntries.joinedAt), asc(queueEntries.id))
+    .orderBy(
+      desc(sql`${queueEntries.status} = 'serving'`),
+      asc(sql`CASE ${triagePriority} WHEN 'emergency' THEN 0 WHEN 'urgent' THEN 1 ELSE 2 END`),
+      asc(queueEntries.joinedAt),
+      asc(queueEntries.id),
+    )
     .limit(QUEUE_VIEW_LIMIT);
 
   await recordAudit(tx, {
@@ -473,6 +505,7 @@ export async function viewQueue(tx: AppDb, facilityId: string, servicePointId: s
       joinedAt: r.joinedAt,
       servingAt: r.servingAt,
       servedBy: r.servedBy && r.servedByName ? { membershipId: r.servedBy, name: r.servedByName } : null,
+      priority: r.priority,
       patient: {
         id: r.patientId,
         name: [r.givenName, r.middleNames, r.familyName].filter(Boolean).join(" "),

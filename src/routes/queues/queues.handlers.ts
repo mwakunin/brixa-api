@@ -35,6 +35,7 @@ export function entryJson(e: typeof queueEntries.$inferSelect) {
     servingAt: iso(e.servingAt),
     servedBy: e.servedBy,
     endedAt: iso(e.endedAt),
+    priority: e.priority,
   };
 }
 
@@ -99,8 +100,8 @@ export const serve: TenantRouteHandler<ServeRoute> = async (c) => {
 
 export const finish: TenantRouteHandler<FinishRoute> = async (c) => {
   const { id } = c.req.valid("param");
-  const { nextServicePointId } = c.req.valid("json");
-  return answer(c, () => queues.finish(c.var.db, c.var.facility.id, id, nextServicePointId, actorOf(c)), r => ({
+  const body = c.req.valid("json");
+  return answer(c, () => queues.finish(c.var.db, c.var.facility.id, id, body, actorOf(c)), r => ({
     finished: entryJson(r.finished),
     next: r.next && entryJson(r.next),
   })) as never;

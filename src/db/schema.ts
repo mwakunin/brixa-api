@@ -19,6 +19,7 @@ import {
 import type { DocumentContent } from "@/lib/document-content";
 
 import { CLINICAL_ROLES, LICENCE_NUMBER_PATTERN } from "@/lib/professions";
+import { VITAL_SIGNS } from "@/lib/vital-signs";
 
 import { account, session, user, verification } from "./auth-schema";
 
@@ -345,6 +346,10 @@ export const auditLog = pgTable("audit_log", {
     | "queue.viewed"
     | "charge.captured"
     | "billing.due_listed"
+    | "observation.recorded"
+    | "observation.entered_in_error"
+    | "allergy.recorded"
+    | "allergy.removed"
   >().notNull(),
   /** What it happened to. Not a foreign key: the log outlives what it names. */
   entityType: text().notNull(),
@@ -436,6 +441,10 @@ export const auditLog = pgTable("audit_log", {
     "queue.viewed",
     "charge.captured",
     "billing.due_listed",
+    "observation.recorded",
+    "observation.entered_in_error",
+    "allergy.recorded",
+    "allergy.removed",
   ]),
 ]);
 
@@ -1164,6 +1173,11 @@ export const queueEntries = pgTable("queue_entries", {
   endedAt: timestamp({ withTimezone: true }),
   /** Null when the nightly run ended it. */
   endedBy: uuid(),
+  /**
+   * How soon the patient must be seen, set as triage finishes with them. The
+   * clinic queues order by the visit's latest one (derived, not copied).
+   */
+  priority: text().$type<"emergency" | "urgent" | "routine">(),
 }, t => [
   unique("queue_entries_facility_id_id_key").on(t.facilityId, t.id),
   foreignKey({ name: "queue_entries_encounter_fk", columns: [t.facilityId, t.encounterId], foreignColumns: [encounters.facilityId, encounters.id] }),
@@ -1179,6 +1193,8 @@ export const queueEntries = pgTable("queue_entries", {
     .where(sql`${t.status} IN ('waiting', 'serving')`),
   index("queue_entries_encounter_index").on(t.facilityId, t.encounterId, t.joinedAt),
   oneOf("queue_entries_status_known", t.status, ["waiting", "serving", "done", "left", "cancelled"]),
+  oneOf("queue_entries_priority_known", t.priority, ["emergency", "urgent", "routine"]),
+  check("queue_entries_priority_when_done", sql`${t.priority} IS NULL OR ${t.status} = 'done'`),
   check(
     "queue_entries_lifecycle",
     sql`(${t.status} = 'waiting' AND ${t.servingAt} IS NULL AND ${t.servedBy} IS NULL AND ${t.endedAt} IS NULL AND ${t.endedBy} IS NULL)
@@ -1191,6 +1207,130 @@ export const queueEntries = pgTable("queue_entries", {
     "queue_entries_in_order",
     sql`(${t.servingAt} IS NULL OR ${t.servingAt} >= ${t.joinedAt})
       AND (${t.endedAt} IS NULL OR ${t.endedAt} >= coalesce(${t.servingAt}, ${t.joinedAt}))`,
+  ),
+]);
+
+// ---------------------------------------------------------------------------
+// The clinical record (SCHEMA.md §8)
+// ---------------------------------------------------------------------------
+
+/** The plausible-range CHECK for each vital sign, from `lib/vital-signs.ts`. */
+function plausibleVitalSign(code: unknown, value: unknown) {
+  const branches = Object.entries(VITAL_SIGNS).map(([vital, range]) => {
+    assertDdlSafe("observations", [vital]);
+    if (!Number.isFinite(range.min) || !Number.isFinite(range.max))
+      throw new Error(`observations: no numeric range for ${vital}`);
+    return sql`WHEN ${sql.raw(`'${vital}'`)} THEN ${value} BETWEEN ${sql.raw(`${range.min} AND ${range.max}`)}`;
+  });
+  return check("observations_value_plausible", sql`CASE ${code} ${sql.join(branches, sql` `)} ELSE false END`);
+}
+
+/**
+ * One vital sign taken during an encounter: at triage, in the clinic, on the
+ * ward. A reading taken with others (a set at triage) shares their
+ * `observed_at`. Values outside what a real reading can be are refused by a
+ * CHECK; a wrong value is marked entered in error, with a reason, and never
+ * edited (a trigger, migration 0046).
+ */
+export const observations = pgTable("observations", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  encounterId: uuid().notNull(),
+  code: text().$type<
+    | "temperature"
+    | "pulse"
+    | "respiratory_rate"
+    | "bp_systolic"
+    | "bp_diastolic"
+    | "spo2"
+    | "weight"
+    | "height"
+    | "muac"
+    | "blood_glucose"
+    | "pain_score"
+  >().notNull(),
+  /** In the vital sign's one unit (`lib/vital-signs.ts`). */
+  value: numeric({ precision: 7, scale: 2, mode: "string" }).notNull(),
+  observedAt: timestamp({ withTimezone: true }).notNull(),
+  recordedAt: timestamp({ withTimezone: true }).notNull(),
+  /** The membership that took it (rule 25). */
+  recordedBy: uuid().notNull(),
+  enteredInErrorAt: timestamp({ withTimezone: true }),
+  enteredInErrorBy: uuid(),
+  enteredInErrorReason: text(),
+}, t => [
+  unique("observations_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({ name: "observations_encounter_fk", columns: [t.facilityId, t.encounterId], foreignColumns: [encounters.facilityId, encounters.id] }),
+  foreignKey({ name: "observations_recorded_by_fk", columns: [t.facilityId, t.recordedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "observations_entered_in_error_by_fk", columns: [t.facilityId, t.enteredInErrorBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  index("observations_encounter_index").on(t.facilityId, t.encounterId, t.observedAt),
+  oneOf("observations_code_known", t.code, [
+    "temperature",
+    "pulse",
+    "respiratory_rate",
+    "bp_systolic",
+    "bp_diastolic",
+    "spo2",
+    "weight",
+    "height",
+    "muac",
+    "blood_glucose",
+    "pain_score",
+  ]),
+  plausibleVitalSign(t.code, t.value),
+  check(
+    "observations_error_complete",
+    sql`(${t.enteredInErrorAt} IS NULL AND ${t.enteredInErrorBy} IS NULL AND ${t.enteredInErrorReason} IS NULL)
+      OR (${t.enteredInErrorAt} IS NOT NULL AND ${t.enteredInErrorBy} IS NOT NULL
+          AND ${t.enteredInErrorReason} IS NOT NULL AND length(btrim(${t.enteredInErrorReason})) > 0)`,
+  ),
+]);
+
+/**
+ * What a patient is allergic to, or a recorded "no known allergies", which
+ * is not the same as nobody having asked. Kept per patient, not per visit,
+ * and shown wherever a drug is prescribed or given.
+ *
+ * Ended, never deleted: entered in error, or no longer applying (recording an
+ * allergy ends a standing "no known allergies"). Drug allergies are free text
+ * for now; slice 4b links them to the drug catalogue so prescribing can check
+ * them. Other alerts get their own table when one is needed.
+ */
+export const patientAllergies = pgTable("patient_allergies", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  patientId: uuid().notNull(),
+  category: text().$type<"drug" | "food" | "environment" | "other" | "none_known">().notNull(),
+  /** What the patient reacts to, as told; null for "no known allergies". */
+  allergen: text(),
+  reaction: text(),
+  severity: text().$type<"mild" | "moderate" | "severe">(),
+  recordedAt: timestamp({ withTimezone: true }).notNull(),
+  recordedBy: uuid().notNull(),
+  removedAt: timestamp({ withTimezone: true }),
+  removedBy: uuid(),
+  removalReason: text().$type<"entered_in_error" | "no_longer_applies">(),
+}, t => [
+  unique("patient_allergies_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({ name: "patient_allergies_patient_fk", columns: [t.facilityId, t.patientId], foreignColumns: [patients.facilityId, patients.id] }),
+  foreignKey({ name: "patient_allergies_recorded_by_fk", columns: [t.facilityId, t.recordedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "patient_allergies_removed_by_fk", columns: [t.facilityId, t.removedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  index("patient_allergies_patient_index").on(t.facilityId, t.patientId),
+  uniqueIndex("patient_allergies_one_none_known")
+    .on(t.patientId)
+    .where(sql`${t.category} = 'none_known' AND ${t.removedAt} IS NULL`),
+  oneOf("patient_allergies_category_known", t.category, ["drug", "food", "environment", "other", "none_known"]),
+  oneOf("patient_allergies_severity_known", t.severity, ["mild", "moderate", "severe"]),
+  oneOf("patient_allergies_removal_reason_known", t.removalReason, ["entered_in_error", "no_longer_applies"]),
+  check(
+    "patient_allergies_allergen_unless_none_known",
+    sql`(${t.category} = 'none_known' AND ${t.allergen} IS NULL AND ${t.reaction} IS NULL AND ${t.severity} IS NULL)
+      OR (${t.category} <> 'none_known' AND ${t.allergen} IS NOT NULL AND length(btrim(${t.allergen})) > 0)`,
+  ),
+  check(
+    "patient_allergies_removal_complete",
+    sql`(${t.removedAt} IS NULL AND ${t.removedBy} IS NULL AND ${t.removalReason} IS NULL)
+      OR (${t.removedAt} IS NOT NULL AND ${t.removedBy} IS NOT NULL AND ${t.removalReason} IS NOT NULL)`,
   ),
 ]);
 
@@ -1941,6 +2081,8 @@ export const TENANT_TABLES = [
   "bed_stays",
   "service_points",
   "queue_entries",
+  "observations",
+  "patient_allergies",
   "billable_items",
   "price_lists",
   "price_changes",

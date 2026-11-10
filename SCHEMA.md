@@ -531,6 +531,31 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - Admissions keep their own running bill and are not listed.
 - **Not yet:** the lab's warning on a test not yet paid for (5a).
 
+**As built (P3, slice 2): triage, vital signs and allergies.** Decided 2026-11-10 (`ROADMAP.md` P3):
+
+- **Vital signs** (`observations`): temperature, pulse, respiratory rate, systolic and diastolic blood pressure, SpO2, weight, height, MUAC, blood glucose and pain score.
+  - Each sign has one unit, from `src/lib/vital-signs.ts`.
+  - A set taken together shares its `observed_at`, which falls within the encounter and never in the future.
+  - Blood pressure needs both readings.
+- **Ranges catch typing slips, not illness.** A value outside what a real reading can be is refused by the route and by the `observations_value_plausible` CHECK, which is built from the same list. A value inside it is stored however abnormal.
+  - Normal-range flags and scores (NEWS2) are not built: they depend on age and are still to confirm (`ROADMAP.md` P3).
+  - Codes are this system's own. Mapping to LOINC waits for DHA's vital-sign profiles.
+- **A wrong reading is marked entered in error**, with a reason, and stays on the record. The trigger `observations_error_only` refuses any other change, and any deletion, for every role.
+- **Allergies** (`patient_allergies`, per patient rather than per visit): `category` (drug, food, environment, other), `allergen` as told, optional `reaction` and `severity`.
+  - **"No known allergies"** is its own row (`none_known`), at most one standing per patient (partial unique index), since "asked, and none" differs from "never asked". An empty list means nobody has asked.
+  - Recording an allergy ends a standing "no known allergies"; "no known allergies" is refused while an allergy stands.
+  - An allergy is ended as entered in error or no longer applying, never edited or deleted (trigger `patient_allergies_end_only`).
+  - Changes for one patient lock the patient's row.
+  - Drug allergies are free text until slice 4b links them to the drug catalogue for prescribing checks.
+- **The triage priority** (`queue_entries.priority`: emergency, urgent, routine) is set as triage finishes with the patient.
+  - The CHECK `queue_entries_priority_when_done` holds it to a finished entry, and the queue trigger to a triage point.
+  - **Clinic queues order by it:** emergency, urgent, then routine or untriaged, each by arrival.
+  - The priority is the visit's latest triage entry's, derived per row and not copied, so a patient sent back to a clinic keeps it.
+- **Who:**
+  - recording vital signs is a clinical act for doctors, clinical officers, nurses and ward nurses, under a current licence;
+  - pharmacists and pharmacy technicians may also record and remove allergies;
+  - only clinical roles read either, as decided (2026-11-10). Each read is audited, as `encounter.viewed` and `patient.viewed`.
+
 **Clinical record.** `observations` (vitals and charted values, with `entered_in_error` instead of deletion), `diagnoses` (ICD code, provisional \| final \| secondary), `clinical_notes` (`signed_at`, `addendum_of`: a signed note is corrected only by an addendum), `orders` and `order_items` (lab, imaging, procedure, medication, service; medication items carry dose, route, frequency and duration). Every clinical act records the acting membership, whose licence details live on `memberships` (rule 25).
 
 **Inpatient.** `admissions` is 1:1 with an ipd encounter and carries the admission number. `bed_stays` holds a `tstzrange` with two `EXCLUDE` constraints: no bed holds two patients at once, and no admission is in two beds at once. A transfer ends one stay and starts the next. `medication_administrations` records each dose against its order item (given \| held \| refused \| missed). `discharge_summaries` are immutable once signed.
