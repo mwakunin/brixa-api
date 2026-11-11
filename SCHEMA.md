@@ -624,6 +624,28 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 - **Cancelling a visit** is refused while a draft, or a signed note or addendum not marked entered in error, stands (`has_clinical_records`), as for vital signs and diagnoses. An addendum counts even under a marked note: once the visit is cancelled it could no longer be marked.
 - **Not yet:** sensitive notes and break-glass (slice 7); note templates by clinic, which the frontend can offer over these sections.
 
+**As built (P3, slice 4a): orders and the lab catalogue.** Decided 2026-11-10 and 2026-11-11 (`ROADMAP.md` P3):
+
+- **The lab catalogue**, kept by the facility admin and the lab supervisor, read by every member (it holds no patient data):
+  - `lab_tests`: a `lab` billable item with lab details. The test goes by the item's code and name and is charged at its price, so the bill and the lab never disagree; one test per item. `specimen_type` (blood, urine, stool, sputum, swab, csf, body fluid, other). Retired (`is_active`) while, say, reagents are out, never removed.
+  - `lab_analytes`, in report order: `numeric` (a unit, critical low and high), `choice` (its answers, and those flagged abnormal) or `text`. `lab_analytes_shape` holds each type to its fields; the route refuses a field that does not fit rather than dropping it. The wording, unit, answers and critical limits change; the result type never does.
+  - `lab_reference_ranges`, for numeric analytes: a sex (`any`, male, female) and an age band in days, from (inclusive) and to (exclusive, none for every age after), so a newborn's range can differ from an infant's; a low, a high or both. Set as a whole list: the current ones are retired and the new ones written, never edited, so a result can keep the range it was judged by (5b). `lab_reference_ranges_no_overlap` (an exclusion constraint) lets no two current ranges cover the same patient, `any` overlapping both sexes. A trigger lets a range only be retired, once.
+  - Nothing is shipped: no test menu and no range is made up for a facility (decided 2026-11-11).
+- **`orders`** and **`order_items`**:
+  - An order is written once (trigger `orders_written_once`): its encounter, `urgency` (routine, urgent), an optional `indication`, who asked and who entered it. Its items carry the lifecycle.
+  - **Who asked, exactly one** (`orders_one_requester`): the clinician who ordered it (`ordered_by`, who also entered it); a walk-in's outside requester (name and facility, the licence number if given); or the client themselves (`self_requested`).
+  - An item is a lab test or a service's billable item (procedure, imaging or service; consumables wait for P4), by typed foreign key (rule 22), once per order.
+  - `status`: `ordered`, then `done` (`done_at`/`done_by`) or `cancelled` (with who and why). A lab test is done once its specimen is collected (5a); a service once a clinician marks it performed. The trigger `order_items_lifecycle` writes items ordered, never changes what they ask for, and freezes a done or cancelled item; nothing is deleted.
+- **Charged as ordered** (rule 16; lab at order, decided 2026-11-10): each item raises a charge from the cash list on the day, with the item as its source (`charges.order_item_id`, one per item, `charges_one_per_order_item`), captured by whoever entered the order. An item with no price refuses the whole order, and nothing of it is kept (rule 21).
+- **Cancelling an item** not yet done cancels its charge while no live invoice asks for it; one already billed stands, to be credited or refunded. Cancelled by whoever could have placed the order (the ordering roles for a clinician's order, records clerks and the lab for a walk-in's), or by the lab for a lab test. It is not a clinical act, so it needs no current licence.
+- **Walk-in lab clients** are registered as ordinary patients, on an outpatient visit that joins no queue. `POST /encounters/{id}/walk-in-orders` (records clerks and lab members) enters their lab tests, from an outside requester's form or self-requested.
+- **Who:**
+  - doctors, clinical officers and nurses order (`POST /encounters/{id}/orders`), under a current licence;
+  - doctors, clinical officers, nurses and ward nurses mark a service performed, under a current licence;
+  - clinical roles read orders, audited as `encounter.viewed`. An order's audit entry names its items and urgency, not its indication (rule 10).
+- **Cancelling a visit** is refused while an order item stands (`has_clinical_records`), checked before its charges, since cancelling the item cancels the charge it raised.
+- **Not yet:** the lab worklist, collection and the unpaid-test warning (5a); results and the visit closing itself once nothing is pending (5b); medicines (4b).
+
 **Clinical record.** `observations` (vitals and charted values, with `entered_in_error` instead of deletion), `diagnoses` (ICD code, provisional \| final \| secondary), `clinical_notes` (`signed_at`, `addendum_of`: a signed note is corrected only by an addendum), `orders` and `order_items` (lab, imaging, procedure, medication, service; medication items carry dose, route, frequency and duration). Every clinical act records the acting membership, whose licence details live on `memberships` (rule 25).
 
 **Inpatient.** `admissions` is 1:1 with an ipd encounter and carries the admission number. `bed_stays` holds a `tstzrange` with two `EXCLUDE` constraints: no bed holds two patients at once, and no admission is in two beds at once. A transfer ends one stay and starts the next. `medication_administrations` records each dose against its order item (given \| held \| refused \| missed). `discharge_summaries` are immutable once signed.
