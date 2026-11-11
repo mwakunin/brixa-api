@@ -32,6 +32,15 @@ export const FISCAL_SERIES = [
   ["refund", "RFD-"],
 ] as const satisfies readonly (readonly [SeriesKind, string])[];
 
+/**
+ * The clinical document series every facility gets at onboarding, yearly and
+ * six digits wide like the fiscal ones (`RX-2026-000123`). Migration 0055
+ * backfills the prescription series.
+ */
+export const CLINICAL_SERIES = [
+  ["prescription", "RX-"],
+] as const satisfies readonly (readonly [SeriesKind, string])[];
+
 /** A series kind this facility has not registered: a setup error, not a user one. */
 export class SeriesNotRegisteredError extends Error {
   constructor(kind: SeriesKind) {

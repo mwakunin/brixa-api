@@ -68,7 +68,7 @@ function userRef(name: string) {
  */
 function assertDdlSafe(name: string, values: readonly string[]) {
   for (const value of values) {
-    if (!/^[a-z0-9_.]+$/.test(value))
+    if (!/^[\w.]+$/.test(value))
       throw new Error(`${name}: unexpected value ${JSON.stringify(value)}`);
   }
 }
@@ -388,6 +388,9 @@ export const auditLog = pgTable("audit_log", {
     | "order.placed"
     | "order_item.cancelled"
     | "order_item.done"
+    | "prescription.issued"
+    | "prescription.cancelled"
+    | "prescription.allergy_overridden"
   >().notNull(),
   /** What it happened to. Not a foreign key: the log outlives what it names. */
   entityType: text().notNull(),
@@ -501,6 +504,9 @@ export const auditLog = pgTable("audit_log", {
     "order.placed",
     "order_item.cancelled",
     "order_item.done",
+    "prescription.issued",
+    "prescription.cancelled",
+    "prescription.allergy_overridden",
   ]),
 ]);
 
@@ -521,7 +527,7 @@ export const auditLog = pgTable("audit_log", {
 export const numberSeries = pgTable("number_series", {
   id: uuid().primaryKey().defaultRandom(),
   facilityId: uuid().notNull().references(() => facilities.id),
-  kind: text().$type<"outpatient" | "inpatient" | "admission" | "receipt" | "invoice" | "credit_note" | "refund">().notNull(),
+  kind: text().$type<"outpatient" | "inpatient" | "admission" | "receipt" | "invoice" | "credit_note" | "refund" | "prescription">().notNull(),
   /** Facility-chosen, e.g. `OP`. Applies to numbers issued from now on. */
   prefix: text().notNull(),
   /** Zero-padded width: 4 gives OP0001. A number grows past it, never truncates. */
@@ -532,7 +538,7 @@ export const numberSeries = pgTable("number_series", {
 }, t => [
   unique("number_series_facility_id_kind_key").on(t.facilityId, t.kind),
   unique("number_series_facility_id_id_key").on(t.facilityId, t.id),
-  oneOf("number_series_kind_known", t.kind, ["outpatient", "inpatient", "admission", "receipt", "invoice", "credit_note", "refund"]),
+  oneOf("number_series_kind_known", t.kind, ["outpatient", "inpatient", "admission", "receipt", "invoice", "credit_note", "refund", "prescription"]),
   oneOf("number_series_reset_period_known", t.resetPeriod, ["never", "yearly", "daily"]),
   check("number_series_prefix_shape", sql`${t.prefix} ~ '^[A-Za-z0-9/-]{1,12}$'`),
   check("number_series_padding_range", sql`${t.padding} BETWEEN 1 AND 12`),
@@ -710,7 +716,7 @@ export const invitations = pgTable("invitations", {
 export const documents = pgTable("documents", {
   id: uuid().primaryKey().defaultRandom(),
   facilityId: uuid().notNull().references(() => facilities.id),
-  kind: text().$type<"receipt" | "invoice" | "credit_note" | "refund">().notNull(),
+  kind: text().$type<"receipt" | "invoice" | "credit_note" | "refund" | "prescription">().notNull(),
   /** From this facility's number series of the same kind. */
   number: text().notNull(),
   /**
@@ -736,7 +742,7 @@ export const documents = pgTable("documents", {
     columns: [t.facilityId, t.issuedBy],
     foreignColumns: [memberships.facilityId, memberships.id],
   }),
-  oneOf("documents_kind_known", t.kind, ["receipt", "invoice", "credit_note", "refund"]),
+  oneOf("documents_kind_known", t.kind, ["receipt", "invoice", "credit_note", "refund", "prescription"]),
   // 20 bytes of base64url: a shorter code typed in by hand would be guessable.
   check("documents_verification_code_shape", sql`${t.verificationCode} ~ '^[A-Za-z0-9_-]{27}$'`),
   // Voided means at some time, for a stated reason; otherwise neither. The
@@ -1343,14 +1349,53 @@ export const observations = pgTable("observations", {
 ]);
 
 /**
+ * The medicines a prescription may name, at generic level (P3 slice 4b): a
+ * shared reference table (CLAUDE.md rule 1), with no facility_id, read-only
+ * to the app role and loaded by `pnpm drugs:load` from a file in this
+ * system's own format (`lib/drug-catalogue-load.ts`). Which national list
+ * fills it is still open (SPEC.md §2); a code a later load lacks is retired,
+ * never deleted, since past prescriptions name it.
+ */
+export const drugCatalogue = pgTable("drug_catalogue", {
+  /** e.g. `PCM-500-TAB`. */
+  code: text().primaryKey(),
+  /** The generic name, combinations joined with `/`: `Amoxicillin/Clavulanic acid`. */
+  genericName: text().notNull(),
+  /** As printed, e.g. `500 mg` or `125 mg/5 mL`. */
+  strength: text().notNull(),
+  /** As printed, e.g. `Tablet`, `Oral suspension`. */
+  form: text().notNull(),
+  /** What a dose is counted in, e.g. `tablet`, `mL`: prescribed quantities are in it. */
+  doseUnit: text().notNull(),
+  /** The usual route; a prescription may give another. */
+  route: text().$type<
+    "oral" | "sublingual" | "iv" | "im" | "sc" | "intradermal" | "topical" | "rectal" | "vaginal" | "inhaled" | "nasal" | "ophthalmic" | "otic"
+  >().notNull(),
+  /** A controlled drug's schedule (rule 12); null for one that is not. */
+  controlledSchedule: text().$type<"I" | "II" | "III" | "IV">(),
+  loadedAt: timestamp({ withTimezone: true }).notNull(),
+  retiredAt: timestamp({ withTimezone: true }),
+}, t => [
+  check("drug_catalogue_code_shape", sql`${t.code} ~ '^[A-Z0-9][A-Z0-9._/-]{0,31}$'`),
+  check(
+    "drug_catalogue_text_present",
+    sql`length(btrim(${t.genericName})) > 0 AND length(btrim(${t.strength})) > 0
+      AND length(btrim(${t.form})) > 0 AND length(btrim(${t.doseUnit})) > 0`,
+  ),
+  oneOf("drug_catalogue_route_known", t.route, ["oral", "sublingual", "iv", "im", "sc", "intradermal", "topical", "rectal", "vaginal", "inhaled", "nasal", "ophthalmic", "otic"]),
+  oneOf("drug_catalogue_controlled_schedule_known", t.controlledSchedule, ["I", "II", "III", "IV"]),
+]);
+
+/**
  * What a patient is allergic to, or a recorded "no known allergies", which
  * is not the same as nobody having asked. Kept per patient, not per visit,
  * and shown wherever a drug is prescribed or given.
  *
  * Ended, never deleted: entered in error, or no longer applying (recording an
- * allergy ends a standing "no known allergies"). Drug allergies are free text
- * for now; slice 4b links them to the drug catalogue so prescribing can check
- * them. Other alerts get their own table when one is needed.
+ * allergy ends a standing "no known allergies"). A drug allergy may name a
+ * catalogue drug (P3 slice 4b), which prescribing checks by generic name; it
+ * is still described as told. Other alerts get their own table when one is
+ * needed.
  */
 export const patientAllergies = pgTable("patient_allergies", {
   id: uuid().primaryKey().defaultRandom(),
@@ -1359,6 +1404,8 @@ export const patientAllergies = pgTable("patient_allergies", {
   category: text().$type<"drug" | "food" | "environment" | "other" | "none_known">().notNull(),
   /** What the patient reacts to, as told; null for "no known allergies". */
   allergen: text(),
+  /** The catalogue drug a drug allergy is to, when one fits; prescribing checks it. */
+  drugCode: text().references(() => drugCatalogue.code),
   reaction: text(),
   severity: text().$type<"mild" | "moderate" | "severe">(),
   recordedAt: timestamp({ withTimezone: true }).notNull(),
@@ -1378,6 +1425,7 @@ export const patientAllergies = pgTable("patient_allergies", {
   oneOf("patient_allergies_category_known", t.category, ["drug", "food", "environment", "other", "none_known"]),
   oneOf("patient_allergies_severity_known", t.severity, ["mild", "moderate", "severe"]),
   oneOf("patient_allergies_removal_reason_known", t.removalReason, ["entered_in_error", "no_longer_applies"]),
+  check("patient_allergies_drug_is_a_drug_allergy", sql`${t.drugCode} IS NULL OR ${t.category} = 'drug'`),
   check(
     "patient_allergies_allergen_unless_none_known",
     sql`(${t.category} = 'none_known' AND ${t.allergen} IS NULL AND ${t.reaction} IS NULL AND ${t.severity} IS NULL)
@@ -1625,7 +1673,8 @@ export const labAnalytes = pgTable("lab_analytes", {
           AND (${t.unit} IS NULL OR length(btrim(${t.unit})) > 0)
           AND (${t.criticalLow} IS NULL OR ${t.criticalHigh} IS NULL OR ${t.criticalLow} < ${t.criticalHigh}))
       OR (${t.resultType} = 'choice' AND ${t.unit} IS NULL AND ${t.criticalLow} IS NULL AND ${t.criticalHigh} IS NULL
-          AND cardinality(${t.choices}) >= 2 AND ${t.abnormalChoices} IS NOT NULL AND ${t.abnormalChoices} <@ ${t.choices})
+          AND ${t.choices} IS NOT NULL AND cardinality(${t.choices}) >= 2
+          AND ${t.abnormalChoices} IS NOT NULL AND ${t.abnormalChoices} <@ ${t.choices})
       OR (${t.resultType} = 'text' AND ${t.unit} IS NULL AND ${t.choices} IS NULL AND ${t.abnormalChoices} IS NULL
           AND ${t.criticalLow} IS NULL AND ${t.criticalHigh} IS NULL)`,
   ),
@@ -1686,13 +1735,19 @@ export const orders = pgTable("orders", {
   /** Who put it in: the ordering clinician, or the clerk or lab member for a walk-in. */
   enteredBy: uuid().notNull(),
   orderedAt: timestamp({ withTimezone: true }).notNull(),
+  /** A prescription's printed `RX-` document, issued as it is signed. */
+  documentId: uuid(),
 }, t => [
   unique("orders_facility_id_id_key").on(t.facilityId, t.id),
   foreignKey({ name: "orders_encounter_fk", columns: [t.facilityId, t.encounterId], foreignColumns: [encounters.facilityId, encounters.id] }),
   foreignKey({ name: "orders_ordered_by_fk", columns: [t.facilityId, t.orderedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
   foreignKey({ name: "orders_entered_by_fk", columns: [t.facilityId, t.enteredBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "orders_document_fk", columns: [t.facilityId, t.documentId], foreignColumns: [documents.facilityId, documents.id] }),
+  uniqueIndex("orders_one_per_document").on(t.documentId).where(sql`${t.documentId} IS NOT NULL`),
   index("orders_encounter_index").on(t.facilityId, t.encounterId, t.orderedAt),
   oneOf("orders_urgency_known", t.urgency, ["routine", "urgent"]),
+  // A prescription is a clinician's.
+  check("orders_prescription_prescribed", sql`${t.documentId} IS NULL OR ${t.orderedBy} IS NOT NULL`),
   // Exactly one of: a clinician here, an outside requester, the client themselves.
   check(
     "orders_one_requester",
@@ -1724,6 +1779,24 @@ export const orderItems = pgTable("order_items", {
   labTestId: uuid(),
   /** A service's item: a procedure, imaging or other service. */
   billableItemId: uuid(),
+  /** A medicine (P3 slice 4b), charged when dispensed (P4), not when prescribed. */
+  drugCode: text(),
+  /** The drug as prescribed, copied from the catalogue (rule 7): `Paracetamol 500 mg Tablet`. */
+  drugDescription: text(),
+  /** Each dose, in `doseUnit` (copied from the catalogue): 1 tablet, 5 mL. */
+  doseAmount: numeric({ precision: 11, scale: 3, mode: "string" }),
+  doseUnit: text(),
+  route: text().$type<
+    "oral" | "sublingual" | "iv" | "im" | "sc" | "intradermal" | "topical" | "rectal" | "vaginal" | "inhaled" | "nasal" | "ophthalmic" | "otic"
+  >(),
+  frequency: text().$type<"od" | "bd" | "tds" | "qid" | "nocte" | "prn" | "stat">(),
+  /** Days to take it: none for a single dose (stat), optional when needed (prn). */
+  durationDays: integer(),
+  /** In dose units: worked out from a regular frequency unless the prescriber gave it. */
+  quantity: numeric({ precision: 11, scale: 3, mode: "string" }),
+  instructions: text(),
+  /** Why it is prescribed despite a recorded allergy to it (audited). */
+  allergyOverrideReason: text(),
   status: text().$type<"ordered" | "done" | "cancelled">().notNull(),
   doneAt: timestamp({ withTimezone: true }),
   doneBy: uuid(),
@@ -1735,14 +1808,36 @@ export const orderItems = pgTable("order_items", {
   foreignKey({ name: "order_items_order_fk", columns: [t.facilityId, t.orderId], foreignColumns: [orders.facilityId, orders.id] }),
   foreignKey({ name: "order_items_lab_test_fk", columns: [t.facilityId, t.labTestId], foreignColumns: [labTests.facilityId, labTests.id] }),
   foreignKey({ name: "order_items_billable_item_fk", columns: [t.facilityId, t.billableItemId], foreignColumns: [billableItems.facilityId, billableItems.id] }),
+  foreignKey({ name: "order_items_drug_fk", columns: [t.drugCode], foreignColumns: [drugCatalogue.code] }),
   foreignKey({ name: "order_items_done_by_fk", columns: [t.facilityId, t.doneBy], foreignColumns: [memberships.facilityId, memberships.id] }),
   foreignKey({ name: "order_items_cancelled_by_fk", columns: [t.facilityId, t.cancelledBy], foreignColumns: [memberships.facilityId, memberships.id] }),
   index("order_items_order_index").on(t.facilityId, t.orderId),
   // The same test or service once per order; a repeat is a later order.
   uniqueIndex("order_items_lab_test_once").on(t.orderId, t.labTestId).where(sql`${t.labTestId} IS NOT NULL`),
   uniqueIndex("order_items_service_once").on(t.orderId, t.billableItemId).where(sql`${t.billableItemId} IS NOT NULL`),
+  uniqueIndex("order_items_drug_once").on(t.orderId, t.drugCode).where(sql`${t.drugCode} IS NOT NULL`),
   oneOf("order_items_status_known", t.status, ["ordered", "done", "cancelled"]),
-  check("order_items_one_kind", sql`num_nonnulls(${t.labTestId}, ${t.billableItemId}) = 1`),
+  oneOf("order_items_route_known", t.route, ["oral", "sublingual", "iv", "im", "sc", "intradermal", "topical", "rectal", "vaginal", "inhaled", "nasal", "ophthalmic", "otic"]),
+  oneOf("order_items_frequency_known", t.frequency, ["od", "bd", "tds", "qid", "nocte", "prn", "stat"]),
+  check("order_items_one_kind", sql`num_nonnulls(${t.labTestId}, ${t.billableItemId}, ${t.drugCode}) = 1`),
+  // A medicine's columns exactly when it is one: the drug as prescribed, a
+  // dose, a route, a frequency and a quantity; a duration for a regular
+  // frequency, none for a single dose.
+  check(
+    "order_items_medication_shape",
+    sql`(${t.drugCode} IS NULL AND num_nonnulls(${t.drugDescription}, ${t.doseAmount}, ${t.doseUnit}, ${t.route}, ${t.frequency},
+          ${t.durationDays}, ${t.quantity}, ${t.instructions}, ${t.allergyOverrideReason}) = 0)
+      OR (${t.drugCode} IS NOT NULL AND ${t.drugDescription} IS NOT NULL AND ${t.doseUnit} IS NOT NULL
+          AND ${t.route} IS NOT NULL AND ${t.frequency} IS NOT NULL
+          AND ${t.doseAmount} IS NOT NULL AND ${t.doseAmount} > 0 AND ${t.quantity} IS NOT NULL AND ${t.quantity} > 0
+          AND CASE ${t.frequency}
+                WHEN 'stat' THEN ${t.durationDays} IS NULL
+                WHEN 'prn' THEN ${t.durationDays} IS NULL OR ${t.durationDays} > 0
+                ELSE ${t.durationDays} IS NOT NULL AND ${t.durationDays} > 0
+              END
+          AND (${t.instructions} IS NULL OR length(btrim(${t.instructions})) > 0)
+          AND (${t.allergyOverrideReason} IS NULL OR length(btrim(${t.allergyOverrideReason})) > 0))`,
+  ),
   check(
     "order_items_lifecycle",
     sql`(${t.status} = 'ordered' AND num_nonnulls(${t.doneAt}, ${t.doneBy}, ${t.cancelledAt}, ${t.cancelledBy}, ${t.cancellationReason}) = 0)

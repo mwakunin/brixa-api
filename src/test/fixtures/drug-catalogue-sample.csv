@@ -1,0 +1,11 @@
+code,generic_name,strength,form,dose_unit,route,controlled_schedule
+PCM-500-TAB,Paracetamol,500 mg,Tablet,tablet,oral,
+PCM-120-SUSP,Paracetamol,120 mg/5 mL,Oral suspension,mL,oral,
+AMX-500-CAP,Amoxicillin,500 mg,Capsule,capsule,oral,
+AMX-125-SUSP,Amoxicillin,125 mg/5 mL,Oral suspension,mL,oral,
+AMC-625-TAB,Amoxicillin/Clavulanic acid,500 mg/125 mg,Tablet,tablet,oral,
+AL-20/120-TAB,Artemether/Lumefantrine,20 mg/120 mg,Tablet,tablet,oral,
+CRO-1G-INJ,Ceftriaxone,1 g,Powder for injection,vial,iv,
+IBU-400-TAB,Ibuprofen,400 mg,Tablet,tablet,oral,
+MOR-10-INJ,Morphine,10 mg/mL,Injection,mL,im,II
+"ORS-SACH","Oral rehydration salts, low osmolarity",20.5 g,Sachet,sachet,oral,

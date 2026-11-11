@@ -79,6 +79,7 @@ describe("onboarding a facility", () => {
       ["inpatient", "IP", "never", 4],
       ["invoice", "INV-", "yearly", 6],
       ["outpatient", "OPD", "never", 4],
+      ["prescription", "RX-", "yearly", 6],
       ["receipt", "RCT-", "yearly", 6],
       ["refund", "RFD-", "yearly", 6],
     ]);
@@ -93,6 +94,7 @@ describe("onboarding a facility", () => {
       { kind: "inpatient", next_value: 1 },
       { kind: "invoice", next_value: 1 },
       { kind: "outpatient", next_value: 1201 },
+      { kind: "prescription", next_value: 1 },
       { kind: "receipt", next_value: 1 },
       { kind: "refund", next_value: 1 },
     ]);

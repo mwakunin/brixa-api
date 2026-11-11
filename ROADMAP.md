@@ -119,8 +119,6 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
 
 **Proposed, to confirm:**
 - **From the ecc healthcare guidance:**
-  - Prescribing against a recorded drug allergy is blocked unless overridden with a reason, and the override is audited.
-  - Prescribing for a child needs a weight taken that day.
   - The ordering clinician gets a results-to-review list and acknowledges each result.
   - Abnormal vital signs are flagged for adults; children's thresholds depend on age and need care.
   - Sensitive billable items print under a neutral name.
@@ -136,6 +134,14 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
 - **Walk-in lab clients** are registered as ordinary patients, on an outpatient visit that joins no queue. Records clerks and lab members enter the request: an outside requester's name and facility (the licence number if given), or a test the client asks for themselves, marked self-requested.
 - **The lab catalogue** is kept by the facility admin and the lab supervisor. Analytes are numeric (with a unit, reference ranges by sex and age, and critical limits), a choice from a list, or free text. No test menu is shipped: each facility sets up its own, and no reference range is made up for it.
 - **A visit closing itself** once nothing is pending counts money still due as pending, since the cashier's list shows open visits only. It is built in 5b, once lab orders can finish.
+
+**Decided 2026-11-11** (product owner, for 4b; recommendations accepted):
+- **The drug catalogue** is loaded from a CSV file in this system's own format (generic name, strength, form, dose unit, route, controlled schedule), with a small sample for development and tests. Which national list fills it is still open: the Kenya Essential Medicines List, PPB's register, or DHA's ePrescription terms.
+- **Drug allergies** block a prescription of the same generic drug, an ingredient of a combination included, unless the prescriber gives a reason, which is audited. A drug allergy may name the catalogue drug; one recorded as text alone is matched by name. Drug classes wait for a source that carries them. Every allergy prints on the prescription.
+- **A child under 12** needs a weight taken that day before anything is prescribed. The age is to be confirmed by a clinician.
+- **Prescribers:** doctors, clinical officers and nurses; a controlled drug, doctors and clinical officers only.
+- **The prescription** is numbered from a yearly `RX-` series (`RX-2026-000001`) as it is written, with a QR code; existing facilities get the series by backfill. It is changed by cancelling it, which voids the paper, and writing a new one.
+- **A medicine** records its drug, dose and dose unit, route, a frequency from a fixed list (OD, BD, TDS, QID, nocte, PRN, STAT), a duration in days, a quantity in dose units (worked out from a regular frequency unless given) and instructions.
 
 **Still open:** whether the MOH 705 report's grouping of ICD-11 codes into MOH's condition list needs WHO's written agreement, since WHO's licence puts mappings between classifications outside it (`SCHEMA.md` §8, slice 3a); the pilot's MOH 705 and 717 forms, so P3 captures what P6 reports need (§9, question 10); whether SMS reminders need the patient's consent; drug-interaction and dose data (none in v1 without a licensed source).
 

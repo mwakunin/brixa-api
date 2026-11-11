@@ -15,6 +15,8 @@ import type {
   PlaceWalkInOrderRoute,
 } from "./orders.routes";
 
+import { orderJson } from "./order-schemas";
+
 function actorOf(c: Context<TenantBindings>): orders.OrderActor {
   return { userId: c.var.user!.id, membershipId: c.var.membership.id, roles: c.var.membership.roles };
 }
@@ -27,18 +29,6 @@ function refusal(c: Context, err: unknown) {
   if (err.code === "not_yours_to_cancel")
     return c.json({ message: err.message, code: err.code }, HttpStatusCodes.FORBIDDEN);
   return c.json({ message: err.message, code: err.code }, HttpStatusCodes.CONFLICT);
-}
-
-function iso(d: Date | null) {
-  return d ? d.toISOString() : null;
-}
-
-function orderJson(o: orders.ShownOrder) {
-  return {
-    ...o,
-    orderedAt: o.orderedAt.toISOString(),
-    items: o.items.map(i => ({ ...i, doneAt: iso(i.doneAt), cancelledAt: iso(i.cancelledAt) })),
-  };
 }
 
 /** Runs a change, answering with the order as the list shows it, without a second audit entry. */

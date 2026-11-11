@@ -28,6 +28,8 @@ const AllergySchema = z.object({
   category: z.enum(["drug", "food", "environment", "other", "none_known"]),
   /** Null for "no known allergies". */
   allergen: z.string().nullable(),
+  /** The catalogue drug a drug allergy is to, when one was named. */
+  drugCode: z.string().nullable(),
   reaction: z.string().nullable(),
   severity: z.enum(["mild", "moderate", "severe"]).nullable(),
   recordedAt: z.string(),
@@ -41,9 +43,11 @@ const RecordBodySchema = z.union([
     category: z.enum(["drug", "food", "environment", "other"]),
     /** As the patient or their record says it, e.g. "Penicillin", "Groundnuts". */
     allergen: oneLine(100),
+    /** For a drug allergy, the catalogue drug when one fits: prescribing it is then checked. */
+    drugCode: z.string().trim().toUpperCase().regex(/^[A-Z0-9][A-Z0-9._/-]{0,31}$/, "A drug catalogue code").optional(),
     reaction: oneLine(200).optional(),
     severity: z.enum(["mild", "moderate", "severe"]).optional(),
-  }),
+  }).refine(b => b.drugCode === undefined || b.category === "drug", { message: "Only a drug allergy names a drug", path: ["drugCode"] }),
   /** Asked, and the patient has none. Refused while an allergy stands. */
   z.object({ noKnownAllergies: z.literal(true) }),
 ]);

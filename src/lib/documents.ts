@@ -39,6 +39,9 @@ export const DOCUMENT_READERS: Record<DocumentKind, readonly MembershipRole[]> =
   invoice: ["cashier", "billing_clerk", "claims_officer", "finance_manager", "facility_admin", "auditor"],
   credit_note: ["cashier", "billing_clerk", "claims_officer", "finance_manager", "facility_admin", "auditor"],
   refund: ["cashier", "billing_clerk", "finance_manager", "facility_admin", "auditor"],
+  // Clinical: what was prescribed can reveal a condition. Prescribers reprint
+  // it, and the pharmacy dispenses against it (P4).
+  prescription: ["doctor", "clinical_officer", "nurse", "ward_nurse", "pharmacist", "pharm_tech"],
 };
 
 export function mayRead(roles: readonly MembershipRole[], kind: DocumentKind): boolean {

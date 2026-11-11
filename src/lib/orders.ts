@@ -4,7 +4,7 @@ import { alias } from "drizzle-orm/pg-core";
 import type { AppDb } from "@/db";
 import type { MembershipRole } from "@/db/schema";
 
-import { billableItems, charges, encounters, labTests, memberships, orderItems, orders, user } from "@/db/schema";
+import { billableItems, charges, documents, encounters, labTests, memberships, orderItems, orders, user } from "@/db/schema";
 
 import type { PatientActor } from "./patients";
 
@@ -53,6 +53,7 @@ export type OrderErrorCode
     | "not_found"
     | "not_ordered"
     | "not_a_service_item"
+    | "cancel_the_prescription"
     | "not_yours_to_cancel";
 
 export class OrderError extends Error {
@@ -68,7 +69,8 @@ export class OrderError extends Error {
       not_covered: "Something on this order has no cash price today; the facility admin sets its price first",
       not_found: "No such order item",
       not_ordered: "This item is already done or cancelled",
-      not_a_service_item: "A lab test is done once its specimen is collected, not marked done",
+      not_a_service_item: "Only a service is marked done: a lab test is done once its specimen is collected, a medicine once dispensed",
+      cancel_the_prescription: "A medicine is cancelled with its prescription, which is then written again",
       not_yours_to_cancel: "Only someone who could have placed this order, or the lab for a lab test, cancels it",
     }[code]);
     this.name = "OrderError";
@@ -267,6 +269,9 @@ async function chargedCode(tx: AppDb, item: ItemRow): Promise<string> {
  */
 export async function cancelOrderItem(tx: AppDb, facilityId: string, itemId: string, reason: string, actor: OrderActor, at = new Date()): Promise<ItemRow> {
   const { item, encounterId, walkIn } = await lockItem(tx, itemId);
+  // Its printed prescription would no longer say what stands.
+  if (item.drugCode)
+    throw new OrderError("cancel_the_prescription");
   const placers: readonly MembershipRole[] = walkIn ? WALK_IN_STAFF : ORDERING_STAFF;
   const may = [...placers, ...(item.labTestId ? LAB_STAFF : [])];
   if (!actor.roles.some(r => may.includes(r)))
@@ -294,7 +299,7 @@ export async function cancelOrderItem(tx: AppDb, facilityId: string, itemId: str
 /** Marks a service performed, by the clinician who did it (rule 25). A lab test is done by its specimen's collection instead. */
 export async function markServiceDone(tx: AppDb, facilityId: string, itemId: string, actor: PatientActor, at = new Date()): Promise<ItemRow> {
   const { item, encounterId } = await lockItem(tx, itemId);
-  if (item.labTestId)
+  if (!item.billableItemId)
     throw new OrderError("not_a_service_item");
 
   const [done] = await tx.update(orderItems)
@@ -329,20 +334,36 @@ export async function hasStandingOrders(tx: AppDb, encounterId: string): Promise
 // Reading
 // ---------------------------------------------------------------------------
 
+/** A medicine as prescribed. */
+export interface ShownMedicine {
+  drugCode: string;
+  doseAmount: string;
+  doseUnit: string;
+  route: NonNullable<ItemRow["route"]>;
+  frequency: NonNullable<ItemRow["frequency"]>;
+  durationDays: number | null;
+  quantity: string;
+  instructions: string | null;
+  /** Why it was prescribed despite a recorded allergy. */
+  allergyOverrideReason: string | null;
+}
+
 export interface ShownOrderItem {
   id: string;
-  kind: "lab" | "service";
+  kind: "lab" | "service" | "medication";
   labTestId: string | null;
-  /** What it is charged as. */
-  billableItemId: string;
+  /** What it is charged as; none for a medicine, charged when dispensed (P4). */
+  billableItemId: string | null;
+  /** The item's or drug's code, and its name (a medicine's as prescribed). */
   code: string;
   name: string;
   status: ItemStatus;
   doneAt: Date | null;
   cancelledAt: Date | null;
   cancellationReason: string | null;
-  /** Its standing charge; null once that is cancelled. */
+  /** Its standing charge; null once that is cancelled, or for a medicine. */
   amountCents: number | null;
+  medication: ShownMedicine | null;
 }
 
 export interface ShownOrder {
@@ -357,16 +378,19 @@ export interface ShownOrder {
   requester: { name: string; facility: string; licenceNumber: string | null } | null;
   selfRequested: boolean;
   enteredBy: { membershipId: string; name: string };
+  /** A prescription's printed document; `voided` once it is cancelled. */
+  prescription: { documentId: string; number: string; voided: boolean } | null;
   items: ShownOrderItem[];
 }
 
 /** An encounter's orders, oldest first, each with its items. Not audited. */
 export async function ordersOf(tx: AppDb, encounterId: string, filter: { orderId?: string } = {}): Promise<ShownOrder[]> {
   const rows = await tx
-    .select({ order: orders, enteredByName: user.name })
+    .select({ order: orders, enteredByName: user.name, documentNumber: documents.number, documentVoidedAt: documents.voidedAt })
     .from(orders)
     .innerJoin(memberships, eq(memberships.id, orders.enteredBy))
     .innerJoin(user, eq(user.id, memberships.userId))
+    .leftJoin(documents, eq(documents.id, orders.documentId))
     .where(and(eq(orders.encounterId, encounterId), filter.orderId ? eq(orders.id, filter.orderId) : undefined))
     .orderBy(asc(orders.orderedAt), asc(orders.id));
   if (rows.length === 0)
@@ -376,9 +400,9 @@ export async function ordersOf(tx: AppDb, encounterId: string, filter: { orderId
   const items = await tx
     .select({
       item: orderItems,
-      billableItemId: sql<string>`coalesce(${billableItems.id}, ${labItem.id})`,
-      code: sql<string>`coalesce(${billableItems.code}, ${labItem.code})`,
-      name: sql<string>`coalesce(${billableItems.name}, ${labItem.name})`,
+      billableItemId: sql<string | null>`coalesce(${billableItems.id}, ${labItem.id})`,
+      code: sql<string>`coalesce(${billableItems.code}, ${labItem.code}, ${orderItems.drugCode})`,
+      name: sql<string>`coalesce(${billableItems.name}, ${labItem.name}, ${orderItems.drugDescription})`,
       amountCents: charges.amountCents,
     })
     .from(orderItems)
@@ -387,9 +411,9 @@ export async function ordersOf(tx: AppDb, encounterId: string, filter: { orderId
     .leftJoin(labItem, eq(labItem.id, labTests.billableItemId))
     .leftJoin(charges, and(eq(charges.orderItemId, orderItems.id), sql`${charges.cancelledAt} IS NULL`))
     .where(inArray(orderItems.orderId, rows.map(r => r.order.id)))
-    .orderBy(sql`coalesce(${billableItems.code}, ${labItem.code})`, asc(orderItems.id));
+    .orderBy(sql`coalesce(${billableItems.code}, ${labItem.code}, ${orderItems.drugCode})`, asc(orderItems.id));
 
-  return rows.map(({ order: o, enteredByName }) => {
+  return rows.map(({ order: o, enteredByName, documentNumber, documentVoidedAt }) => {
     const enteredBy = { membershipId: o.enteredBy, name: enteredByName };
     return {
       id: o.id,
@@ -401,9 +425,10 @@ export async function ordersOf(tx: AppDb, encounterId: string, filter: { orderId
       requester: o.requesterName ? { name: o.requesterName, facility: o.requesterFacility!, licenceNumber: o.requesterLicence } : null,
       selfRequested: o.selfRequested,
       enteredBy,
+      prescription: o.documentId ? { documentId: o.documentId, number: documentNumber!, voided: documentVoidedAt !== null } : null,
       items: items.filter(i => i.item.orderId === o.id).map(({ item: i, billableItemId, code, name, amountCents }) => ({
         id: i.id,
-        kind: i.labTestId ? "lab" as const : "service" as const,
+        kind: i.labTestId ? "lab" as const : i.drugCode ? "medication" as const : "service" as const,
         labTestId: i.labTestId,
         billableItemId,
         code,
@@ -413,6 +438,19 @@ export async function ordersOf(tx: AppDb, encounterId: string, filter: { orderId
         cancelledAt: i.cancelledAt,
         cancellationReason: i.cancellationReason,
         amountCents,
+        medication: i.drugCode
+          ? {
+              drugCode: i.drugCode,
+              doseAmount: i.doseAmount!,
+              doseUnit: i.doseUnit!,
+              route: i.route!,
+              frequency: i.frequency!,
+              durationDays: i.durationDays,
+              quantity: i.quantity!,
+              instructions: i.instructions,
+              allergyOverrideReason: i.allergyOverrideReason,
+            }
+          : null,
       })),
     };
   });

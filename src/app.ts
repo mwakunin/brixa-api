@@ -24,6 +24,7 @@ import observations from "@/routes/observations/observations.index";
 import orders from "@/routes/orders/orders.index";
 import patients from "@/routes/patients/patients.index";
 import payments from "@/routes/payments/payments.index";
+import prescriptions from "@/routes/prescriptions/prescriptions.index";
 import prices from "@/routes/prices/prices.index";
 import queues from "@/routes/queues/queues.index";
 import refunds from "@/routes/refunds/refunds.index";
@@ -92,6 +93,7 @@ const tenantRoutes = [
   notes,
   labTests,
   orders,
+  prescriptions,
   wards,
   prices,
   charges,

@@ -7,6 +7,7 @@ import { memberships, patientAllergies, patients, user } from "@/db/schema";
 import type { PatientActor } from "./patients";
 
 import { recordAudit } from "./audit";
+import { currentDrug } from "./drug-catalogue";
 
 /**
  * A patient's allergies (SCHEMA.md §8, P3 slice 2), or a recorded "no known
@@ -22,8 +23,9 @@ export type Severity = NonNullable<AllergyRow["severity"]>;
 export type RemovalReason = NonNullable<AllergyRow["removalReason"]>;
 
 export class AllergyError extends Error {
-  constructor(readonly code: "patient_not_found" | "not_found" | "already_removed" | "has_allergies") {
+  constructor(readonly code: "patient_not_found" | "not_found" | "already_removed" | "has_allergies" | "drug_not_found") {
     super({
+      drug_not_found: "No such drug in the catalogue",
       patient_not_found: "No such patient",
       not_found: "No such allergy",
       already_removed: "This allergy is no longer on the record",
@@ -49,11 +51,14 @@ export async function recordAllergy(
   tx: AppDb,
   facilityId: string,
   patientId: string,
-  input: { category: AllergyCategory; allergen: string; reaction?: string; severity?: Severity },
+  input: { category: AllergyCategory; allergen: string; drugCode?: string; reaction?: string; severity?: Severity },
   actor: PatientActor,
   now = new Date(),
 ): Promise<AllergyRow> {
   await lockPatient(tx, patientId);
+  // A drug allergy may name the catalogue drug, which prescribing then checks (slice 4b).
+  if (input.drugCode && !await currentDrug(tx, input.drugCode))
+    throw new AllergyError("drug_not_found");
 
   const ended = await tx.update(patientAllergies)
     .set({ removedAt: now, removedBy: actor.membershipId, removalReason: "no_longer_applies" })
@@ -76,6 +81,7 @@ export async function recordAllergy(
     patientId,
     category: input.category,
     allergen: input.allergen,
+    drugCode: input.drugCode ?? null,
     reaction: input.reaction ?? null,
     severity: input.severity ?? null,
     recordedAt: now,
@@ -184,6 +190,8 @@ export interface ShownAllergy {
   id: string;
   category: AllergyRow["category"];
   allergen: string | null;
+  /** The catalogue drug a drug allergy is to, when one was named. */
+  drugCode: string | null;
   reaction: string | null;
   severity: Severity | null;
   recordedAt: Date;
@@ -206,6 +214,7 @@ export async function allergiesOf(tx: AppDb, patientId: string, includeEnded = f
     id: a.id,
     category: a.category,
     allergen: a.allergen,
+    drugCode: a.drugCode,
     reaction: a.reaction,
     severity: a.severity,
     recordedAt: a.recordedAt,

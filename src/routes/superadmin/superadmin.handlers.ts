@@ -8,7 +8,7 @@ import { facilities, priceLists } from "@/db/schema";
 import { recordAudit } from "@/lib/audit";
 import { isUniqueViolation, pgConstraintName } from "@/lib/db-errors";
 import { createInvitation } from "@/lib/invitations";
-import { FISCAL_SERIES, registerSeries } from "@/lib/number-series";
+import { CLINICAL_SERIES, FISCAL_SERIES, registerSeries } from "@/lib/number-series";
 import { nudgingAfterCommit } from "@/lib/outbox-nudge";
 
 import type { CreateFacilityRoute, ListFacilitiesRoute } from "./superadmin.routes";
@@ -61,6 +61,9 @@ export const createFacility: AppRouteHandler<CreateFacilityRoute> = async (c) =>
       });
       // Fiscal documents, numbered at finalisation (rule 20): INV-2026-000123.
       for (const [kind, prefix] of FISCAL_SERIES)
+        await registerSeries(tx, { facilityId: facility.id, kind, prefix, padding: 6, resetPeriod: "yearly" });
+      // Clinical documents, numbered as they are issued: RX-2026-000123.
+      for (const [kind, prefix] of CLINICAL_SERIES)
         await registerSeries(tx, { facilityId: facility.id, kind, prefix, padding: 6, resetPeriod: "yearly" });
       // The list that prices the patient account; payers' lists come later.
       await tx.insert(priceLists).values({ facilityId: facility.id, name: "Cash", kind: "cash" });

@@ -8,6 +8,8 @@ import { CLINICAL_ROLES } from "@/lib/professions";
 import { requireClinicalRole, requireMembershipRole } from "@/middlewares/auth";
 import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
+import { OrderSchema } from "./order-schemas";
+
 /**
  * Orders: lab tests and services asked for on an encounter, each charged as
  * it is ordered. A clinician orders under a current licence; a walk-in lab
@@ -61,38 +63,6 @@ const WalkInBodySchema = z.object({
 });
 
 const CancelBodySchema = z.object({ reason: oneLine(200) });
-
-const PersonSchema = z.object({ membershipId: z.uuid(), name: z.string() });
-
-const OrderItemSchema = z.object({
-  id: z.uuid(),
-  kind: z.enum(["lab", "service"]),
-  labTestId: z.uuid().nullable(),
-  /** What it is charged as. */
-  billableItemId: z.uuid(),
-  code: z.string(),
-  name: z.string(),
-  status: z.enum(["ordered", "done", "cancelled"]),
-  doneAt: z.string().nullable(),
-  cancelledAt: z.string().nullable(),
-  cancellationReason: z.string().nullable(),
-  /** Its standing charge; null once cancelled. */
-  amountCents: z.number().int().nullable(),
-});
-
-const OrderSchema = z.object({
-  id: z.uuid(),
-  encounterId: z.uuid(),
-  urgency: z.enum(["routine", "urgent"]),
-  indication: z.string().nullable(),
-  orderedAt: z.string(),
-  /** The clinician who ordered it; null for a walk-in's request. */
-  orderedBy: PersonSchema.nullable(),
-  requester: z.object({ name: z.string(), facility: z.string(), licenceNumber: z.string().nullable() }).nullable(),
-  selfRequested: z.boolean(),
-  enteredBy: PersonSchema,
-  items: z.array(OrderItemSchema),
-});
 
 const refusals = {
   [HttpStatusCodes.CONFLICT]: jsonContent(RefusalSchema, "Not possible in the encounter's, item's or catalogue's state"),

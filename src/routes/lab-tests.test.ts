@@ -148,4 +148,18 @@ describe("the lab catalogue", () => {
     await pool.query("UPDATE lab_reference_ranges SET retired_at = now()");
     expect(await refusal("UPDATE lab_reference_ranges SET retired_at = now()")).toMatch(/only retired/);
   });
+
+  it("holds an analyte to its result type's fields, for every role", async () => {
+    const test = await fbc();
+    const insert = (values: string) => pool.query(
+      `INSERT INTO lab_analytes (facility_id, lab_test_id, code, name, position, result_type, choices, abnormal_choices, unit)
+       VALUES ($1, $2, 'X', 'X', 9, ${values})`,
+      [h.facility.id, test.id],
+    ).then(() => "accepted", (err: { message: string }) => err.message);
+
+    expect(await insert("'choice', NULL, '{}', NULL")).toMatch(/lab_analytes_shape/);
+    expect(await insert("'choice', '{A,B}', '{C}', NULL")).toMatch(/lab_analytes_shape/);
+    expect(await insert("'text', NULL, NULL, 'g/dL'")).toMatch(/lab_analytes_shape/);
+    expect(await insert("'choice', '{A,B}', '{B}', NULL")).toBe("accepted");
+  });
 });

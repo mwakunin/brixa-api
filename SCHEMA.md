@@ -550,7 +550,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - Recording an allergy ends a standing "no known allergies"; "no known allergies" is refused while an allergy stands.
   - An allergy is ended as entered in error or no longer applying, never edited or deleted (trigger `patient_allergies_end_only`).
   - Changes for one patient lock the patient's row.
-  - Drug allergies are free text until slice 4b links them to the drug catalogue for prescribing checks.
+  - Drug allergies are free text; slice 4b lets one name a catalogue drug, for prescribing checks.
 - **The triage priority** (`queue_entries.priority`: emergency, urgent, routine) is set as triage finishes with the patient.
   - The CHECK `queue_entries_priority_when_done` holds it to a finished entry, and the queue trigger to a triage point.
   - **Clinic queues order by it:** emergency, urgent, then routine or untriaged, each by arrival.
@@ -644,7 +644,27 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - doctors, clinical officers, nurses and ward nurses mark a service performed, under a current licence;
   - clinical roles read orders, audited as `encounter.viewed`. An order's audit entry names its items and urgency, not its indication (rule 10).
 - **Cancelling a visit** is refused while an order item stands (`has_clinical_records`), checked before its charges, since cancelling the item cancels the charge it raised.
-- **Not yet:** the lab worklist, collection and the unpaid-test warning (5a); results and the visit closing itself once nothing is pending (5b); medicines (4b).
+- **Not yet:** the lab worklist, collection and the unpaid-test warning (5a); results and the visit closing itself once nothing is pending (5b); medicines (4b, below).
+
+**As built (P3, slice 4b): prescriptions.** Decided 2026-11-11 (`ROADMAP.md` P3):
+
+- **`drug_catalogue`**, the second shared reference table (CLAUDE.md rule 1): no `facility_id`, no row-level security, `SELECT` only for the app role.
+  - At generic level: `code`, `generic_name` (combinations joined with `/`), `strength` and `form` as printed, `dose_unit` (what a dose is counted in), the usual `route`, and `controlled_schedule` (I to IV, rule 12; null if not controlled). A code a later load lacks is retired (`retired_at`), never deleted.
+  - **Loaded per environment by `pnpm drugs:load <file>`** (`src/lib/drug-catalogue-load.ts`, on the owner connection; `docs/deployment.md` §3), from a CSV in this system's own format, since which national list fills it is still open. One transaction; a bad row refuses the file, and so does one that would retire more than a tenth of the drugs in use (at least 20 may always go). `src/test/fixtures/drug-catalogue-sample.csv` holds ten drugs for development and tests.
+  - `GET /drugs?q=` (clinical roles, not audited): each word typed matches the start of a word in the generic name, or the text the start of a code; current drugs only, at most 20.
+- **A prescription is an order of medicines** (`order_items.drug_code`, the third typed source, `order_items_one_kind`), written by `POST /encounters/{id}/prescriptions`, with its printed document issued in the same transaction (`orders.document_id`, kind `prescription`, from the yearly `RX-` series registered at onboarding and backfilled by migration 0055).
+  - Each medicine copies the drug as prescribed (`drug_description`) and its `dose_unit` from the catalogue (rule 7), with `dose_amount`, `route` (the drug's own unless given), `frequency` (od, bd, tds, qid, nocte, prn, stat), `duration_days` (required at a regular frequency, none for stat, optional for prn), `quantity` in dose units (dose × doses a day × days, or the dose for stat, unless given; required for prn) and `instructions`. `order_items_medication_shape` holds the shape.
+  - **Not charged when prescribed**: the charge comes with dispensing (P4), which is when the units-of-sale question (`SPEC.md` §4, question 2) is answered.
+  - **What it prints:** the patient, their number, sex and age, a child's weight that day, every standing allergy (or "No known allergies", or "Not recorded"), what it is for if given, the prescriber with their council and licence number (rule 25), the date, and each medicine (a controlled one marked with its schedule). A note names each drug prescribed despite an allergy, with the reason. Opened by prescribers, nurses and the pharmacy (`DOCUMENT_READERS`), audited.
+- **Refused, writing nothing:**
+  - a drug the patient is recorded as allergic to, unless `allergyOverride` gives a reason (`drug_allergy`, listing the allergies matched). The match is by generic name, any ingredient of a combination included, against the catalogue drug an allergy names or, for one recorded as text alone, its text. The reason is kept on the medicine and audited as `prescription.allergy_overridden`. Drug classes wait for a catalogue source that carries them;
+  - for a child under 12 (`CHILD_UNDER_YEARS`, to be confirmed by a clinician), any prescription without a weight taken that Kenyan day on any of their encounters (`weight_needed`);
+  - a controlled drug from anyone but a doctor or a clinical officer (`controlled_prescriber`, 403).
+  - The patient's row is share-locked while allergies are checked, so an allergy recorded at the same moment waits for the prescription.
+- **Changed by cancelling it** (`POST /prescriptions/{id}/cancel`, with a reason): what is left of it is cancelled and its document voided, keeping its number, so its verification code shows it withdrawn. A medicine is never cancelled on its own (`cancel_the_prescription`), since the paper would no longer say what stands; the prescriber writes a new one. `order_items_lifecycle` now compares every column but the lifecycle ones, so a medicine is frozen as prescribed.
+- **Drug allergies** may name the catalogue drug (`patient_allergies.drug_code`, a drug allergy only), still described as told.
+- **Who:** doctors, clinical officers and nurses prescribe, under a current licence (`requireClinicalRole`), and cancel; clinical roles read prescriptions with the encounter's orders (`GET /encounters/{id}/orders`).
+- **Not yet:** dispensing, stock and the charge (P4); the controlled-drug register (P4, rule 12); drug classes and interactions (no licensed source in v1).
 
 **Clinical record.** `observations` (vitals and charted values, with `entered_in_error` instead of deletion), `diagnoses` (ICD code, provisional \| final \| secondary), `clinical_notes` (`signed_at`, `addendum_of`: a signed note is corrected only by an addendum), `orders` and `order_items` (lab, imaging, procedure, medication, service; medication items carry dose, route, frequency and duration). Every clinical act records the acting membership, whose licence details live on `memberships` (rule 25).
 

@@ -64,6 +64,20 @@ Every external call is an outbox row, drained by `POST /internal/outbox/drain` (
 
 Until it has run, diagnoses cannot be recorded: the code search finds nothing. ICD-11 is © WHO 2019, licensed under CC BY-ND 3.0 IGO.
 
+**The drug catalogue**, which prescriptions are written from, is loaded once per environment and again whenever the list changes (`SCHEMA.md` §8, slice 4b). Which national list fills it is still open (`SPEC.md` §2), so the file is in this system's own CSV format, described in `src/lib/drug-catalogue-load.ts`:
+
+```csv
+code,generic_name,strength,form,dose_unit,route,controlled_schedule
+PCM-500-TAB,Paracetamol,500 mg,Tablet,tablet,oral,
+```
+
+```sh
+docker run --rm --env-file .env.production -v "$PWD:/data:ro" <image> \
+  node ./dist/src/cli/load-drug-catalogue.js /data/drugs.csv
+```
+
+It reports how many drugs it loaded and retired. A drug the file no longer has is retired, never deleted. A file with a bad row is refused whole, and so is one that would retire more than a tenth of the drugs in use (or more than 20, whichever is larger). `src/test/fixtures/drug-catalogue-sample.csv` is a ten-drug sample for development and tests only, not a list to prescribe from. Until a list is loaded, nothing can be prescribed.
+
 ## 4. File storage
 
 One bucket per environment (`STORAGE_BUCKET`). **Its location cannot be changed after creation, so create it only once the residency answer is in.**
