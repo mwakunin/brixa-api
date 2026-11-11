@@ -218,6 +218,21 @@ describe("clinical notes", () => {
     expect((await cancel()).status).toBe(200);
   });
 
+  it("keep a visit from being cancelled while an addendum stands, even under a note marked entered in error", async () => {
+    const c = await clinic();
+    const visit = await c.visit();
+    const note = await start(c, c.officer, visit.id);
+    await at(c, c.officer, "POST", `/notes/${note.id}/sign`);
+    const addendumId = (await (await at(c, c.doctor, "POST", `/notes/${note.id}/addenda`, { text: "Start AL" })).json()).addenda[0].id;
+    await at(c, c.doctor, "POST", `/notes/${note.id}/entered-in-error`, { reason: "Written on the wrong patient" });
+    const cancel = () => at(c, c.clerk, "POST", `/encounters/${visit.id}/cancel`, { reason: "Wrong patient" });
+
+    // Once cancelled, the addendum could never be marked: it is marked first.
+    expect((await (await cancel()).json()).code).toBe("has_clinical_records");
+    expect((await at(c, c.doctor, "POST", `/notes/${addendumId}/entered-in-error`, { reason: "Added to the wrong patient's note" })).status).toBe(200);
+    expect((await cancel()).status).toBe(200);
+  });
+
   it("are guarded by the database for every role", async () => {
     const c = await clinic();
     const visit = await c.visit();

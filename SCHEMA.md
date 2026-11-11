@@ -587,7 +587,8 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - Recorded only on an open encounter, and only under a leaf code still in the current release; the same code twice is refused.
   - **Confirmed once**, also after the visit has closed (a result arrives the next day), recording when and by whom. **Ended once**, as ruled out or entered in error; an ended diagnosis stays on the record and never changes.
   - Every change locks the encounter first (M8).
-  - The trigger `diagnoses_lifecycle` holds all of this for every role, and refuses deletion.
+  - The trigger `diagnoses_lifecycle` holds the lifecycle for every role: written standing, what was diagnosed never changing, confirmed once with when and by whom, ranked only while standing, ended once, never deleted.
+  - Which encounter and code a diagnosis may be recorded on (an open visit, a current leaf, not twice) is the service's check, under the encounter's lock, not the trigger's. A hand-run import of a hospital's past records must be able to bring in closed visits and codes since retired.
 - **Who:**
   - doctors, clinical officers and nurses (in nurse-led clinics) diagnose, under a current licence;
   - clinical roles read diagnoses, audited as `encounter.viewed`.
@@ -619,7 +620,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - nursing notes: nurses and ward nurses;
   - all under a current licence (`requireClinicalRole`, then `NOTE_WRITERS` per kind).
   - Clinical roles read signed notes, audited as `encounter.viewed`. Each write is audited without the note's text, which stays in this table only (rule 10).
-- **Cancelling a visit** is refused while a draft, or a signed note not marked entered in error, stands (`has_clinical_records`), as for vital signs and diagnoses.
+- **Cancelling a visit** is refused while a draft, or a signed note or addendum not marked entered in error, stands (`has_clinical_records`), as for vital signs and diagnoses. An addendum counts even under a marked note: once the visit is cancelled it could no longer be marked.
 - **Not yet:** sensitive notes and break-glass (slice 7); note templates by clinic, which the frontend can offer over these sections.
 
 **Clinical record.** `observations` (vitals and charted values, with `entered_in_error` instead of deletion), `diagnoses` (ICD code, provisional \| final \| secondary), `clinical_notes` (`signed_at`, `addendum_of`: a signed note is corrected only by an addendum), `orders` and `order_items` (lab, imaging, procedure, medication, service; medication items carry dose, route, frequency and duration). Every clinical act records the acting membership, whose licence details live on `memberships` (rule 25).

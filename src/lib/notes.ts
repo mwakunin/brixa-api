@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull, ne, or } from "drizzle-orm";
+import { and, asc, eq, isNull, or } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 import type { MembershipRole } from "@/db/schema";
@@ -247,11 +247,14 @@ export async function markNoteEnteredInError(tx: AppDb, facilityId: string, note
   return marked;
 }
 
-/** Whether a draft, or a signed note not marked entered in error, stands on the encounter. */
+/**
+ * Whether a draft, or a signed note or addendum not marked entered in error,
+ * stands on the encounter. An addendum counts on its own, even under a marked
+ * note: once the visit is cancelled it could no longer be marked.
+ */
 export async function hasStandingNotes(tx: AppDb, encounterId: string): Promise<boolean> {
   const [row] = await tx.select({ id: clinicalNotes.id }).from(clinicalNotes).where(and(
     eq(clinicalNotes.encounterId, encounterId),
-    ne(clinicalNotes.kind, "addendum"),
     or(eq(clinicalNotes.status, "draft"), and(eq(clinicalNotes.status, "signed"), isNull(clinicalNotes.enteredInErrorAt))),
   )).limit(1);
   return Boolean(row);

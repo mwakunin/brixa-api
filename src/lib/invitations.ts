@@ -87,7 +87,7 @@ export async function createInvitation(
     invitedBy: string;
     now?: Date;
   },
-) {
+): Promise<typeof invitations.$inferSelect> {
   const now = input.now ?? new Date();
   const email = input.email.trim().toLowerCase();
   const licence = licenceFor(input.roles, input.licence, businessDate(now));

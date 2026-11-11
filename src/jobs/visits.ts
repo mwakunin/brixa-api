@@ -28,7 +28,9 @@ import { logger } from "@/lib/logger";
  */
 export async function closeStaleVisits(now = new Date()) {
   const tally = { facilities: 0, closed: 0, failed: 0 };
-  const runStartedAt = new Date();
+  // From the clock that stamps job_failures.failed_at, so the two compare like for like.
+  const [{ startedAt }] = (await db.execute<{ startedAt: Date | string }>(sql`SELECT now() AS "startedAt"`)).rows;
+  const runStartedAt = new Date(startedAt);
   const dayStart = startOfBusinessDay(businessDate(now));
   const all = await db.select({ id: facilities.id }).from(facilities);
 
@@ -37,15 +39,16 @@ export async function closeStaleVisits(now = new Date()) {
     const failed = async (err: unknown, subjectId?: string) => {
       const error = errorLine(err);
       logger.error({ facilityId: facility.id, job: "visit_close", subjectId, error }, "job failed for a facility");
-      // Met again, an open failure takes this run's time, so an overlapping
-      // clean run that began before now leaves it open. The target is
-      // `job_failures_open_once`, expression and predicate alike.
+      // Met again, an open failure takes this run's time, never an earlier
+      // one, so an overlapping clean run that began before now leaves it
+      // open. The target is `job_failures_open_once`, expression and
+      // predicate alike.
       await db.execute(sql`
         INSERT INTO ${jobFailures} (facility_id, job, subject_id, error)
         VALUES (${facility.id}, 'visit_close', ${subjectId ?? null}, ${error})
         ON CONFLICT (facility_id, job, coalesce(subject_id, '00000000-0000-0000-0000-000000000000'::uuid), error)
           WHERE resolved_at IS NULL
-        DO UPDATE SET failed_at = excluded.failed_at`);
+        DO UPDATE SET failed_at = greatest(${jobFailures}.failed_at, excluded.failed_at)`);
     };
 
     let stale: { id: string }[];

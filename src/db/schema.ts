@@ -27,6 +27,12 @@ import { account, session, user, verification } from "./auth-schema";
 // without caring that identity tables live in a Better-Auth-generated file.
 export { account, session, user, verification };
 
+// One file past the 800-line guideline, deliberately: nearly every table
+// reaches others through composite (facility_id, id) foreign keys, the CHECKs
+// share helpers and lists, `TENANT_TABLES` must name every tenant table, and
+// drizzle-kit generates migrations from this file. Splitting it by domain is
+// a refactor of its own, not a side effect of a feature.
+
 // ---------------------------------------------------------------------------
 // Shared column builders
 // ---------------------------------------------------------------------------

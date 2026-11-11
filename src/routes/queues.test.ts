@@ -430,6 +430,33 @@ describe("the nightly close of outpatient visits", () => {
     expect(rows[0].failed_at.getTime()).toBeGreaterThanOrEqual(metAgainFrom!.getTime());
   });
 
+  it("never moves a failure met again back in time, so it stays open past a clean run that began before", async () => {
+    const c = await clinic();
+    const broken = await c.visit({ queueAt: null });
+    await pool.query("UPDATE encounters SET started_at = started_at - interval '1 day' WHERE id = $1", [broken.id]);
+    await pool.query(`CREATE FUNCTION test_refuse_close() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN IF NEW.id = '${broken.id}' AND NEW.status = 'closed' THEN RAISE EXCEPTION 'refused for the test'; END IF; RETURN NEW; END $$`);
+    await pool.query("CREATE TRIGGER test_refuse_close BEFORE UPDATE ON encounters FOR EACH ROW EXECUTE FUNCTION test_refuse_close()");
+    try {
+      await closeStaleVisits();
+      // As if an overlapping run met it later and wrote first; this run's write lands after.
+      await pool.query("UPDATE job_failures SET failed_at = now() + interval '1 hour' WHERE job = 'visit_close'");
+      await closeStaleVisits();
+    }
+    finally {
+      await pool.query("DROP TRIGGER test_refuse_close ON encounters");
+      await pool.query("DROP FUNCTION test_refuse_close()");
+    }
+    const later = async () => (await pool.query<{ later: boolean; resolved: boolean }>(
+      "SELECT failed_at > now() + interval '30 minutes' AS later, resolved_at IS NOT NULL AS resolved FROM job_failures WHERE job = 'visit_close'",
+    )).rows;
+    expect(await later()).toEqual([{ later: true, resolved: false }]);
+
+    // The visit now closes, but the failure was met after this clean run began: it stays open.
+    expect(await closeStaleVisits()).toMatchObject({ closed: 1, failed: 0 });
+    expect(await later()).toEqual([{ later: true, resolved: false }]);
+  });
+
   it("carries on to the next facility when one facility's failures cannot be resolved", async () => {
     const first = await clinic();
     const second = await clinic();
