@@ -1,3 +1,5 @@
+import type { MiddlewareHandler } from "hono";
+
 import { createMiddleware } from "hono/factory";
 import * as HttpStatusCodes from "stoker/http-status-codes";
 import * as HttpStatusPhrases from "stoker/http-status-phrases";
@@ -39,7 +41,7 @@ export const requireAuth = createMiddleware<AppBindings>(async (c, next) => {
  * `requireMembershipRole`; the global role cannot say "cashier at this
  * hospital".
  */
-export function requireRole(...allowed: UserRole[]) {
+export function requireRole(...allowed: UserRole[]): MiddlewareHandler<AppBindings> {
   return createMiddleware<AppBindings>(async (c, next) => {
     const user = c.var.user;
 
@@ -69,7 +71,7 @@ export function requireRole(...allowed: UserRole[]) {
  * caller with no membership here (404), so reaching this guard means the
  * caller is a member and an honest 403 reveals nothing.
  */
-export function requireMembershipRole(...allowed: MembershipRole[]) {
+export function requireMembershipRole(...allowed: MembershipRole[]): MiddlewareHandler<TenantBindings> {
   return createMiddleware<TenantBindings>(async (c, next) => {
     if (!holdsAnyOf(c.var.membership, allowed))
       return c.json({ message: HttpStatusPhrases.FORBIDDEN }, HttpStatusCodes.FORBIDDEN);
@@ -88,7 +90,7 @@ export function requireMembershipRole(...allowed: MembershipRole[]) {
  * admin who is also a doctor acts clinically on their licence, never on
  * their admin role.
  */
-export function requireClinicalRole(...allowed: ClinicalRole[]) {
+export function requireClinicalRole(...allowed: ClinicalRole[]): MiddlewareHandler<TenantBindings> {
   return createMiddleware<TenantBindings>(async (c, next) => {
     const membership = c.var.membership;
     if (!holdsAnyOf(membership, allowed))

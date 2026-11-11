@@ -84,6 +84,23 @@ describe("loading an ICD-11 release", () => {
     expect((await db.select().from(icdCodes)).every(r => r.release === "2026-01" && r.retiredAt === null)).toBe(true);
   });
 
+  it("refuses a release that would retire far more codes than WHO's releases do", async () => {
+    const lines = (await sample()).split("\r\n");
+    const template = lines.find(line => line.includes("\t1F40.0\t"))!;
+    const chapterX = lines.find(line => line.includes("\tX\t"))!;
+    // Synthetic categories 1A00–1B99, each with its own URI, shaped like the sample's.
+    const category = (n: number) => template
+      .replaceAll("1143114898", String(9_000_000 + n))
+      .replace("\t1F40.0\t", `\t1${"AB"[Math.floor(n / 100)]}${String(n % 100).padStart(2, "0")}\t`);
+    const release = (version: string, count: number) =>
+      [lines[0].replace("Version:2026 Jan", version), ...Array.from({ length: count }, (_, n) => category(n)), chapterX, ""].join("\r\n");
+    await loadIcd11(release("Version:2026 Jan", 200));
+
+    // Complete to the last chapter, yet holding one category of the 200.
+    await expect(loadIcd11(release("Version:2027 Jan", 1))).rejects.toThrow(/retire 199 of the 200/);
+    expect((await db.select().from(icdCodes)).every(r => r.release === "2026-01" && r.retiredAt === null)).toBe(true);
+  });
+
   it("refuses a category whose leaf or residual flag is neither True nor False", async () => {
     const bad = (await sample()).split("\r\n").map(line => line.includes("\t1F40.0\t")
       ? line.replace("\t2\tFalse\t01\t", "\t2\tfalse\t01\t")

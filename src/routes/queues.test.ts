@@ -403,6 +403,55 @@ describe("the nightly close of outpatient visits", () => {
     expect(rows).toEqual([{ error: "earlier", resolved: true }, { error: "overlapping", resolved: false }]);
   });
 
+  it("keeps a failure met again open with the time it was met, so a clean run that began before leaves it", async () => {
+    const c = await clinic();
+    const broken = await c.visit({ queueAt: null });
+    await pool.query("UPDATE encounters SET started_at = started_at - interval '1 day' WHERE id = $1", [broken.id]);
+    await pool.query(`CREATE FUNCTION test_refuse_close() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN IF NEW.id = '${broken.id}' AND NEW.status = 'closed' THEN RAISE EXCEPTION 'refused for the test'; END IF; RETURN NEW; END $$`);
+    await pool.query("CREATE TRIGGER test_refuse_close BEFORE UPDATE ON encounters FOR EACH ROW EXECUTE FUNCTION test_refuse_close()");
+    let metAgainFrom: Date;
+    try {
+      await closeStaleVisits();
+      // As if first met long ago; an overlapping run now meets it again.
+      await pool.query("UPDATE job_failures SET failed_at = now() - interval '1 day' WHERE job = 'visit_close'");
+      metAgainFrom = (await pool.query<{ t: Date }>("SELECT now() AS t")).rows[0].t;
+      expect(await closeStaleVisits()).toMatchObject({ closed: 0, failed: 1 });
+    }
+    finally {
+      await pool.query("DROP TRIGGER test_refuse_close ON encounters");
+      await pool.query("DROP FUNCTION test_refuse_close()");
+    }
+
+    const { rows } = await pool.query<{ failed_at: Date; resolved_at: Date | null }>("SELECT failed_at, resolved_at FROM job_failures WHERE job = 'visit_close'");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].resolved_at).toBeNull();
+    // A clean run resolves only failures met before it began: this one now counts as met just now.
+    expect(rows[0].failed_at.getTime()).toBeGreaterThanOrEqual(metAgainFrom!.getTime());
+  });
+
+  it("carries on to the next facility when one facility's failures cannot be resolved", async () => {
+    const first = await clinic();
+    const second = await clinic();
+    const visits = [await first.visit({ queueAt: null }), await second.visit({ queueAt: null })];
+    for (const v of visits)
+      await pool.query("UPDATE encounters SET started_at = started_at - interval '1 day' WHERE id = $1", [v.id]);
+    // Resolving touches job_failures with an UPDATE; refuse every one.
+    await pool.query(`CREATE FUNCTION test_refuse_resolve() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'refused for the test'; END $$`);
+    await pool.query("CREATE TRIGGER test_refuse_resolve BEFORE UPDATE ON job_failures FOR EACH ROW EXECUTE FUNCTION test_refuse_resolve()");
+    await pool.query("INSERT INTO job_failures (facility_id, job, error, failed_at) SELECT id, 'visit_close', 'earlier', now() - interval '1 day' FROM facilities");
+    try {
+      expect(await closeStaleVisits()).toMatchObject({ facilities: 2, closed: 2, failed: 2 });
+    }
+    finally {
+      await pool.query("DROP TRIGGER test_refuse_resolve ON job_failures");
+      await pool.query("DROP FUNCTION test_refuse_resolve()");
+    }
+    const { rows } = await pool.query("SELECT status FROM encounters WHERE id = ANY($1)", [visits.map(v => v.id)]);
+    expect(rows.map(r => r.status)).toEqual(["closed", "closed"]);
+  });
+
   it("is an internal job, called by Cloud Scheduler alone", async () => {
     expect((await app.request("/internal/jobs/close-visits", { method: "POST" })).status).toBe(401);
   });

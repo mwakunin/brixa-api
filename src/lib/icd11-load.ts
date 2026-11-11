@@ -55,6 +55,14 @@ const NEEDED = ["Linearization URI", "Code", "Title", "ClassKind", "IsResidual",
 const BATCH = 1000;
 /** WHO prints chapters 01–26, then V, then the extension codes, X, last. */
 const LAST_CHAPTER = "X";
+/**
+ * How many current codes a new release may retire: 5% of them, or 100 if
+ * that is more. WHO's releases retire a few dozen (2026-01 retired 22 of
+ * 2025-01's 17,231), so more than this means a file with codes missing, and
+ * loading it would take them out of use. A release that truly retires more
+ * needs this raised, after a look at what it drops.
+ */
+const RETIRE_AT_MOST = (current: number) => Math.max(100, Math.ceil(current * 0.05));
 
 /** WHO writes its flags `True` or `False`; anything else is not WHO's file. */
 function flag(field: string): boolean | null {
@@ -127,7 +135,8 @@ export function parseMmsTabulation(text: string): { release: string; rows: IcdRo
 
 /**
  * Loads a release, replacing what each code says and retiring the codes it
- * no longer has. Refuses a release older than one already loaded.
+ * no longer has. Refuses a release older than one already loaded, and one
+ * that would retire far more codes than a real release does.
  */
 export async function loadIcd11(text: string, owner = db): Promise<{ release: string; loaded: number; retired: number }> {
   const { release, rows } = parseMmsTabulation(text);
@@ -138,6 +147,7 @@ export async function loadIcd11(text: string, owner = db): Promise<{ release: st
     const [newest] = await tx.select({ release: sql<string | null>`max(${icdCodes.release})` }).from(icdCodes);
     if (newest.release && newest.release > release)
       throw new IcdFileError(`release ${release} is older than ${newest.release}, already loaded`);
+    const [{ current }] = await tx.select({ current: sql<number>`count(*)::int` }).from(icdCodes).where(isNull(icdCodes.retiredAt));
 
     for (let i = 0; i < rows.length; i += BATCH) {
       await tx.insert(icdCodes)
@@ -160,6 +170,9 @@ export async function loadIcd11(text: string, owner = db): Promise<{ release: st
       .set({ retiredAt: new Date() })
       .where(and(ne(icdCodes.release, release), isNull(icdCodes.retiredAt)))
       .returning({ code: icdCodes.code });
+    // Thrown inside the transaction, so nothing is loaded or retired.
+    if (retired.length > RETIRE_AT_MOST(current))
+      throw new IcdFileError(`release ${release} would retire ${retired.length} of the ${current} codes in use, far more than WHO's releases do: is the file complete?`);
 
     return { release, loaded: rows.length, retired: retired.length };
   });

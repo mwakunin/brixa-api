@@ -1,4 +1,4 @@
-import { and, eq, isNull, lt } from "drizzle-orm";
+import { and, eq, isNull, lt, sql } from "drizzle-orm";
 
 import db from "@/db";
 import { encounters, facilities, jobFailures } from "@/db/schema";
@@ -19,7 +19,8 @@ import { logger } from "@/lib/logger";
  * a facility whose visits cannot even be listed, is recorded in
  * `job_failures` (with the visit as its subject) and logged for an alert;
  * the run carries on. A facility's run with no failure resolves the failures
- * recorded before it began, but not one an overlapping run recorded since.
+ * recorded before it began, but not one an overlapping run recorded, or met
+ * again, since; if resolving fails, that too is recorded and the run carries on.
  * Idempotent: a closed visit is skipped. `now` only chooses which visits are
  * stale; each is closed at the time it is locked. The OWNER connection only lists
  * facilities and records failures. Cloud Scheduler calls it through
@@ -36,7 +37,15 @@ export async function closeStaleVisits(now = new Date()) {
     const failed = async (err: unknown, subjectId?: string) => {
       const error = errorLine(err);
       logger.error({ facilityId: facility.id, job: "visit_close", subjectId, error }, "job failed for a facility");
-      await db.insert(jobFailures).values({ facilityId: facility.id, job: "visit_close", subjectId, error }).onConflictDoNothing();
+      // Met again, an open failure takes this run's time, so an overlapping
+      // clean run that began before now leaves it open. The target is
+      // `job_failures_open_once`, expression and predicate alike.
+      await db.execute(sql`
+        INSERT INTO ${jobFailures} (facility_id, job, subject_id, error)
+        VALUES (${facility.id}, 'visit_close', ${subjectId ?? null}, ${error})
+        ON CONFLICT (facility_id, job, coalesce(subject_id, '00000000-0000-0000-0000-000000000000'::uuid), error)
+          WHERE resolved_at IS NULL
+        DO UPDATE SET failed_at = excluded.failed_at`);
     };
 
     let stale: { id: string }[];
@@ -68,9 +77,15 @@ export async function closeStaleVisits(now = new Date()) {
       tally.failed += 1;
       continue;
     }
-    await runAsFacility(facility.id, tx => tx.update(jobFailures)
-      .set({ resolvedAt: new Date() })
-      .where(and(eq(jobFailures.job, "visit_close"), isNull(jobFailures.resolvedAt), lt(jobFailures.failedAt, runStartedAt))));
+    try {
+      await runAsFacility(facility.id, tx => tx.update(jobFailures)
+        .set({ resolvedAt: new Date() })
+        .where(and(eq(jobFailures.job, "visit_close"), isNull(jobFailures.resolvedAt), lt(jobFailures.failedAt, runStartedAt))));
+    }
+    catch (err) {
+      tally.failed += 1;
+      await failed(err);
+    }
   }
 
   return tally;

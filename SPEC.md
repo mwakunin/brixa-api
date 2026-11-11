@@ -227,7 +227,7 @@ The pilot candidate's staff find their certified system too complex (§2). In a 
 3. Who are your top five insurers? For each: price list, co-pay rules, how claims are submitted, and the remittance format.
 4. What is your SHA rejection rate, and the top reasons? Do you bill patients for shortfalls?
 5. How do you count bed-days? Do casualty charges roll into the inpatient bill?
-6. Is OPD cash-first or post-paid? Are lab tests charged when ordered or when performed? *(Decided 2026-11-10 without the pilot: both kinds of visit are supported, and lab is charged at order, §2. Still ask which is their usual case, since it sets the facility's default.)*
+6. Is OPD cash-first or post-paid? Are lab tests charged when ordered or when performed? *(Decided 2026-11-10 without the pilot: both kinds of visit are supported side by side, with no setting, and lab is charged at order, §2. Still ask which is their usual case: it decides what the screens put first, never which kind of visit is allowed.)*
 7. Do you sell drugs per tablet, or only in packs?
 8. Who approves waivers and charity care, and how is it recorded?
 9. How are your stores laid out, and who approves transfers to wards?

@@ -568,6 +568,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 - **Loaded per environment by `pnpm icd11:load <file>`** (`src/lib/icd11-load.ts`, on the owner connection), from the `.txt` in WHO's release zip, unmodified.
   - The release is read from the file's `Version:` column, and a release older than one already loaded is refused.
   - A file cut short is refused: WHO prints chapter X last, so a file that never reaches it lost its end, and loading it would retire every code it lost. So is a leaf or residual flag other than `True` or `False`.
+  - So is a release that would retire more than 5% of the codes in use (at least 100 may always go). WHO's releases retire a few dozen: 2026-01 retired 22 of 2025-01's 17,231 codes. More means codes are missing from the file.
   - The release image has no `tsx`, so there it runs as `node ./dist/src/cli/load-icd11.js` (`docs/deployment.md` §3).
   - One transaction; a code a newer release no longer has is marked retired, never deleted.
 - **WHO's licence** (CC BY-ND 3.0 IGO, icd.who.int) allows storing the classification in software provided each code keeps its title and URI, and the classification is not altered. So:

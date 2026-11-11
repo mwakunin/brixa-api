@@ -211,7 +211,7 @@ export async function addMembership(
   facilityId: string,
   roles: MembershipRole[],
   options: { isActive?: boolean; licence?: { profession?: Profession; number: string; expiresOn: string } | null } = {},
-) {
+): Promise<typeof memberships.$inferSelect> {
   const given = options.licence !== undefined
     ? options.licence
     : roles.some(isClinicalRole) ? { number: "TEST-0001", expiresOn: addDays(businessDate(), 365) } : null;

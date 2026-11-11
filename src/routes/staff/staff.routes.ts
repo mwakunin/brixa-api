@@ -58,7 +58,11 @@ const MemberSchema = z.object({
   name: z.string(),
   email: z.string(),
   roles: z.array(z.enum(MEMBERSHIP_ROLES)),
-  /** Null for a member with no clinical role. */
+  /**
+   * Null for a member with no clinical role, and for a clinician whose
+   * licence is not on record yet (one who joined before licences were kept):
+   * they cannot act clinically until the facility admin records it.
+   */
   licence: LicenceSchema.nullable(),
 });
 

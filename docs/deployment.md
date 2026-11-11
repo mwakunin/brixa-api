@@ -60,7 +60,7 @@ Every external call is an outbox row, drained by `POST /internal/outbox/drain` (
      node ./dist/src/cli/load-icd11.js /data/SimpleTabulation-ICD-11-MMS-en.txt
    ```
 
-   It reports the release and how many codes it loaded and retired. An older release than one already loaded is refused, and so is a file cut short (one that never reaches chapter X, which WHO prints last), since the codes missing from it would be retired.
+   It reports the release and how many codes it loaded and retired. An older release than one already loaded is refused. So is a file cut short (one that never reaches chapter X, which WHO prints last), and one that would retire more than 5% of the codes in use, since the codes missing from it would be taken out of use. A real release retires a few dozen.
 
 Until it has run, diagnoses cannot be recorded: the code search finds nothing. ICD-11 is © WHO 2019, licensed under CC BY-ND 3.0 IGO.
 
