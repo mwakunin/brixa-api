@@ -31,7 +31,8 @@ import { isUniqueViolation, pgConstraintName } from "./db-errors";
  */
 
 type EntryRow = typeof queueEntries.$inferSelect;
-export type ServicePointKind = (typeof servicePoints.$inferSelect)["kind"];
+type ServicePointRow = typeof servicePoints.$inferSelect;
+export type ServicePointKind = ServicePointRow["kind"];
 export type Priority = NonNullable<EntryRow["priority"]>;
 
 const LIVE = ["waiting", "serving"] as const;
@@ -92,8 +93,8 @@ export async function createServicePoint(
   facilityId: string,
   input: { name: string; kind: ServicePointKind },
   actor: PatientActor,
-) {
-  let point: typeof servicePoints.$inferSelect;
+): Promise<ServicePointRow> {
+  let point: ServicePointRow;
   try {
     [point] = await tx.insert(servicePoints).values({ facilityId, name: input.name, kind: input.kind }).returning();
   }
@@ -125,7 +126,7 @@ export async function updateServicePoint(
   id: string,
   input: { name?: string; isActive?: boolean; consultationItemId?: string | null },
   actor: PatientActor,
-) {
+): Promise<ServicePointRow> {
   const [current] = await tx.select().from(servicePoints).where(eq(servicePoints.id, id)).for("update").limit(1);
   if (!current)
     throw new QueueError("service_point_not_found");
@@ -139,7 +140,7 @@ export async function updateServicePoint(
       throw new QueueError("not_a_consultation_item");
   }
 
-  let point: typeof servicePoints.$inferSelect;
+  let point: ServicePointRow;
   try {
     [point] = await tx.update(servicePoints).set(input).where(eq(servicePoints.id, id)).returning();
   }
@@ -172,8 +173,18 @@ async function liveCount(tx: AppDb, servicePointId: string): Promise<number> {
   return row.n;
 }
 
+export interface ListedServicePoint {
+  id: string;
+  name: string;
+  kind: ServicePointKind;
+  consultationItemId: string | null;
+  isActive: boolean;
+  /** How many are waiting there now. */
+  waiting: number;
+}
+
 /** Every service point, triage first, then by name, with how many are waiting at each. */
-export async function listServicePoints(tx: AppDb) {
+export async function listServicePoints(tx: AppDb): Promise<ListedServicePoint[]> {
   const waiting = tx
     .select({ servicePointId: queueEntries.servicePointId, n: count().as("n") })
     .from(queueEntries)
@@ -292,7 +303,7 @@ export async function joinLocked(
 }
 
 /** Puts an open visit in a queue: back to a clinic after lab results, or straight to one. */
-export async function joinQueue(tx: AppDb, facilityId: string, encounterId: string, servicePointId: string, actor: PatientActor, at = new Date()) {
+export async function joinQueue(tx: AppDb, facilityId: string, encounterId: string, servicePointId: string, actor: PatientActor, at = new Date()): Promise<EntryRow> {
   const encounter = await lockEncounterRow(tx, encounterId);
   return joinLocked(tx, facilityId, encounter, servicePointId, actor, at);
 }
@@ -413,7 +424,7 @@ export async function removeFromQueue(
  * the visit is no longer simply a mistake. The nightly run (no actor) marks a
  * waiting patient as having left and a patient still being seen as done.
  */
-export async function endLiveEntry(tx: AppDb, facilityId: string, encounterId: string, actor: PatientActor | null, at: Date) {
+export async function endLiveEntry(tx: AppDb, facilityId: string, encounterId: string, actor: PatientActor | null, at: Date): Promise<void> {
   const [live] = await tx.select().from(queueEntries).where(and(eq(queueEntries.encounterId, encounterId), inArray(queueEntries.status, LIVE))).for("update");
   if (!live)
     return;
@@ -449,7 +460,7 @@ const triagePriority = sql<Priority | null>`(
  * urgent first (emergency, urgent, then routine or not triaged), each by
  * arrival. Audited, since it names patients and where they are (rule 9).
  */
-export async function viewQueue(tx: AppDb, facilityId: string, servicePointId: string, actor: PatientActor, today?: string) {
+export async function viewQueue(tx: AppDb, facilityId: string, servicePointId: string, actor: PatientActor, today?: string): Promise<QueueView> {
   const [point] = await tx.select().from(servicePoints).where(eq(servicePoints.id, servicePointId)).limit(1);
   if (!point)
     throw new QueueError("service_point_not_found");
@@ -515,6 +526,29 @@ export async function viewQueue(tx: AppDb, facilityId: string, servicePointId: s
       },
     })),
   };
+}
+
+/** A patient in a queue, as the queue screen shows them. */
+export interface QueuedPatient {
+  entryId: string;
+  encounterId: string;
+  status: EntryRow["status"];
+  joinedAt: Date;
+  servingAt: Date | null;
+  servedBy: { membershipId: string; name: string } | null;
+  priority: Priority | null;
+  patient: {
+    id: string;
+    name: string;
+    opNumber: string | null;
+    sex: (typeof patients.$inferSelect)["sex"];
+    ageYears: number;
+  };
+}
+
+export interface QueueView {
+  servicePoint: Omit<ListedServicePoint, "waiting">;
+  entries: QueuedPatient[];
 }
 
 export interface LiveEntry {

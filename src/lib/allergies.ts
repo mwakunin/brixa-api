@@ -166,8 +166,21 @@ export async function removeAllergy(
   return removed;
 }
 
+/** An allergy, or "no known allergies", as staff see it. */
+export interface ShownAllergy {
+  id: string;
+  category: AllergyRow["category"];
+  allergen: string | null;
+  reaction: string | null;
+  severity: Severity | null;
+  recordedAt: Date;
+  recordedBy: { membershipId: string; name: string };
+  removedAt: Date | null;
+  removalReason: RemovalReason | null;
+}
+
 /** A patient's allergies as staff see them, oldest first. Not audited: for answering a write. */
-export async function allergiesOf(tx: AppDb, patientId: string, includeEnded = false) {
+export async function allergiesOf(tx: AppDb, patientId: string, includeEnded = false): Promise<ShownAllergy[]> {
   const rows = await tx
     .select({ allergy: patientAllergies, recordedByName: user.name })
     .from(patientAllergies)
@@ -194,7 +207,7 @@ export async function allergiesOf(tx: AppDb, patientId: string, includeEnded = f
  * `includeEnded`, those ended too. An empty list means nobody has asked yet.
  * Audited as a view of the record (rule 9).
  */
-export async function listAllergies(tx: AppDb, facilityId: string, patientId: string, actor: PatientActor, includeEnded = false) {
+export async function listAllergies(tx: AppDb, facilityId: string, patientId: string, actor: PatientActor, includeEnded = false): Promise<ShownAllergy[]> {
   const [patient] = await tx.select({ id: patients.id }).from(patients).where(eq(patients.id, patientId)).limit(1);
   if (!patient)
     throw new AllergyError("patient_not_found");

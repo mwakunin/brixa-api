@@ -26,8 +26,16 @@ import { logger } from "@/lib/logger";
  * facilities and records failures. Cloud Scheduler calls it through
  * `POST /internal/jobs/close-visits`.
  */
-export async function closeStaleVisits(now = new Date()) {
-  const tally = { facilities: 0, closed: 0, failed: 0 };
+/** What a run did; the internal route answers with it. */
+export interface VisitCloseTally {
+  facilities: number;
+  closed: number;
+  /** Facilities with a failure: a visit that would not close, or the facility itself. */
+  failed: number;
+}
+
+export async function closeStaleVisits(now = new Date()): Promise<VisitCloseTally> {
+  const tally: VisitCloseTally = { facilities: 0, closed: 0, failed: 0 };
   // From the clock that stamps job_failures.failed_at, so the two compare like for like.
   const [{ startedAt }] = (await db.execute<{ startedAt: Date | string }>(sql`SELECT now() AS "startedAt"`)).rows;
   const runStartedAt = new Date(startedAt);

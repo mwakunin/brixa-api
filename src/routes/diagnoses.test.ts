@@ -3,9 +3,11 @@ import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { pool } from "@/db";
+import { runAsFacility } from "@/db/tenant-transaction";
 import { addDays, businessDate } from "@/lib/dates";
+import { recordDiagnosis } from "@/lib/diagnoses";
 import { loadIcd11 } from "@/lib/icd11-load";
-import { addMembership, makeOnboardedFacility, resetDb, signedInUser } from "@/test/helpers";
+import { addMembership, backendPid, makeOnboardedFacility, resetDb, signedInUser, waitForBlockedBackend } from "@/test/helpers";
 import { call } from "@/test/hospital";
 
 /** P3 slice 3a: diagnoses coded in ICD-11. The codes come from real WHO rows (see lib/icd11.test.ts). */
@@ -171,13 +173,44 @@ describe("diagnoses", () => {
     const c = await clinic();
     const visit = await c.visit();
 
-    const results = await Promise.all([
-      diagnose(c, c.doctor, visit.id, { code: "1F40.Z", certainty: "confirmed", principal: true }),
-      diagnose(c, c.officer, visit.id, { code: "CA40.00", certainty: "confirmed", principal: true }),
-    ]);
+    // The first holds the encounter's lock, uncommitted, until the second is seen waiting for it.
+    let release!: () => void;
+    let ready!: () => void;
+    const mayCommit = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    let holderPid = 0;
+    const first = runAsFacility(c.facility.id, async (tx) => {
+      try {
+        await recordDiagnosis(tx, c.facility.id, visit.id, { code: "1F40.Z", certainty: "confirmed", principal: true }, c.doctor.actor);
+        holderPid = await backendPid(tx);
+      }
+      finally {
+        ready();
+      }
+      await mayCommit;
+    });
+    await started;
 
-    expect(results.map(r => r.status)).toEqual([201, 201]);
-    expect((await listOf(c, visit.id)).filter((d: { rank: string }) => d.rank === "principal")).toHaveLength(1);
+    const second = runAsFacility(c.facility.id, tx =>
+      recordDiagnosis(tx, c.facility.id, visit.id, { code: "CA40.00", certainty: "confirmed", principal: true }, c.officer.actor));
+    try {
+      expect(await waitForBlockedBackend(holderPid)).toBe(true);
+    }
+    finally {
+      // Even if the wait failed: a transaction left open would hang the next reset.
+      release();
+      await Promise.allSettled([first, second]);
+    }
+    await first;
+    await second;
+
+    // The later one is the principal; the earlier was demoted, not left principal beside it.
+    const listed = await listOf(c, visit.id);
+    expect(listed.map((d: { code: string; rank: string }) => [d.code, d.rank])).toEqual([["CA40.00", "principal"], ["1F40.Z", "secondary"]]);
   });
 
   it("are guarded by the database for every role", async () => {

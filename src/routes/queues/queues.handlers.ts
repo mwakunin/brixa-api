@@ -1,3 +1,4 @@
+import type { z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 
 import * as HttpStatusCodes from "stoker/http-status-codes";
@@ -13,6 +14,7 @@ import type {
   FinishRoute,
   JoinQueueRoute,
   ListServicePointsRoute,
+  QueueEntrySchema,
   RemoveFromQueueRoute,
   ServeRoute,
   UpdateServicePointRoute,
@@ -25,7 +27,7 @@ function actorOf(c: Context<TenantBindings>) {
   return { userId: c.var.user!.id, membershipId: c.var.membership.id };
 }
 
-export function entryJson(e: typeof queueEntries.$inferSelect) {
+export function entryJson(e: typeof queueEntries.$inferSelect): z.infer<typeof QueueEntrySchema> {
   return {
     id: e.id,
     encounterId: e.encounterId,
@@ -44,7 +46,7 @@ function pointJson(p: { id: string; name: string; kind: "triage" | "consultation
 }
 
 /** A queue refusal, or null to let the error through. Shared with the encounters handlers, whose opening joins a queue. */
-export function queueRefusal(c: Context, err: unknown) {
+export function queueRefusal(c: Context, err: unknown): Response | null {
   if (!(err instanceof queues.QueueError))
     return null;
   if (queues.QUEUE_NOT_FOUND.has(err.code))

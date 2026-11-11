@@ -122,8 +122,20 @@ export async function recordVitals(
   return rows;
 }
 
+/** A reading as staff see it, labelled and in its unit. */
+export interface ShownObservation {
+  id: string;
+  code: ObservationRow["code"];
+  label: string;
+  value: number;
+  unit: string;
+  observedAt: Date;
+  recordedBy: { membershipId: string; name: string };
+  enteredInError: { at: Date; reason: string } | null;
+}
+
 /** An encounter's readings, newest first, those entered in error included and marked. Not audited: for answering a write. */
-export async function observationsOf(tx: AppDb, encounterId: string) {
+export async function observationsOf(tx: AppDb, encounterId: string): Promise<ShownObservation[]> {
   const rows = await tx
     .select({ observation: observations, recordedByName: user.name })
     .from(observations)
@@ -145,7 +157,7 @@ export async function observationsOf(tx: AppDb, encounterId: string) {
 }
 
 /** An encounter's readings, as `observationsOf`, with an audit entry: they are part of the record (rule 9). */
-export async function listObservations(tx: AppDb, facilityId: string, encounterId: string, actor: PatientActor) {
+export async function listObservations(tx: AppDb, facilityId: string, encounterId: string, actor: PatientActor): Promise<ShownObservation[]> {
   const [encounter] = await tx.select({ id: encounters.id }).from(encounters).where(eq(encounters.id, encounterId)).limit(1);
   if (!encounter)
     throw new ObservationError("encounter_not_found");
