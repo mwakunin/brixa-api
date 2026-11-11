@@ -49,10 +49,12 @@ async function orderedVisit(kind = "opd", labTestIds = [tests.fbc, tests.mrdt, t
   return { patientId, encounterId, orderId: order.id as string, item };
 }
 
-const collect = (orderId: string, body: Record<string, unknown>, who: StaffMember = labTech) =>
-  call("POST", `/orders/${orderId}/specimens`, h.facility.id, who, body);
-const act = (id: string, action: string, who: StaffMember = labTech, body?: unknown) =>
-  call("POST", `/specimens/${id}/${action}`, h.facility.id, who, body);
+function collect(orderId: string, body: Record<string, unknown>, who: StaffMember = labTech) {
+  return call("POST", `/orders/${orderId}/specimens`, h.facility.id, who, body);
+}
+function act(id: string, action: string, who: StaffMember = labTech, body?: unknown) {
+  return call("POST", `/specimens/${id}/${action}`, h.facility.id, who, body);
+}
 const worklist = async (who: StaffMember = labTech) => (await call("GET", "/lab/worklist", h.facility.id, who)).json();
 const day = () => businessDate().replaceAll("-", "");
 
