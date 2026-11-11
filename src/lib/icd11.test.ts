@@ -74,6 +74,25 @@ describe("loading an ICD-11 release", () => {
 
     expect(await db.select().from(icdCodes)).toEqual([]);
   });
+
+  it("refuses a file cut short, before it retires what the missing part held", async () => {
+    await loadIcd11(await sample());
+    // WHO prints the extension codes (chapter X) last: a file without them stops early.
+    const cut = (await laterRelease()).split("\r\n").filter(line => !line.includes("\tX\t")).join("\r\n");
+
+    await expect(loadIcd11(cut)).rejects.toThrow(/cut short/);
+    expect((await db.select().from(icdCodes)).every(r => r.release === "2026-01" && r.retiredAt === null)).toBe(true);
+  });
+
+  it("refuses a category whose leaf or residual flag is neither True nor False", async () => {
+    const bad = (await sample()).split("\r\n").map(line => line.includes("\t1F40.0\t")
+      ? line.replace("\t2\tFalse\t01\t", "\t2\tfalse\t01\t")
+      : line).join("\r\n");
+    expect(bad).not.toBe(await sample());
+
+    await expect(loadIcd11(bad)).rejects.toThrow(/1F40\.0/);
+    expect(await db.select().from(icdCodes)).toEqual([]);
+  });
 });
 
 describe("searching ICD-11", () => {

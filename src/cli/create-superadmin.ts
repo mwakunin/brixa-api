@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { parseArgs } from "node:util";
 
 import { createAccount } from "@/lib/accounts";
+import { errorLine } from "@/lib/error-summary";
 
 /**
  * Creates a platform superadmin: the one account that cannot come from an
@@ -40,6 +41,7 @@ async function main() {
 }
 
 main().then(() => process.exit(0), (err) => {
-  console.error("Could not create the superadmin:", err instanceof Error ? err.message : err);
+  // A database error's message carries its SQL parameters (CLAUDE.md rule 10).
+  console.error("Could not create the superadmin:", errorLine(err));
   process.exit(1);
 });

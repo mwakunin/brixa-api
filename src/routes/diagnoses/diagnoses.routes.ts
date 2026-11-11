@@ -117,6 +117,7 @@ export const listDiagnoses = createRoute({
   request: { headers: facilityHeaders, params: IdParamsSchema },
   responses: {
     [HttpStatusCodes.OK]: jsonContent(z.object({ diagnoses: z.array(DiagnosisSchema) }), "Diagnoses"),
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(IdParamsSchema), "Not an encounter id"),
     ...tenantResponses,
   },
 });
@@ -133,6 +134,7 @@ function changeRoute<P extends string>(path: P, summary: string, description: st
     responses: {
       [HttpStatusCodes.OK]: jsonContent(DiagnosisSchema, "Done"),
       ...refusals,
+      [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(IdParamsSchema), "Not a diagnosis id"),
       ...tenantResponses,
     },
   });
@@ -161,6 +163,7 @@ export const endDiagnosis = createRoute({
   responses: {
     [HttpStatusCodes.OK]: jsonContent(DiagnosisSchema, "Ended"),
     ...refusals,
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(EndBodySchema), "No such reason, or not an id"),
     ...tenantResponses,
   },
 });

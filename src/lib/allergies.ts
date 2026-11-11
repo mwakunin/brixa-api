@@ -83,7 +83,7 @@ export async function recordAllergy(
 
 /**
  * Records that the patient has no known allergies. Refused while an allergy
- * stands; one already recorded is answered as it is.
+ * stands; one already recorded is answered as it is, audited as a read.
  */
 export async function recordNoKnownAllergies(
   tx: AppDb,
@@ -98,8 +98,18 @@ export async function recordNoKnownAllergies(
   if (current.some(a => a.category !== "none_known"))
     throw new AllergyError("has_allergies");
   const already = current.find(a => a.category === "none_known");
-  if (already)
+  if (already) {
+    // Answered with who recorded it and when: a read of the record (rule 9).
+    await recordAudit(tx, {
+      facilityId,
+      actorId: actor.userId,
+      action: "patient.viewed",
+      entityType: "patient",
+      entityId: patientId,
+      summary: "Viewed allergies: no known allergies, already recorded",
+    });
     return already;
+  }
 
   const [statement] = await tx.insert(patientAllergies).values({
     facilityId,

@@ -526,10 +526,13 @@ export interface LiveEntry {
   servingAt: Date | null;
 }
 
-/** The queue an encounter's patient is in now, if any. */
-export async function liveEntryOf(tx: AppDb, encounterId: string): Promise<LiveEntry | null> {
-  const [live] = await tx
+/** The queue each encounter's patient is in now, for those in one: one query for a page of encounters. */
+export async function liveEntryOfEach(tx: AppDb, encounterIds: string[]): Promise<Map<string, LiveEntry>> {
+  if (encounterIds.length === 0)
+    return new Map();
+  const rows = await tx
     .select({
+      encounterId: queueEntries.encounterId,
       entryId: queueEntries.id,
       servicePointId: queueEntries.servicePointId,
       servicePointName: servicePoints.name,
@@ -539,24 +542,40 @@ export async function liveEntryOf(tx: AppDb, encounterId: string): Promise<LiveE
     })
     .from(queueEntries)
     .innerJoin(servicePoints, eq(servicePoints.id, queueEntries.servicePointId))
-    .where(and(eq(queueEntries.encounterId, encounterId), inArray(queueEntries.status, LIVE)))
-    .limit(1);
-  return live ? { ...live, status: live.status as LiveEntry["status"] } : null;
+    .where(and(inArray(queueEntries.encounterId, encounterIds), inArray(queueEntries.status, LIVE)));
+  return new Map(rows.map(({ encounterId, ...live }) => [encounterId, { ...live, status: live.status as LiveEntry["status"] }]));
+}
+
+/** The queue an encounter's patient is in now, if any. */
+export async function liveEntryOf(tx: AppDb, encounterId: string): Promise<LiveEntry | null> {
+  return (await liveEntryOfEach(tx, [encounterId])).get(encounterId) ?? null;
+}
+
+export interface Attending {
+  membershipId: string;
+  name: string;
 }
 
 /**
- * The encounter's attending clinician, derived rather than stored (rule 4):
- * whoever most recently called the patient in at a consultation point.
+ * Each encounter's attending clinician, derived rather than stored (rule 4):
+ * whoever most recently called the patient in at a consultation point. One
+ * query for a page of encounters; one nobody has seen is left out.
  */
-export async function attendingOf(tx: AppDb, encounterId: string): Promise<{ membershipId: string; name: string } | null> {
-  const [row] = await tx
-    .select({ membershipId: memberships.id, name: user.name })
+export async function attendingOfEach(tx: AppDb, encounterIds: string[]): Promise<Map<string, Attending>> {
+  if (encounterIds.length === 0)
+    return new Map();
+  const rows = await tx
+    .selectDistinctOn([queueEntries.encounterId], { encounterId: queueEntries.encounterId, membershipId: memberships.id, name: user.name })
     .from(queueEntries)
     .innerJoin(servicePoints, eq(servicePoints.id, queueEntries.servicePointId))
     .innerJoin(memberships, eq(memberships.id, queueEntries.servedBy))
     .innerJoin(user, eq(user.id, memberships.userId))
-    .where(and(eq(queueEntries.encounterId, encounterId), eq(servicePoints.kind, "consultation"), isNotNull(queueEntries.servedBy)))
-    .orderBy(desc(queueEntries.servingAt))
-    .limit(1);
-  return row ?? null;
+    .where(and(inArray(queueEntries.encounterId, encounterIds), eq(servicePoints.kind, "consultation"), isNotNull(queueEntries.servedBy)))
+    .orderBy(queueEntries.encounterId, desc(queueEntries.servingAt));
+  return new Map(rows.map(({ encounterId, ...who }) => [encounterId, who]));
+}
+
+/** The encounter's attending clinician (see `attendingOfEach`), if anyone has seen the patient. */
+export async function attendingOf(tx: AppDb, encounterId: string): Promise<Attending | null> {
+  return (await attendingOfEach(tx, [encounterId])).get(encounterId) ?? null;
 }

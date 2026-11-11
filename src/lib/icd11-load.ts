@@ -17,6 +17,8 @@ import { icdCodes } from "@/db/schema";
  *     hold bare line feeds unquoted; no field holds a tab or a CRLF.
  *   - Titles carry "- " depth markers, which are layout, not WHO's title.
  *   - The last header column names the version: `Version:2026 Jan 17 - ...`.
+ *   - Records run in chapter order, 01–26, V, then X (extension codes), so a
+ *     file with no chapter X record was cut short, and is refused.
  *
  * Only categories in chapters 01–25 are kept (see `icd_codes`). The file is
  * read whole and loaded in one transaction, so a failure leaves the table as
@@ -51,6 +53,13 @@ const CODE_SHAPE = /^[0-9A-Z]{4}(?:\.[0-9A-Z]{1,2})*$/;
 const DIAGNOSIS_CHAPTERS = /^(?:0[1-9]|1\d|2[0-5])$/;
 const NEEDED = ["Linearization URI", "Code", "Title", "ClassKind", "IsResidual", "ChapterNo", "isLeaf"] as const;
 const BATCH = 1000;
+/** WHO prints chapters 01–26, then V, then the extension codes, X, last. */
+const LAST_CHAPTER = "X";
+
+/** WHO writes its flags `True` or `False`; anything else is not WHO's file. */
+function flag(field: string): boolean | null {
+  return field === "True" ? true : field === "False" ? false : null;
+}
 
 function unquote(field: string): string {
   return field.length >= 2 && field.startsWith("\"") && field.endsWith("\"")
@@ -84,28 +93,35 @@ export function parseMmsTabulation(text: string): { release: string; rows: IcdRo
   const release = releaseOf(header);
 
   const rows: IcdRow[] = [];
+  let reachedLastChapter = false;
   for (const [n, record] of records.slice(1).entries()) {
     const f = record.split("\t").map(unquote);
     if (f.length < header.length - 1)
       throw new IcdFileError(`record ${n + 2} has ${f.length} fields`);
+    reachedLastChapter ||= f[at.ChapterNo] === LAST_CHAPTER;
     if (f[at.ClassKind] !== "category" || !DIAGNOSIS_CHAPTERS.test(f[at.ChapterNo]))
       continue;
 
-    const row: IcdRow = {
+    const isLeaf = flag(f[at.isLeaf]);
+    const isResidual = flag(f[at.IsResidual]);
+    const row = {
       code: f[at.Code],
       title: f[at.Title].replace(/^(?:- )+/, "").trim(),
       uri: f[at["Linearization URI"]],
       chapter: f[at.ChapterNo],
-      isLeaf: f[at.isLeaf] === "True",
-      isResidual: f[at.IsResidual] === "True",
     };
-    if (!CODE_SHAPE.test(row.code) || !row.title || !row.uri.startsWith("http://id.who.int/icd/release/11/"))
+    if (!CODE_SHAPE.test(row.code) || !row.title || !row.uri.startsWith("http://id.who.int/icd/release/11/")
+      || isLeaf === null || isResidual === null) {
       throw new IcdFileError(`record ${n + 2} (${row.code}) is not a coded category`);
-    rows.push(row);
+    }
+    rows.push({ ...row, isLeaf, isResidual });
   }
 
   if (rows.length === 0)
     throw new IcdFileError("no categories in chapters 01–25");
+  // Missing codes are retired, so a file that stops early would retire the rest.
+  if (!reachedLastChapter)
+    throw new IcdFileError(`cut short: it never reaches chapter ${LAST_CHAPTER}, which WHO prints last`);
   return { release, rows };
 }
 

@@ -149,6 +149,7 @@ export const revokeInvitation = createRoute({
   responses: {
     [HttpStatusCodes.OK]: jsonContent(z.object({ id: z.uuid(), state: z.literal("revoked") }), "Revoked"),
     [HttpStatusCodes.CONFLICT]: jsonContent(RefusalSchema, "Not pending"),
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(z.object({ id: z.uuid() })), "Not an invitation id"),
     ...tenantResponses,
   },
 });

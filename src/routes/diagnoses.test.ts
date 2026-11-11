@@ -101,7 +101,7 @@ describe("diagnoses", () => {
     const c = await clinic();
     const visit = await c.visit();
     const malaria = await (await diagnose(c, c.doctor, visit.id, { code: "1F40.Z", certainty: "provisional" })).json();
-    await at(c, c.clerk, "POST", `/encounters/${visit.id}/close`);
+    expect((await at(c, c.clerk, "POST", `/encounters/${visit.id}/close`)).status).toBe(200);
 
     const confirmed = await at(c, c.doctor, "POST", `/diagnoses/${malaria.id}/confirm`);
     expect(await confirmed.json()).toMatchObject({ certainty: "confirmed", confirmedAt: expect.any(String) });
@@ -194,6 +194,8 @@ describe("diagnoses", () => {
     expect(await state(copy(""))).toBe("diagnoses_one_standing_principal");
     expect(await state(copy(", now(), diagnosed_by, 'ruled_out'"))).toBe("23514");
     expect(await state(pool.query("UPDATE diagnoses SET icd_title = 'Something else' WHERE id = $1", [malaria.id]))).toBe("23001");
+    // Confirmed without saying when and by whom, it could never be said later.
+    expect(await state(pool.query("UPDATE diagnoses SET certainty = 'confirmed' WHERE id = $1", [malaria.id]))).toBe("23514");
     await pool.query("UPDATE diagnoses SET certainty = 'confirmed', confirmed_at = now(), confirmed_by = diagnosed_by WHERE id = $1", [malaria.id]);
     expect(await state(pool.query("UPDATE diagnoses SET certainty = 'provisional', confirmed_at = NULL, confirmed_by = NULL WHERE id = $1", [malaria.id]))).toBe("23001");
     expect(await state(pool.query("DELETE FROM diagnoses WHERE id = $1", [malaria.id]))).toBe("23001");

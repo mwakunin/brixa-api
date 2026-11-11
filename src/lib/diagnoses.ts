@@ -147,7 +147,7 @@ export async function recordDiagnosis(
 }
 
 /** Confirms a provisional diagnosis, e.g. once a test bears it out. Also after the visit has closed. */
-export async function confirmDiagnosis(tx: AppDb, facilityId: string, diagnosisId: string, actor: PatientActor, now = new Date()) {
+export async function confirmDiagnosis(tx: AppDb, facilityId: string, diagnosisId: string, actor: PatientActor, now = new Date()): Promise<DiagnosisRow> {
   const current = await lockStanding(tx, diagnosisId);
   if (current.certainty !== "provisional")
     throw new DiagnosisError("not_provisional");
@@ -169,7 +169,7 @@ export async function confirmDiagnosis(tx: AppDb, facilityId: string, diagnosisI
 }
 
 /** Makes a standing diagnosis the principal one; the previous principal becomes secondary. */
-export async function makePrincipal(tx: AppDb, facilityId: string, diagnosisId: string, actor: PatientActor) {
+export async function makePrincipal(tx: AppDb, facilityId: string, diagnosisId: string, actor: PatientActor): Promise<DiagnosisRow> {
   const current = await lockStanding(tx, diagnosisId);
   if (current.rank === "principal")
     throw new DiagnosisError("already_principal");
@@ -189,7 +189,7 @@ export async function makePrincipal(tx: AppDb, facilityId: string, diagnosisId: 
 }
 
 /** Ends a diagnosis: ruled out, or entered in error. It stays on the record, ended. */
-export async function endDiagnosis(tx: AppDb, facilityId: string, diagnosisId: string, reason: EndReason, actor: PatientActor, now = new Date()) {
+export async function endDiagnosis(tx: AppDb, facilityId: string, diagnosisId: string, reason: EndReason, actor: PatientActor, now = new Date()): Promise<DiagnosisRow> {
   const current = await lockStanding(tx, diagnosisId);
 
   const [ended] = await tx.update(diagnoses)
@@ -214,8 +214,24 @@ export async function hasStandingDiagnoses(tx: AppDb, encounterId: string): Prom
   return Boolean(row);
 }
 
+/** A diagnosis as the encounter shows it. */
+export interface ShownDiagnosis {
+  id: string;
+  code: string;
+  title: string;
+  uri: string;
+  release: string;
+  certainty: Certainty;
+  rank: DiagnosisRow["rank"];
+  diagnosedAt: Date;
+  diagnosedBy: { membershipId: string; name: string };
+  confirmedAt: Date | null;
+  endedAt: Date | null;
+  endReason: EndReason | null;
+}
+
 /** An encounter's diagnoses, principal first, then in the order made; ended ones included and marked. Not audited. */
-export async function diagnosesOf(tx: AppDb, encounterId: string) {
+export async function diagnosesOf(tx: AppDb, encounterId: string): Promise<ShownDiagnosis[]> {
   const rows = await tx
     .select({ diagnosis: diagnoses, diagnosedByName: user.name })
     .from(diagnoses)
@@ -241,7 +257,7 @@ export async function diagnosesOf(tx: AppDb, encounterId: string) {
 }
 
 /** As `diagnosesOf`, with an audit entry: they are part of the record (rule 9). */
-export async function listDiagnoses(tx: AppDb, facilityId: string, encounterId: string, actor: PatientActor) {
+export async function listDiagnoses(tx: AppDb, facilityId: string, encounterId: string, actor: PatientActor): Promise<ShownDiagnosis[]> {
   const [encounter] = await tx.select({ id: encounters.id }).from(encounters).where(eq(encounters.id, encounterId)).limit(1);
   if (!encounter)
     throw new DiagnosisError("encounter_not_found");

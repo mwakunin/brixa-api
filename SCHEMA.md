@@ -506,6 +506,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - closes every `opd` visit opened before that Kenyan day and still open, with `closed_by` null (the `encounters_lifecycle` CHECK now allows that for a closed visit) and an audit entry with no actor;
   - a waiting patient's entry becomes `left`, and one still being seen becomes `done`;
   - emergency attendances and admissions are left alone, since they may run overnight;
+  - each visit is closed at the time the run locks it, not when the run began, so a patient called in meanwhile is never ended before being seen;
   - each visit is closed in its own transaction, so one that cannot be closed leaves the rest closed. It becomes a `job_failures` row (`visit_close`) naming the visit; a facility whose visits cannot even be listed becomes one with no subject. A later run for that facility with no failure resolves the failures recorded before it began, but not one an overlapping run recorded since.
 - **Not yet:**
   - a visit closing itself once nothing is pending, which needs orders (4a);
@@ -526,7 +527,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - `POST /encounters/{id}/bill-now` bills every charge not yet billed, drafted and finalised in one step. It is an interim invoice before the final one, and a supplementary one after it.
   - A patient billed at the end gets the final invoice as in P2.
   - Credit paid towards the visit is applied as the invoice is finalised, as in P2.
-- **The cashier's list** (`GET /cashier/due`, billers) shows every open outpatient visit or emergency attendance with money due, oldest first.
+- **The cashier's list** (`GET /cashier/due`, billers) shows every open outpatient visit or emergency attendance with money due, oldest first, 200 at a time (`offset` for the next page).
   - What is due is the charges no live invoice asks for, plus what its finalised patient bills still owe.
   - It is derived (rule 4) and audited as `billing.due_listed`.
   - Admissions keep their own running bill and are not listed.
@@ -566,6 +567,8 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - The 2026-01 release gives 17,255 codes, 14,793 of them leaves.
 - **Loaded per environment by `pnpm icd11:load <file>`** (`src/lib/icd11-load.ts`, on the owner connection), from the `.txt` in WHO's release zip, unmodified.
   - The release is read from the file's `Version:` column, and a release older than one already loaded is refused.
+  - A file cut short is refused: WHO prints chapter X last, so a file that never reaches it lost its end, and loading it would retire every code it lost. So is a leaf or residual flag other than `True` or `False`.
+  - The release image has no `tsx`, so there it runs as `node ./dist/src/cli/load-icd11.js` (`docs/deployment.md` §3).
   - One transaction; a code a newer release no longer has is marked retired, never deleted.
 - **WHO's licence** (CC BY-ND 3.0 IGO, icd.who.int) allows storing the classification in software provided each code keeps its title and URI, and the classification is not altered. So:
   - titles are kept as WHO wrote them (only the file's "- " depth markers are dropped);
@@ -581,7 +584,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - the code (foreign key to `icd_codes`) with its title, URI and release copied as diagnosed (rule 7), so a later release never changes the record;
   - `certainty` (provisional or confirmed) and `rank` (principal or secondary), with at most one standing principal per encounter (partial unique index). The first diagnosis is the principal; a later one is secondary unless made principal, which demotes the other.
   - Recorded only on an open encounter, and only under a leaf code still in the current release; the same code twice is refused.
-  - **Confirmed once**, also after the visit has closed (a result arrives the next day). **Ended once**, as ruled out or entered in error; an ended diagnosis stays on the record and never changes.
+  - **Confirmed once**, also after the visit has closed (a result arrives the next day), recording when and by whom. **Ended once**, as ruled out or entered in error; an ended diagnosis stays on the record and never changes.
   - Every change locks the encounter first (M8).
   - The trigger `diagnoses_lifecycle` holds all of this for every role, and refuses deletion.
 - **Who:**
@@ -603,9 +606,10 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - a draft may be discarded, which keeps it on the record, unshown, and never deletes it;
   - a draft is started only on an open encounter, and may be signed after the visit closes, for notes finished the next morning.
 - **Corrections are addenda**, written signed by any note-writing clinician and shown under the note. An addendum is never added to another addendum.
+- **The author saves and signs a draft only while still holding a role that writes its kind** (a nurse moved to the wards no longer signs a consultation note); discarding it needs no such role.
 - **A signed note written on the wrong patient's record is marked entered in error**, with a reason, and stays on the record; it then takes no addendum. An addendum may be marked too (one added to the wrong patient's note), and is shown marked under its note.
 - **The trigger `clinical_notes_lifecycle`** holds all of this for every role:
-  - drafts are written as drafts, and addenda signed, to a signed note on the same encounter;
+  - drafts are written as drafts, and addenda signed, to a signed note on the same encounter that is neither an addendum nor marked entered in error (locked while checked);
   - whose note it is, its kind and its encounter never change;
   - a signed note changes only by being marked entered in error, once;
   - a discarded draft never changes, and nothing is deleted.

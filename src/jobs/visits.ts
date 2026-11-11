@@ -20,7 +20,8 @@ import { logger } from "@/lib/logger";
  * `job_failures` (with the visit as its subject) and logged for an alert;
  * the run carries on. A facility's run with no failure resolves the failures
  * recorded before it began, but not one an overlapping run recorded since.
- * Idempotent: a closed visit is skipped. The OWNER connection only lists
+ * Idempotent: a closed visit is skipped. `now` only chooses which visits are
+ * stale; each is closed at the time it is locked. The OWNER connection only lists
  * facilities and records failures. Cloud Scheduler calls it through
  * `POST /internal/jobs/close-visits`.
  */
@@ -54,7 +55,7 @@ export async function closeStaleVisits(now = new Date()) {
     let visitFailures = 0;
     for (const { id } of stale) {
       try {
-        if (await runAsFacility(facility.id, tx => closeStaleVisit(tx, facility.id, id, now)))
+        if (await runAsFacility(facility.id, tx => closeStaleVisit(tx, facility.id, id)))
           tally.closed += 1;
       }
       catch (err) {

@@ -98,7 +98,8 @@ export const billDueNow: TenantRouteHandler<BillDueNowRoute> = async (c) => {
 };
 
 export const listDue: TenantRouteHandler<ListDueRoute> = async (c) => {
-  const visits = await dueNow(c.var.db, c.var.facility.id, actorOf(c));
+  const { offset } = c.req.valid("query");
+  const visits = await dueNow(c.var.db, c.var.facility.id, actorOf(c), offset);
   return c.json({ visits: visits.map(v => ({ ...v, startedAt: v.startedAt.toISOString() })) }, HttpStatusCodes.OK);
 };
 

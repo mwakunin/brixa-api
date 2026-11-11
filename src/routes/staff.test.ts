@@ -258,8 +258,14 @@ describe("changing a member's roles", () => {
 
     const second = runAsFacility(facility.id, tx => changeRoles(tx, facility.id, a.id, { roles: ["cashier"] }, { userId: b.userId }));
     const outcome = second.then(() => "changed", (err: { code?: string }) => err.code);
-    expect(await waitForBlockedBackend(holderPid)).toBe(true);
-    release();
+    try {
+      expect(await waitForBlockedBackend(holderPid)).toBe(true);
+    }
+    finally {
+      // Even if the wait failed: a transaction left open would hang the next reset.
+      release();
+      await Promise.allSettled([first, second]);
+    }
     await first;
 
     expect(await outcome).toBe("last_admin");

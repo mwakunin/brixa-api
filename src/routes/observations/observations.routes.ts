@@ -86,6 +86,7 @@ export const listObservations = createRoute({
   request: { headers: facilityHeaders, params: IdParamsSchema },
   responses: {
     [HttpStatusCodes.OK]: jsonContent(z.object({ observations: z.array(ObservationSchema) }), "Readings"),
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(IdParamsSchema), "Not an encounter id"),
     ...tenantResponses,
   },
 });
@@ -101,6 +102,7 @@ export const markEnteredInError = createRoute({
   responses: {
     [HttpStatusCodes.OK]: jsonContent(z.object({ id: z.uuid(), enteredInError: z.object({ at: z.string(), reason: z.string() }) }), "Marked"),
     [HttpStatusCodes.CONFLICT]: jsonContent(RefusalSchema, "Already marked"),
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(ErrorBodySchema), "No reason, or not an id"),
     ...tenantResponses,
   },
 });

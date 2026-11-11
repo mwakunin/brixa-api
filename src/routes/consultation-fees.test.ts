@@ -188,6 +188,19 @@ describe("the cashier collecting what is due", () => {
     const listed = await db.select().from(auditLog).where(and(eq(auditLog.action, "billing.due_listed"), eq(auditLog.actorId, h.cashier.id)));
     expect(listed).toHaveLength(1);
   });
+
+  it("pages through the list, oldest visit first", async () => {
+    const gopd = await clinic();
+    const older = await visitAt(gopd);
+    const newer = await visitAt(gopd);
+    const page = async (offset: number) =>
+      (await (await call("GET", `/cashier/due?offset=${offset}`, h.facility.id, h.cashier)).json()).visits.map((v: { encounterId: string }) => v.encounterId);
+
+    expect(await page(0)).toEqual([older.id, newer.id]);
+    expect(await page(1)).toEqual([newer.id]);
+    expect(await page(2)).toEqual([]);
+    expect((await call("GET", "/cashier/due?offset=-1", h.facility.id, h.cashier)).status).toBe(422);
+  });
 });
 
 describe("the database's guards on a fee", () => {

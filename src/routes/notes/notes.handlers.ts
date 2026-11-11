@@ -37,9 +37,7 @@ function refusal(c: Context, err: unknown) {
   return c.json({ message: err.message, code: err.code }, HttpStatusCodes.CONFLICT);
 }
 
-type Shown = NonNullable<Awaited<ReturnType<typeof notes.noteAsShown>>>;
-
-function noteJson(n: Shown) {
+function noteJson(n: notes.ShownNote) {
   return {
     ...n,
     createdAt: n.createdAt.toISOString(),

@@ -20,8 +20,18 @@ import { recordAudit } from "./audit";
  * Admissions keep their own running bill and are not listed.
  */
 
-/** More than a Level 4 outpatient department has open at once. */
+/** A page: more than a Level 4 outpatient department usually has open at once. */
 const DUE_LIMIT = 200;
+
+export interface DueVisit {
+  encounterId: string;
+  kind: "opd" | "emergency";
+  startedAt: Date;
+  patient: { id: string; name: string; opNumber: string | null };
+  unbilledCents: number;
+  owedCents: number;
+  dueCents: number;
+}
 
 interface DueRow extends Record<string, unknown> {
   encounter_id: string;
@@ -36,7 +46,8 @@ interface DueRow extends Record<string, unknown> {
   owed_cents: string;
 }
 
-export async function dueNow(tx: AppDb, facilityId: string, actor: PatientActor) {
+/** One page of the list, oldest visit first; `offset` skips that many for the next. */
+export async function dueNow(tx: AppDb, facilityId: string, actor: PatientActor, offset = 0): Promise<DueVisit[]> {
   const { rows } = await tx.execute<DueRow>(sql`
     WITH visits AS (
       SELECT id, patient_id, kind, started_at FROM encounters
@@ -80,7 +91,7 @@ export async function dueNow(tx: AppDb, facilityId: string, actor: PatientActor)
     LEFT JOIN owed o ON o.encounter_id = v.id
     WHERE coalesce(u.cents, 0) > 0 OR coalesce(o.cents, 0) > 0
     ORDER BY v.started_at, v.id
-    LIMIT ${DUE_LIMIT}
+    LIMIT ${DUE_LIMIT} OFFSET ${offset}
   `);
 
   await recordAudit(tx, {
@@ -89,7 +100,7 @@ export async function dueNow(tx: AppDb, facilityId: string, actor: PatientActor)
     action: "billing.due_listed",
     entityType: "facility",
     entityId: facilityId,
-    summary: `Listed the visits with money due (${rows.length})`,
+    summary: `Listed the visits with money due (${rows.length}${offset ? `, from ${offset + 1}` : ""})`,
   });
 
   return rows.map((r) => {

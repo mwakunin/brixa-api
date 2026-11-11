@@ -26,9 +26,10 @@ GRANT UPDATE ("certainty", "rank", "confirmed_at", "confirmed_by", "ended_at", "
 --> statement-breakpoint
 
 -- For every role, the owner included: written standing; what was diagnosed,
--- when and by whom never changes; a provisional diagnosis is confirmed once
--- (one made confirmed has no confirmation to add); the rank moves only while
--- it stands; it ends once, and an ended diagnosis never changes. Never deleted.
+-- when and by whom never changes; a provisional diagnosis is confirmed once,
+-- saying when and by whom (one made confirmed has no confirmation to add);
+-- the rank moves only while it stands; it ends once, and an ended diagnosis
+-- never changes. Never deleted.
 CREATE FUNCTION diagnoses_lifecycle() RETURNS trigger
   LANGUAGE plpgsql
   AS $$
@@ -67,6 +68,11 @@ BEGIN
     AND NOT (OLD.certainty = 'provisional' AND NEW.certainty = 'confirmed') THEN
     RAISE EXCEPTION 'a diagnosis goes from provisional to confirmed, never back'
       USING ERRCODE = 'restrict_violation';
+  END IF;
+  IF OLD.certainty = 'provisional' AND NEW.certainty = 'confirmed'
+    AND (NEW.confirmed_at IS NULL OR NEW.confirmed_by IS NULL) THEN
+    RAISE EXCEPTION 'a provisional diagnosis is confirmed with when and by whom'
+      USING ERRCODE = 'check_violation';
   END IF;
   IF (OLD.confirmed_at IS NOT NULL OR OLD.certainty = 'confirmed')
     AND (NEW.confirmed_at IS DISTINCT FROM OLD.confirmed_at OR NEW.confirmed_by IS DISTINCT FROM OLD.confirmed_by) THEN

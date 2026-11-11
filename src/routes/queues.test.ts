@@ -163,6 +163,16 @@ describe("a visit's queue", () => {
 
     const actions = (await db.select({ action: auditLog.action }).from(auditLog).where(eq(auditLog.entityType, "queue_entry"))).map(a => a.action).sort();
     expect(actions).toEqual(["queue.finished", "queue.finished", "queue.joined", "queue.joined", "queue.served", "queue.served"]);
+
+    // The patient's history shows each visit's queue and attending clinician too.
+    const patientId = (await c.view(visit.id)).patientId as string;
+    expect((await post(c, `/encounters/${visit.id}/close`, c.clerk)).status).toBe(200);
+    const again = (await (await post(c, "/encounters", c.clerk, { patientId, kind: "opd", queueAt: gopd })).json()).id as string;
+    const history = (await (await call("GET", `/encounters?patientId=${patientId}`, c.facility.id, c.clerk)).json()).encounters;
+    expect(history).toEqual([
+      expect.objectContaining({ id: again, queue: expect.objectContaining({ servicePointName: "General OPD", status: "waiting" }), attending: null }),
+      expect.objectContaining({ id: visit.id, queue: null, attending: { membershipId: c.doctor.actor.membershipId, name: expect.any(String) } }),
+    ]);
   });
 
   it("keeps a patient in one queue at a time, and in step", async () => {
@@ -281,8 +291,14 @@ describe("a visit's queue", () => {
 
     const second = runAsFacility(c.facility.id, tx => serve(tx, c.facility.id, entry, c.doctor.actor));
     const outcome = second.then(() => "served", (err: { code?: string }) => err.code);
-    expect(await waitForBlockedBackend(holderPid)).toBe(true);
-    release();
+    try {
+      expect(await waitForBlockedBackend(holderPid)).toBe(true);
+    }
+    finally {
+      // Even if the wait failed: a transaction left open would hang the next reset.
+      release();
+      await Promise.allSettled([first, second]);
+    }
     await first;
 
     expect(await outcome).toBe("not_waiting");
@@ -326,6 +342,21 @@ describe("the nightly close of outpatient visits", () => {
     const closedBy = await db.select({ actorId: auditLog.actorId }).from(auditLog).where(and(eq(auditLog.action, "encounter.closed"), eq(auditLog.entityId, waited.id)));
     expect(closedBy).toEqual([{ actorId: null }]);
     expect(await closeStaleVisits()).toMatchObject({ closed: 0 });
+  });
+
+  it("closes a visit at the time it gets to it, after anyone who called the patient in since the run began", async () => {
+    const c = await clinic();
+    await c.point("Triage", "triage");
+    const runBegan = new Date();
+    const visit = await c.visit();
+    await post(c, `/queue-entries/${visit.queue.entryId}/serve`, c.nurse);
+    // Two days back, so the visit is stale whichever side of midnight the run began.
+    await pool.query("UPDATE encounters SET started_at = started_at - interval '2 days' WHERE id = $1", [visit.id]);
+
+    expect(await closeStaleVisits(runBegan)).toMatchObject({ closed: 1, failed: 0 });
+    const [entry] = await db.select().from(queueEntries).where(eq(queueEntries.id, visit.queue.entryId));
+    expect(entry.status).toBe("done");
+    expect(entry.endedAt!.getTime()).toBeGreaterThanOrEqual(entry.servingAt!.getTime());
   });
 
   it("closes each visit on its own, so one that fails leaves the rest closed and is named", async () => {

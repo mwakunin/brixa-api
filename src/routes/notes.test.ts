@@ -149,6 +149,37 @@ describe("clinical notes", () => {
     expect(viewed.map(v => v.summary)).toEqual(["Viewed clinical notes (0)"]);
   });
 
+  it("are saved and signed only while the author still writes that kind; a draft may still be discarded", async () => {
+    const c = await clinic();
+    const visit = await c.visit();
+    const nurse = await c.person(["nurse"]);
+    const kept = await start(c, nurse, visit.id);
+    const dropped = await start(c, nurse, visit.id);
+    // Moved to the wards: a ward nurse writes nursing notes, not consultation notes.
+    await pool.query("UPDATE memberships SET roles = ARRAY['ward_nurse'] WHERE id = $1", [nurse.actor.membershipId]);
+
+    const saved = await at(c, nurse, "PUT", `/notes/${kept.id}`, { ...consultation, plan: "Review tomorrow" });
+    expect(saved.status).toBe(403);
+    expect((await saved.json()).code).toBe("not_your_kind");
+    expect((await (await at(c, nurse, "POST", `/notes/${kept.id}/sign`)).json()).code).toBe("not_your_kind");
+    expect((await at(c, nurse, "POST", `/notes/${dropped.id}/discard`)).status).toBe(200);
+  });
+
+  it("are hidden from another facility's staff", async () => {
+    const c = await clinic();
+    const visit = await c.visit();
+    const note = await start(c, c.officer, visit.id);
+    await at(c, c.officer, "POST", `/notes/${note.id}/sign`);
+    const other = await makeOnboardedFacility();
+    const stranger = await signedInUser();
+    await addMembership(stranger.id, other.id, ["doctor"]);
+
+    // Through the app role, whose row-level security sees only the other facility.
+    expect((await call("GET", `/encounters/${visit.id}/notes`, other.id, stranger)).status).toBe(404);
+    expect((await call("POST", `/notes/${note.id}/addenda`, other.id, stranger, { text: "Not mine" })).status).toBe(404);
+    expect(await notesAs(c, c.doctor, visit.id)).toEqual([expect.objectContaining({ id: note.id, addenda: [] })]);
+  });
+
   it("need content that fits the kind", async () => {
     const c = await clinic();
     const visit = await c.visit();
@@ -198,11 +229,16 @@ describe("clinical notes", () => {
     expect(await state(pool.query("UPDATE clinical_notes SET plan = 'Changed later' WHERE id = $1", [note.id]))).toBe("23001");
     expect(await state(pool.query("UPDATE clinical_notes SET written_by = $2 WHERE id = $1", [draft.id, c.doctor.actor.membershipId]))).toBe("23001");
     expect(await state(pool.query("DELETE FROM clinical_notes WHERE id = $1", [draft.id]))).toBe("23001");
-    expect(await state(pool.query(
+    const addendumTo = (id: string) => pool.query(
       `INSERT INTO clinical_notes (facility_id, encounter_id, kind, addendum_of, text, status, written_by, created_at, updated_at, signed_at)
-       SELECT facility_id, encounter_id, 'addendum', id, 'To a draft', 'signed', written_by, now(), now(), now() FROM clinical_notes WHERE id = $1`,
-      [draft.id],
-    ))).toBe("23514");
+       SELECT facility_id, encounter_id, 'addendum', id, 'Added', 'signed', written_by, now(), now(), now() FROM clinical_notes WHERE id = $1`,
+      [id],
+    );
+    expect(await state(addendumTo(draft.id))).toBe("23514");
+    const added = await (await at(c, c.officer, "POST", `/notes/${note.id}/addenda`, { text: "Seen again" })).json();
+    expect(await state(addendumTo(added.addenda[0].id))).toBe("23514");
+    await pool.query("UPDATE clinical_notes SET entered_in_error_at = now(), entered_in_error_by = written_by, entered_in_error_reason = 'Wrong patient' WHERE id = $1", [note.id]);
+    expect(await state(addendumTo(note.id))).toBe("23514");
     // Only a signed note is marked entered in error: the trigger, ahead of the CHECK.
     expect(await state(pool.query("UPDATE clinical_notes SET entered_in_error_at = now(), entered_in_error_by = written_by, entered_in_error_reason = 'x' WHERE id = $1", [draft.id]))).toBe("23514");
     await pool.query("UPDATE clinical_notes SET status = 'discarded', discarded_at = now() WHERE id = $1", [draft.id]);

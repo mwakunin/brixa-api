@@ -38,6 +38,8 @@ const ContentSchema = z.object({
 });
 
 const StartBodySchema = ContentSchema.extend({ kind: z.enum(["consultation", "nursing"]) });
+const AddendumBodySchema = z.object({ text: noteText });
+const ReasonBodySchema = z.object({ reason: z.string().trim().min(3).max(200).regex(/^\P{C}+$/u, "One line") });
 
 const AuthorSchema = z.object({ membershipId: z.uuid(), name: z.string() });
 
@@ -67,6 +69,9 @@ const NoteSchema = z.object({
 
 const refusals = {
   [HttpStatusCodes.CONFLICT]: jsonContent(RefusalSchema, "Not possible in the note's or encounter's state"),
+};
+const notAnId = {
+  [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(IdParamsSchema), "Not an id"),
 };
 
 export const startNote = createRoute({
@@ -114,6 +119,7 @@ export const signNote = createRoute({
   responses: {
     [HttpStatusCodes.OK]: jsonContent(NoteSchema, "Signed"),
     ...refusals,
+    ...notAnId,
     ...tenantResponses,
   },
 });
@@ -129,6 +135,7 @@ export const discardDraft = createRoute({
   responses: {
     [HttpStatusCodes.OK]: jsonContent(z.object({ id: z.uuid(), status: z.literal("discarded") }), "Discarded"),
     ...refusals,
+    ...notAnId,
     ...tenantResponses,
   },
 });
@@ -140,10 +147,11 @@ export const addAddendum = createRoute({
   summary: "Add an addendum to a signed note",
   description: "How a signed note is corrected or added to. Written signed, and shown under the note.",
   middleware: [noteStaff] as const,
-  request: { headers: facilityHeaders, params: IdParamsSchema, body: jsonContentRequired(z.object({ text: noteText }), "The addendum") },
+  request: { headers: facilityHeaders, params: IdParamsSchema, body: jsonContentRequired(AddendumBodySchema, "The addendum") },
   responses: {
     [HttpStatusCodes.CREATED]: jsonContent(NoteSchema, "The note, with its addenda"),
     ...refusals,
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(AddendumBodySchema), "No text, or not an id"),
     ...tenantResponses,
   },
 });
@@ -158,11 +166,12 @@ export const markEnteredInError = createRoute({
   request: {
     headers: facilityHeaders,
     params: IdParamsSchema,
-    body: jsonContentRequired(z.object({ reason: z.string().trim().min(3).max(200).regex(/^\P{C}+$/u, "One line") }), "Why"),
+    body: jsonContentRequired(ReasonBodySchema, "Why"),
   },
   responses: {
     [HttpStatusCodes.OK]: jsonContent(NoteSchema, "Marked"),
     ...refusals,
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(ReasonBodySchema), "No reason, or not an id"),
     ...tenantResponses,
   },
 });
@@ -177,6 +186,7 @@ export const listNotes = createRoute({
   request: { headers: facilityHeaders, params: IdParamsSchema },
   responses: {
     [HttpStatusCodes.OK]: jsonContent(z.object({ notes: z.array(NoteSchema) }), "Notes"),
+    ...notAnId,
     ...tenantResponses,
   },
 });

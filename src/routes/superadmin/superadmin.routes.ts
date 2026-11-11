@@ -1,7 +1,7 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import * as HttpStatusCodes from "stoker/http-status-codes";
 import { jsonContent, jsonContentRequired } from "stoker/openapi/helpers";
-import { createMessageObjectSchema } from "stoker/openapi/schemas";
+import { createErrorSchema, createMessageObjectSchema } from "stoker/openapi/schemas";
 
 import { forbiddenSchema, unauthorizedSchema } from "@/lib/constants";
 import { facilityNameSchema, personNameSchema } from "@/lib/validation";
@@ -76,6 +76,7 @@ export const createFacility = createRoute({
       createMessageObjectSchema("A facility with that KMHFR code already exists"),
       "Duplicate KMHFR code",
     ),
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(CreateFacilitySchema), "Invalid request"),
   },
 });
 

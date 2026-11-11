@@ -14,7 +14,7 @@ import { hasStandingDiagnoses } from "./diagnoses";
 import { hasStandingNotes } from "./notes";
 import { issueNumber } from "./number-series";
 import { hasStandingObservations } from "./observations";
-import { attendingOf, defaultTriagePoint, endLiveEntry, joinLocked, liveEntryOf } from "./queues";
+import { attendingOfEach, defaultTriagePoint, endLiveEntry, joinLocked, liveEntryOf, liveEntryOfEach } from "./queues";
 import { bedOccupied, bedWithWard } from "./wards";
 
 /**
@@ -245,11 +245,16 @@ export async function cancelEncounter(tx: AppDb, facilityId: string, id: string,
  * Closes an outpatient visit still open after its day, for the nightly run:
  * a waiting patient is marked as having left, one still being seen as done,
  * and nobody is named as closing it. Skips a visit closed since it was listed.
+ *
+ * Timed once the visit is locked, not when the run began: anyone who queued
+ * or called the patient in since then has done so by now, so nothing ends
+ * before it started.
  */
-export async function closeStaleVisit(tx: AppDb, facilityId: string, id: string, at = new Date()): Promise<boolean> {
+export async function closeStaleVisit(tx: AppDb, facilityId: string, id: string): Promise<boolean> {
   const [encounter] = await tx.select().from(encounters).where(eq(encounters.id, id)).for("update").limit(1);
   if (!encounter || encounter.status !== "open" || encounter.kind !== "opd")
     return false;
+  const at = new Date();
 
   await endLiveEntry(tx, facilityId, id, null, at);
   await tx.update(encounters).set({ status: "closed", endedAt: at, closedBy: null }).where(eq(encounters.id, id));
@@ -445,13 +450,30 @@ export interface EncounterDetail extends Omit<EncounterRow, "facilityId" | "open
   };
 }
 
-async function detail(tx: AppDb, encounter: EncounterRow): Promise<EncounterDetail> {
+function shown(encounter: EncounterRow) {
   const { facilityId: _f, openedBy: _o, closedBy: _c, updatedAt: _u, ...fields } = encounter;
-  if (encounter.kind !== "ipd") {
-    const queue = encounter.status === "open" ? await liveEntryOf(tx, encounter.id) : null;
-    return { ...fields, queue, attending: await attendingOf(tx, encounter.id), admission: null };
-  }
-  const rest = { ...fields, queue: null, attending: null };
+  return fields;
+}
+
+/**
+ * Encounters as shown, a page at a time: the queue and attending clinician
+ * of every outpatient one in two queries, not two per encounter.
+ */
+async function details(tx: AppDb, rows: EncounterRow[]): Promise<EncounterDetail[]> {
+  const outpatient = rows.filter(r => r.kind !== "ipd");
+  const live = await liveEntryOfEach(tx, outpatient.filter(r => r.status === "open").map(r => r.id));
+  const attending = await attendingOfEach(tx, outpatient.map(r => r.id));
+  return Promise.all(rows.map(row => row.kind === "ipd"
+    ? inpatientDetail(tx, row)
+    : { ...shown(row), queue: live.get(row.id) ?? null, attending: attending.get(row.id) ?? null, admission: null }));
+}
+
+async function detail(tx: AppDb, encounter: EncounterRow): Promise<EncounterDetail> {
+  return (await details(tx, [encounter]))[0];
+}
+
+async function inpatientDetail(tx: AppDb, encounter: EncounterRow): Promise<EncounterDetail> {
+  const rest = { ...shown(encounter), queue: null, attending: null };
 
   const [admission] = await tx.select().from(admissions).where(eq(admissions.encounterId, encounter.id)).limit(1);
   if (!admission)
@@ -504,7 +526,7 @@ export async function encounterDetail(tx: AppDb, id: string): Promise<EncounterD
 }
 
 /** A patient's encounters, newest first, a page of 100 at a time, with an audit entry. */
-export async function listEncounters(tx: AppDb, facilityId: string, patientId: string, actor: PatientActor, offset = 0) {
+export async function listEncounters(tx: AppDb, facilityId: string, patientId: string, actor: PatientActor, offset = 0): Promise<EncounterDetail[]> {
   await patientExists(tx, patientId);
   const rows = await tx
     .select()
@@ -522,5 +544,5 @@ export async function listEncounters(tx: AppDb, facilityId: string, patientId: s
     entityId: patientId,
     summary: `Listed a patient's encounters (${rows.length})`,
   });
-  return Promise.all(rows.map(row => detail(tx, row)));
+  return details(tx, rows);
 }

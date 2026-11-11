@@ -65,6 +65,7 @@ export const listAllergies = createRoute({
   request: { headers: facilityHeaders, params: IdParamsSchema, query: ListQuerySchema },
   responses: {
     [HttpStatusCodes.OK]: jsonContent(z.object({ allergies: z.array(AllergySchema) }), "Oldest first"),
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(ListQuerySchema), "Not a patient id, or an invalid filter"),
     ...tenantResponses,
   },
 });
@@ -96,6 +97,7 @@ export const removeAllergy = createRoute({
   responses: {
     [HttpStatusCodes.OK]: jsonContent(AllergySchema, "Removed"),
     [HttpStatusCodes.CONFLICT]: jsonContent(RefusalSchema, "Already removed"),
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(RemoveBodySchema), "No such reason, or not an id"),
     ...tenantResponses,
   },
 });

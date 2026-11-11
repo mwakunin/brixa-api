@@ -114,6 +114,12 @@ async function lockNote(tx: AppDb, noteId: string, actor: PatientActor): Promise
   return note;
 }
 
+/** Writing or signing a note's content takes a role that writes its kind, held now, not only when the draft was started. */
+function mayWrite(actor: NoteActor, kind: NoteKind): void {
+  if (!actor.roles.some(r => NOTE_WRITERS[kind].includes(r)))
+    throw new NoteError("not_your_kind");
+}
+
 async function audit(tx: AppDb, facilityId: string, actor: PatientActor, action: Parameters<typeof recordAudit>[1]["action"], note: Pick<NoteRow, "id" | "encounterId" | "kind">, summary: string, extra: Record<string, unknown> = {}) {
   await recordAudit(tx, {
     facilityId,
@@ -137,8 +143,7 @@ export async function startNote(
 ): Promise<NoteRow> {
   if (await encounterStatus(tx, encounterId) !== "open")
     throw new NoteError("not_open");
-  if (!actor.roles.some(r => NOTE_WRITERS[input.kind].includes(r)))
-    throw new NoteError("not_your_kind");
+  mayWrite(actor, input.kind);
 
   const [note] = await tx.insert(clinicalNotes).values({
     facilityId,
@@ -154,11 +159,12 @@ export async function startNote(
   return note;
 }
 
-/** Replaces a draft's content: the author's alone, while it is a draft. */
-export async function editDraft(tx: AppDb, facilityId: string, noteId: string, content: NoteContent, actor: PatientActor, now = new Date()) {
+/** Replaces a draft's content: the author's alone, while it is a draft and they still write its kind. */
+export async function editDraft(tx: AppDb, facilityId: string, noteId: string, content: NoteContent, actor: NoteActor, now = new Date()): Promise<NoteRow> {
   const current = await lockNote(tx, noteId, actor);
   if (current.status !== "draft")
     throw new NoteError("not_a_draft");
+  mayWrite(actor, current.kind as NoteKind);
 
   const [edited] = await tx.update(clinicalNotes)
     .set({ ...contentColumns(current.kind as NoteKind, content), updatedAt: now })
@@ -168,11 +174,15 @@ export async function editDraft(tx: AppDb, facilityId: string, noteId: string, c
   return edited;
 }
 
-/** Signs a draft, freezing it. Also after the visit has closed. */
-export async function signNote(tx: AppDb, facilityId: string, noteId: string, actor: PatientActor, now = new Date()) {
+/**
+ * Signs a draft, freezing it. Also after the visit has closed, but only while
+ * the author still writes its kind. Discarding needs no such role.
+ */
+export async function signNote(tx: AppDb, facilityId: string, noteId: string, actor: NoteActor, now = new Date()): Promise<NoteRow> {
   const current = await lockNote(tx, noteId, actor);
   if (current.status !== "draft")
     throw new NoteError("not_a_draft");
+  mayWrite(actor, current.kind as NoteKind);
 
   const [signed] = await tx.update(clinicalNotes).set({ status: "signed", signedAt: now }).where(eq(clinicalNotes.id, noteId)).returning();
   await audit(tx, facilityId, actor, "note.signed", current, `Signed a ${current.kind} note`);
@@ -180,7 +190,7 @@ export async function signNote(tx: AppDb, facilityId: string, noteId: string, ac
 }
 
 /** Discards a draft. It stays on the record, discarded, and is no longer shown. */
-export async function discardDraft(tx: AppDb, facilityId: string, noteId: string, actor: PatientActor, now = new Date()) {
+export async function discardDraft(tx: AppDb, facilityId: string, noteId: string, actor: PatientActor, now = new Date()): Promise<NoteRow> {
   const current = await lockNote(tx, noteId, actor);
   if (current.status !== "draft")
     throw new NoteError("not_a_draft");
@@ -191,7 +201,7 @@ export async function discardDraft(tx: AppDb, facilityId: string, noteId: string
 }
 
 /** Adds a signed addendum to a signed note: how a signed note is corrected or added to. */
-export async function addAddendum(tx: AppDb, facilityId: string, noteId: string, text: string, actor: PatientActor, now = new Date()) {
+export async function addAddendum(tx: AppDb, facilityId: string, noteId: string, text: string, actor: PatientActor, now = new Date()): Promise<NoteRow> {
   const original = await lockNote(tx, noteId, actor);
   if (original.status !== "signed" || original.kind === "addendum")
     throw new NoteError("not_signed");
@@ -222,7 +232,7 @@ export async function addAddendum(tx: AppDb, facilityId: string, noteId: string,
  * too, e.g. one added to the wrong patient's note: it stays under its note,
  * shown marked.
  */
-export async function markNoteEnteredInError(tx: AppDb, facilityId: string, noteId: string, reason: string, actor: PatientActor, now = new Date()) {
+export async function markNoteEnteredInError(tx: AppDb, facilityId: string, noteId: string, reason: string, actor: PatientActor, now = new Date()): Promise<NoteRow> {
   const current = await lockNote(tx, noteId, actor);
   if (current.status !== "signed")
     throw new NoteError("not_signed");
@@ -247,11 +257,48 @@ export async function hasStandingNotes(tx: AppDb, encounterId: string): Promise<
   return Boolean(row);
 }
 
+export interface NoteAuthor {
+  membershipId: string;
+  name: string;
+}
+
+export interface EnteredInError {
+  at: Date;
+  reason: string;
+}
+
+/** An addendum, as shown under its note. */
+export interface ShownAddendum {
+  id: string;
+  text: string;
+  writtenBy: NoteAuthor;
+  signedAt: Date;
+  enteredInError: EnteredInError | null;
+}
+
+/** A note as a reader sees it: a signed note, or the reader's own draft, with its addenda. */
+export interface ShownNote {
+  id: string;
+  kind: NoteKind;
+  status: "draft" | "signed";
+  presentingComplaint: string | null;
+  history: string | null;
+  examination: string | null;
+  plan: string | null;
+  text: string | null;
+  writtenBy: NoteAuthor;
+  createdAt: Date;
+  updatedAt: Date;
+  signedAt: Date | null;
+  enteredInError: EnteredInError | null;
+  addenda: ShownAddendum[];
+}
+
 /**
  * An encounter's notes as `reader` sees them: every signed note with its
  * addenda, and the reader's own drafts, in the order written. Not audited.
  */
-export async function notesOf(tx: AppDb, encounterId: string, reader: PatientActor) {
+export async function notesOf(tx: AppDb, encounterId: string, reader: PatientActor): Promise<ShownNote[]> {
   const rows = await tx
     .select({ note: clinicalNotes, writtenByName: user.name })
     .from(clinicalNotes)
@@ -296,7 +343,7 @@ export async function notesOf(tx: AppDb, encounterId: string, reader: PatientAct
 }
 
 /** As `notesOf`, with an audit entry: they are part of the record (rule 9). */
-export async function listNotes(tx: AppDb, facilityId: string, encounterId: string, actor: PatientActor) {
+export async function listNotes(tx: AppDb, facilityId: string, encounterId: string, actor: PatientActor): Promise<ShownNote[]> {
   const [encounter] = await tx.select({ id: encounters.id }).from(encounters).where(eq(encounters.id, encounterId)).limit(1);
   if (!encounter)
     throw new NoteError("encounter_not_found");
@@ -314,7 +361,7 @@ export async function listNotes(tx: AppDb, facilityId: string, encounterId: stri
 }
 
 /** One note as `reader` sees it, for answering a write. */
-export async function noteAsShown(tx: AppDb, noteId: string, reader: PatientActor) {
+export async function noteAsShown(tx: AppDb, noteId: string, reader: PatientActor): Promise<ShownNote | null> {
   const [note] = await tx.select({ encounterId: clinicalNotes.encounterId, addendumOf: clinicalNotes.addendumOf }).from(clinicalNotes).where(eq(clinicalNotes.id, noteId)).limit(1);
   const rootId = note.addendumOf ?? noteId;
   return (await notesOf(tx, note.encounterId, reader)).find(n => n.id === rootId) ?? null;

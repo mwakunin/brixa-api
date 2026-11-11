@@ -53,7 +53,14 @@ Every external call is an outbox row, drained by `POST /internal/outbox/drain` (
 **ICD-11**, which diagnoses are coded in, is loaded once per environment and again for each new release (`SCHEMA.md` §8, slice 3a):
 
 1. Download WHO's release file: `https://icdcdn.who.int/static/releasefiles/<release>/SimpleTabulation-ICD-11-MMS-en.zip` (2026-01 at the time of writing; WHO publishes one each January).
-2. Unzip it and load the `.txt` inside, unmodified, on the owner connection: `pnpm icd11:load SimpleTabulation-ICD-11-MMS-en.txt`. It reports the release and how many codes it loaded and retired; an older release than one already loaded is refused.
+2. Unzip it and load the `.txt` inside, unmodified, on the owner connection. From the release image, like the migrations (the image has no `tsx`, so `pnpm icd11:load` works only from a checkout with dev dependencies):
+
+   ```sh
+   docker run --rm --env-file .env.production -v "$PWD:/data:ro" <image> \
+     node ./dist/src/cli/load-icd11.js /data/SimpleTabulation-ICD-11-MMS-en.txt
+   ```
+
+   It reports the release and how many codes it loaded and retired. An older release than one already loaded is refused, and so is a file cut short (one that never reaches chapter X, which WHO prints last), since the codes missing from it would be retired.
 
 Until it has run, diagnoses cannot be recorded: the code search finds nothing. ICD-11 is © WHO 2019, licensed under CC BY-ND 3.0 IGO.
 

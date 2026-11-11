@@ -196,6 +196,9 @@ describe("allergies", () => {
     const none = await (await record({ noKnownAllergies: true })).json();
     expect(none).toMatchObject({ category: "none_known", allergen: null });
     expect((await (await record({ noKnownAllergies: true })).json()).id).toBe(none.id);
+    // Answered with the standing record, so a read of it: audited.
+    const repeated = await db.select().from(auditLog).where(and(eq(auditLog.action, "patient.viewed"), eq(auditLog.actorId, c.nurse.id)));
+    expect(repeated.map(r => r.summary)).toEqual(["Viewed allergies: no known allergies, already recorded"]);
 
     const penicillin = await record({ category: "drug", allergen: "Penicillin", reaction: "Rash", severity: "severe" }, c.pharmacist);
     expect(penicillin.status).toBe(201);

@@ -182,8 +182,14 @@ export const billDueNow = createRoute({
   responses: {
     [HttpStatusCodes.CREATED]: jsonContent(InvoiceSchema, "Billed and numbered"),
     [HttpStatusCodes.CONFLICT]: jsonContent(RefusalSchema, "Nothing to bill, or a final invoice still in draft"),
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(IdParamsSchema), "Not an encounter id"),
     ...tenantResponses,
   },
+});
+
+const DueQuerySchema = z.object({
+  /** Skip this many, for the next page. */
+  offset: z.coerce.number().int().min(0).max(100_000).default(0),
 });
 
 const DueVisitSchema = z.object({
@@ -205,12 +211,14 @@ export const listDue = createRoute({
   summary: "Visits with money due",
   description:
     "The cashier's list: every open outpatient visit or emergency attendance "
-    + "with charges not yet billed or bills not yet paid, oldest first. "
-    + "Audited, since it names patients.",
+    + "with charges not yet billed or bills not yet paid, oldest first, 200 "
+    + "at a time: pass `offset` for the next page. Audited, since it names "
+    + "patients.",
   middleware: [billersOnly] as const,
-  request: { headers: facilityHeaders },
+  request: { headers: facilityHeaders, query: DueQuerySchema },
   responses: {
     [HttpStatusCodes.OK]: jsonContent(z.object({ visits: z.array(DueVisitSchema) }), "Oldest first"),
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(DueQuerySchema), "Invalid offset"),
     ...tenantResponses,
   },
 });

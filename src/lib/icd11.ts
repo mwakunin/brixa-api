@@ -21,7 +21,17 @@ const SEARCH_LIMIT = 20;
 /** The expression `icd_codes_title_search` indexes (migration 0049); it must match exactly. */
 const titleVector = sql`to_tsvector('simple', ${icdCodes.title})`;
 
-export async function searchIcd(tx: AppDb, q: string) {
+export type IcdCode = typeof icdCodes.$inferSelect;
+
+/** A code a search finds, as a pick list shows it. */
+export interface IcdMatch {
+  code: string;
+  title: string;
+  uri: string;
+  residual: boolean;
+}
+
+export async function searchIcd(tx: AppDb, q: string): Promise<IcdMatch[]> {
   const words = q.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
   if (words.length === 0)
     return [];
@@ -47,8 +57,8 @@ export async function searchIcd(tx: AppDb, q: string) {
     .limit(SEARCH_LIMIT);
 }
 
-/** A code a diagnosis may be recorded under: a current leaf, or null. */
-export async function codableIcd(tx: AppDb, code: string) {
+/** The code as loaded, or null. Whether a diagnosis may name it (current, a leaf) is the caller's check. */
+export async function codableIcd(tx: AppDb, code: string): Promise<IcdCode | null> {
   const [found] = await tx.select().from(icdCodes).where(eq(icdCodes.code, code)).limit(1);
   return found ?? null;
 }

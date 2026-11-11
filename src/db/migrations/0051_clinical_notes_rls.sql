@@ -20,7 +20,8 @@ GRANT UPDATE ("presenting_complaint", "history", "examination", "plan", "text", 
 
 -- For every role, the owner included:
 --   * a note is written as a draft; an addendum is written signed, to a
---     signed note on the same encounter;
+--     signed note on the same encounter, never to an addendum or to a note
+--     marked entered in error;
 --   * a draft's content changes, then it is signed or discarded, once;
 --   * whose note it is, what kind, on which encounter, never changes;
 --   * a signed note is frozen: it may only be marked entered in error, once;
@@ -43,10 +44,13 @@ BEGIN
         USING ERRCODE = 'check_violation';
     END IF;
     IF NEW.kind = 'addendum' THEN
-      SELECT status, encounter_id INTO original FROM clinical_notes
-        WHERE facility_id = NEW.facility_id AND id = NEW.addendum_of;
-      IF original.status IS DISTINCT FROM 'signed' OR original.encounter_id IS DISTINCT FROM NEW.encounter_id THEN
-        RAISE EXCEPTION 'an addendum is added to a signed note, on its encounter'
+      -- Locked, so an entered-in-error mark cannot land while this is checked.
+      SELECT kind, status, encounter_id, entered_in_error_at INTO original FROM clinical_notes
+        WHERE facility_id = NEW.facility_id AND id = NEW.addendum_of
+        FOR SHARE;
+      IF original.status IS DISTINCT FROM 'signed' OR original.encounter_id IS DISTINCT FROM NEW.encounter_id
+        OR original.kind = 'addendum' OR original.entered_in_error_at IS NOT NULL THEN
+        RAISE EXCEPTION 'an addendum is added to a signed note on its encounter, not to an addendum or a note entered in error'
           USING ERRCODE = 'check_violation';
       END IF;
     END IF;
