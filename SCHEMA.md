@@ -510,7 +510,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - each visit is closed at the time the run locks it, not when the run began, so a patient called in meanwhile is never ended before being seen;
   - each visit is closed in its own transaction, so one that cannot be closed leaves the rest closed. It becomes a `job_failures` row (`visit_close`) naming the visit; a facility whose visits cannot even be listed becomes one with no subject. A later run for that facility with no failure resolves the failures recorded before it began, but not one an overlapping run recorded since.
 - **Not yet:**
-  - a visit closing itself once nothing is pending, which needs orders (4a);
+  - a visit closing itself once nothing is pending, which needs lab orders that can finish (5b);
   - a triage priority ordering the consultation queue (slice 2).
 
 **As built (P3, slice 1c): consultation fees and paying.** Decided 2026-11-10 (`ROADMAP.md` P3, `SPEC.md` §2):

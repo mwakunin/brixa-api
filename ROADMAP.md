@@ -102,7 +102,7 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
 | PR | Slice | Builds |
 |---|---|---|
 | A | 1a Practitioners | A licence (profession, number, expiry) on memberships and invitations for every clinical role; roles may span professions under the person's one licence; the admin changes a member's roles and renews licences, and sees those expiring within 30 days; clinical routes refuse a lapsed licence |
-| A | 1b Service points and queues | Service points; queue entries for triage and consultation only (the lab, pharmacy and cashier lists are derived from the work waiting); the attending clinician, derived; a nightly run closes outpatient visits still open after their day. A visit closing itself once nothing is pending waits for 4a, when "pending" (orders not done) exists |
+| A | 1b Service points and queues | Service points; queue entries for triage and consultation only (the lab, pharmacy and cashier lists are derived from the work waiting); the attending clinician, derived; a nightly run closes outpatient visits still open after their day. A visit closing itself once nothing is pending waits for 5b, when lab orders can finish |
 | A | 1c Consultation fee and paying | A fee item per clinic, charged once per visit per clinic when the patient joins its queue; the cashier's "due now" list; the cashier bills what is unbilled whenever the patient pays, on an interim invoice, or at the end on the final invoice |
 | A | 2 Triage | Vitals as observations (marked entered in error, never edited); allergies; triage priority orders the consultation queue |
 | A | 3a Diagnoses | `icd_codes`, the first shared reference table, loaded from WHO's ICD-11 release; search by name; diagnoses copy the code and title |
@@ -110,7 +110,7 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
 | B | 4a Orders and lab catalogue | Orders and their items (lab, medication, service); lab tests with analytes and reference ranges; lab and service items charged at order, the charge cancelled with an order not yet done; walk-in lab clients with an outside requester |
 | B | 4b Prescriptions | The shared `drug_catalogue` at generic level; medication items with quantities in dose units, so the units-of-sale question (`SPEC.md` §4, question 2) stays with P4; a printed `RX-` prescription with the prescriber's licence and the patient's allergies; no charge until dispensing (P4) |
 | B | 5a Specimens | The lab worklist; collection issues the daily accession number; receive, reject and recollect; a warning on any test not yet paid for, except in an emergency visit |
-| B | 5b Results | Entry per analyte; flags from the ranges; verification by another lab member; frozen with the range applied; a correction is a new version; a printed lab report |
+| B | 5b Results | Entry per analyte; flags from the ranges; verification by another lab member, recording who was told of a critical result; frozen with the range applied; a correction is a new version; a printed lab report; a visit closing itself once nothing is pending |
 | C | 6 Appointments | Book, move, cancel, check in; SMS reminders through the outbox by Africa's Talking, the code built now and its credentials configured later |
 | C | 7 Sensitive records | Marking sensitive items, and break-glass (rule 27) |
 | C | 8 Exit | The scripted journey with no manual charges and a clean reconciliation; a clinical-functions page in the certification pack |
@@ -121,7 +121,6 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
 - **From the ecc healthcare guidance:**
   - Prescribing against a recorded drug allergy is blocked unless overridden with a reason, and the override is audited.
   - Prescribing for a child needs a weight taken that day.
-  - Lab analytes carry critical limits, and verifying a critical result records who was told and when.
   - The ordering clinician gets a results-to-review list and acknowledges each result.
   - Abnormal vital signs are flagged for adults; children's thresholds depend on age and need care.
   - Sensitive billable items print under a neutral name.
@@ -130,6 +129,13 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
 - **One lab member on night duty:** a result released unverified, with a reason, and verified by the next person on duty. This changes `SCHEMA.md` §8 ("a result reaches the clinician only once verified").
 
 **Decided 2026-11-10:** diagnoses are coded in ICD-11 (`SPEC.md` §4, question 8).
+
+**Decided 2026-11-11** (product owner, for 4a; recommendations accepted):
+- **Orders.** Doctors, clinical officers and nurses order. An order's items are lab tests or services (procedure, imaging or service items); consumables wait for P4's stock. An order is routine or urgent.
+- **Done, and cancelling.** A lab test is done once its specimen is collected (5a), and a service item once a clinician marks it performed. Until then an item may be cancelled, which cancels its charge while unbilled; after that the charge stands.
+- **Walk-in lab clients** are registered as ordinary patients, on an outpatient visit that joins no queue. Records clerks and lab members enter the request: an outside requester's name and facility (the licence number if given), or a test the client asks for themselves, marked self-requested.
+- **The lab catalogue** is kept by the facility admin and the lab supervisor. Analytes are numeric (with a unit, reference ranges by sex and age, and critical limits), a choice from a list, or free text. No test menu is shipped: each facility sets up its own, and no reference range is made up for it.
+- **A visit closing itself** once nothing is pending counts money still due as pending, since the cashier's list shows open visits only. It is built in 5b, once lab orders can finish.
 
 **Still open:** whether the MOH 705 report's grouping of ICD-11 codes into MOH's condition list needs WHO's written agreement, since WHO's licence puts mappings between classifications outside it (`SCHEMA.md` §8, slice 3a); the pilot's MOH 705 and 717 forms, so P3 captures what P6 reports need (§9, question 10); whether SMS reminders need the patient's consent; drug-interaction and dose data (none in v1 without a licensed source).
 
