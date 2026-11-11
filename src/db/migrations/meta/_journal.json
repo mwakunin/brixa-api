@@ -393,6 +393,20 @@
       "when": 1794422617065,
       "tag": "0055_prescriptions_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1794424377958,
+      "tag": "0056_specimens",
+      "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1794424382647,
+      "tag": "0057_specimens_rls",
+      "breakpoints": true
     }
   ]
 }

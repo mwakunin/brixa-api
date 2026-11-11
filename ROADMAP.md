@@ -143,6 +143,13 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
 - **The prescription** is numbered from a yearly `RX-` series (`RX-2026-000001`) as it is written, with a QR code; existing facilities get the series by backfill. It is changed by cancelling it, which voids the paper, and writing a new one.
 - **A medicine** records its drug, dose and dose unit, route, a frequency from a fixed list (OD, BD, TDS, QID, nocte, PRN, STAT), a duration in days, a quantity in dose units (worked out from a regular frequency unless given) and instructions.
 
+**Decided 2026-11-11** (product owner, for 5a; recommendations accepted):
+- **A specimen** is taken for the ordered tests its collector picks on one order, by default every waiting test of one specimen type, and takes an accession number from a daily series (`L-20261111-017`).
+- **Lab members, nurses and ward nurses collect.** A specimen the lab takes is received at once; a nurse's is received by the lab.
+- **Rejection** is for a reason from a fixed list (haemolysed, clotted, insufficient, wrong container, mislabelled, leaked, too old, other with a note). Recollecting takes a new specimen with a new number; the rejected one keeps its number.
+- **Paid**, for the lab's warning, means the test's charge is on finalised bills that owe nothing. The warning shows at outpatient visits only: never at an emergency, nor for an admission, which runs its own bill.
+- **The worklist** shows tests to collect, specimens to receive and specimens in the lab, urgent first, then oldest. It is the lab's alone, and each view is audited.
+
 **Still open:** whether the MOH 705 report's grouping of ICD-11 codes into MOH's condition list needs WHO's written agreement, since WHO's licence puts mappings between classifications outside it (`SCHEMA.md` §8, slice 3a); the pilot's MOH 705 and 717 forms, so P3 captures what P6 reports need (§9, question 10); whether SMS reminders need the patient's consent; drug-interaction and dose data (none in v1 without a licensed source).
 
 ### P4 · Pharmacy and stores

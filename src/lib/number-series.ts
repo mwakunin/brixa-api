@@ -41,6 +41,12 @@ export const CLINICAL_SERIES = [
   ["prescription", "RX-"],
 ] as const satisfies readonly (readonly [SeriesKind, string])[];
 
+/**
+ * Lab specimens' accession numbers, restarting each Kenyan day
+ * (`L-20261111-017`), registered at onboarding. Migration 0057 backfills it.
+ */
+export const ACCESSION_SERIES = { kind: "lab_accession", prefix: "L-", padding: 3, resetPeriod: "daily" } as const;
+
 /** A series kind this facility has not registered: a setup error, not a user one. */
 export class SeriesNotRegisteredError extends Error {
   constructor(kind: SeriesKind) {

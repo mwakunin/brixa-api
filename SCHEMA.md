@@ -666,6 +666,19 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 - **Who:** doctors, clinical officers and nurses prescribe, under a current licence (`requireClinicalRole`), and cancel; clinical roles read prescriptions with the encounter's orders (`GET /encounters/{id}/orders`).
 - **Not yet:** dispensing, stock and the charge (P4); the controlled-drug register (P4, rule 12); drug classes and interactions (no licensed source in v1).
 
+**As built (P3, slice 5a): specimens and the lab worklist.** Decided 2026-11-11 (`ROADMAP.md` P3):
+
+- **`specimens`:** one per sample taken, for lab tests on one order, of one `specimen_type`.
+  - Its `accession_number` comes from the facility's daily `lab_accession` series (`L-20261111-017`), registered at onboarding and backfilled by migration 0057. It is unique per facility, and a rejected specimen keeps its number.
+  - `status` is `collected`, `received` or `rejected`, with who and when for each (`specimens_lifecycle`). A rejection carries a reason from a fixed list, with a note for `other`. `recollection_of` names the rejected specimen it was taken again for, at most once.
+  - The trigger `specimens_lifecycle` writes a specimen collected (or received), moves it only forward, receives it once, freezes a rejected one, and never changes what it is, whose or when it was taken; nothing is deleted.
+- **`specimen_tests`** names the order items a specimen is for, written with it and never changed. A trigger keeps them lab tests on the specimen's own order.
+- **Taking a specimen** (`POST /orders/{id}/specimens`, lab members, nurses and ward nurses, under a current licence) covers the order's waiting tests of that type, or the ones named. It locks the encounter, then the items (M8), and marks them `done`: no longer cancellable, their charges standing. Taken by a lab member, the specimen is received at once; taken by a nurse, the lab receives it (`/specimens/{id}/receive`).
+- **Rejecting** (`/specimens/{id}/reject`, lab members) and **recollecting** (`/specimens/{id}/recollect`, collectors): a new specimen, with a new number, for the same tests.
+- **The worklist** (`GET /lab/worklist`, lab members, audited as `lab.worklist_viewed`) lists tests waiting to be collected on open encounters, grouped by order and specimen type, then specimens to receive, then specimens in the lab. Each list is urgent first, then oldest, and names the patient with their number, sex and age.
+- **The unpaid warning:** a test is `unpaid` at an outpatient visit unless its charge is assigned in full to finalised bills that owe nothing (`paidCharges`, derived, rule 4). Emergencies and admissions never show it, and it never blocks taking a specimen.
+- **Not yet:** results, verification and the lab report (5b), when a specimen leaves the worklist with its results.
+
 **Clinical record.** `observations` (vitals and charted values, with `entered_in_error` instead of deletion), `diagnoses` (ICD code, provisional \| final \| secondary), `clinical_notes` (`signed_at`, `addendum_of`: a signed note is corrected only by an addendum), `orders` and `order_items` (lab, imaging, procedure, medication, service; medication items carry dose, route, frequency and duration). Every clinical act records the acting membership, whose licence details live on `memberships` (rule 25).
 
 **Inpatient.** `admissions` is 1:1 with an ipd encounter and carries the admission number. `bed_stays` holds a `tstzrange` with two `EXCLUDE` constraints: no bed holds two patients at once, and no admission is in two beds at once. A transfer ends one stay and starts the next. `medication_administrations` records each dose against its order item (given \| held \| refused \| missed). `discharge_summaries` are immutable once signed.

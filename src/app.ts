@@ -16,6 +16,7 @@ import internal from "@/routes/internal.route";
 import invitations from "@/routes/invitations/invitations.index";
 import invoices from "@/routes/invoices/invoices.index";
 import labTests from "@/routes/lab-tests/lab-tests.index";
+import lab from "@/routes/lab/lab.index";
 import localFiles from "@/routes/local-files.route";
 import me from "@/routes/me/me.index";
 import mpesa from "@/routes/mpesa/mpesa.index";
@@ -94,6 +95,7 @@ const tenantRoutes = [
   labTests,
   orders,
   prescriptions,
+  lab,
   wards,
   prices,
   charges,

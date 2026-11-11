@@ -391,6 +391,10 @@ export const auditLog = pgTable("audit_log", {
     | "prescription.issued"
     | "prescription.cancelled"
     | "prescription.allergy_overridden"
+    | "specimen.collected"
+    | "specimen.received"
+    | "specimen.rejected"
+    | "lab.worklist_viewed"
   >().notNull(),
   /** What it happened to. Not a foreign key: the log outlives what it names. */
   entityType: text().notNull(),
@@ -507,6 +511,10 @@ export const auditLog = pgTable("audit_log", {
     "prescription.issued",
     "prescription.cancelled",
     "prescription.allergy_overridden",
+    "specimen.collected",
+    "specimen.received",
+    "specimen.rejected",
+    "lab.worklist_viewed",
   ]),
 ]);
 
@@ -527,7 +535,7 @@ export const auditLog = pgTable("audit_log", {
 export const numberSeries = pgTable("number_series", {
   id: uuid().primaryKey().defaultRandom(),
   facilityId: uuid().notNull().references(() => facilities.id),
-  kind: text().$type<"outpatient" | "inpatient" | "admission" | "receipt" | "invoice" | "credit_note" | "refund" | "prescription">().notNull(),
+  kind: text().$type<"outpatient" | "inpatient" | "admission" | "receipt" | "invoice" | "credit_note" | "refund" | "prescription" | "lab_accession">().notNull(),
   /** Facility-chosen, e.g. `OP`. Applies to numbers issued from now on. */
   prefix: text().notNull(),
   /** Zero-padded width: 4 gives OP0001. A number grows past it, never truncates. */
@@ -538,7 +546,7 @@ export const numberSeries = pgTable("number_series", {
 }, t => [
   unique("number_series_facility_id_kind_key").on(t.facilityId, t.kind),
   unique("number_series_facility_id_id_key").on(t.facilityId, t.id),
-  oneOf("number_series_kind_known", t.kind, ["outpatient", "inpatient", "admission", "receipt", "invoice", "credit_note", "refund", "prescription"]),
+  oneOf("number_series_kind_known", t.kind, ["outpatient", "inpatient", "admission", "receipt", "invoice", "credit_note", "refund", "prescription", "lab_accession"]),
   oneOf("number_series_reset_period_known", t.resetPeriod, ["never", "yearly", "daily"]),
   check("number_series_prefix_shape", sql`${t.prefix} ~ '^[A-Za-z0-9/-]{1,12}$'`),
   check("number_series_padding_range", sql`${t.padding} BETWEEN 1 AND 12`),
@@ -1849,6 +1857,91 @@ export const orderItems = pgTable("order_items", {
   ),
 ]);
 
+/**
+ * A specimen taken for ordered lab tests (P3 slice 5a), with its accession
+ * number from the facility's daily `L-` series. It covers the tests its
+ * collector picked from one order, all of one specimen type, and taking it
+ * marks them done (decided 2026-11-11). Collected, then received by the lab
+ * (at once when the lab collected it), or rejected for a stated reason; a
+ * rejected specimen keeps its number, and its tests are recollected on a
+ * new one.
+ */
+export const specimens = pgTable("specimens", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  orderId: uuid().notNull(),
+  /** `L-20261111-017`. */
+  accessionNumber: text().notNull(),
+  specimenType: text().$type<"blood" | "urine" | "stool" | "sputum" | "swab" | "csf" | "body_fluid" | "other">().notNull(),
+  status: text().$type<"collected" | "received" | "rejected">().notNull(),
+  collectedAt: timestamp({ withTimezone: true }).notNull(),
+  /** Who took it (rule 25). */
+  collectedBy: uuid().notNull(),
+  receivedAt: timestamp({ withTimezone: true }),
+  receivedBy: uuid(),
+  rejectedAt: timestamp({ withTimezone: true }),
+  rejectedBy: uuid(),
+  rejectionReason: text().$type<"haemolysed" | "clotted" | "insufficient" | "wrong_container" | "mislabelled" | "leaked" | "too_old" | "other">(),
+  rejectionNote: text(),
+  /** The rejected specimen this one was taken again for. */
+  recollectionOf: uuid(),
+}, t => [
+  unique("specimens_facility_id_id_key").on(t.facilityId, t.id),
+  unique("specimens_facility_id_accession_number_key").on(t.facilityId, t.accessionNumber),
+  foreignKey({ name: "specimens_order_fk", columns: [t.facilityId, t.orderId], foreignColumns: [orders.facilityId, orders.id] }),
+  foreignKey({ name: "specimens_collected_by_fk", columns: [t.facilityId, t.collectedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "specimens_received_by_fk", columns: [t.facilityId, t.receivedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "specimens_rejected_by_fk", columns: [t.facilityId, t.rejectedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "specimens_recollection_of_fk", columns: [t.facilityId, t.recollectionOf], foreignColumns: [t.facilityId, t.id] }),
+  // Taken again once: a second recollection is of the new specimen.
+  uniqueIndex("specimens_recollected_once").on(t.recollectionOf).where(sql`${t.recollectionOf} IS NOT NULL`),
+  index("specimens_order_index").on(t.facilityId, t.orderId),
+  index("specimens_in_lab_index").on(t.facilityId, t.collectedAt).where(sql`${t.status} IN ('collected', 'received')`),
+  oneOf("specimens_specimen_type_known", t.specimenType, ["blood", "urine", "stool", "sputum", "swab", "csf", "body_fluid", "other"]),
+  oneOf("specimens_status_known", t.status, ["collected", "received", "rejected"]),
+  oneOf("specimens_rejection_reason_known", t.rejectionReason, [
+    "haemolysed",
+    "clotted",
+    "insufficient",
+    "wrong_container",
+    "mislabelled",
+    "leaked",
+    "too_old",
+    "other",
+  ]),
+  check(
+    "specimens_lifecycle",
+    sql`(${t.status} = 'collected' AND num_nonnulls(${t.receivedAt}, ${t.receivedBy}, ${t.rejectedAt}, ${t.rejectedBy}, ${t.rejectionReason}, ${t.rejectionNote}) = 0)
+      OR (${t.status} = 'received' AND ${t.receivedAt} IS NOT NULL AND ${t.receivedBy} IS NOT NULL
+          AND num_nonnulls(${t.rejectedAt}, ${t.rejectedBy}, ${t.rejectionReason}, ${t.rejectionNote}) = 0)
+      OR (${t.status} = 'rejected' AND ${t.rejectedAt} IS NOT NULL AND ${t.rejectedBy} IS NOT NULL AND ${t.rejectionReason} IS NOT NULL
+          AND (${t.receivedAt} IS NULL) = (${t.receivedBy} IS NULL))`,
+  ),
+  check(
+    "specimens_rejection_note",
+    sql`(${t.rejectionNote} IS NULL OR length(btrim(${t.rejectionNote})) > 0)
+      AND (${t.rejectionReason} IS DISTINCT FROM 'other' OR ${t.rejectionNote} IS NOT NULL)`,
+  ),
+  check(
+    "specimens_in_order",
+    sql`(${t.receivedAt} IS NULL OR ${t.receivedAt} >= ${t.collectedAt})
+      AND (${t.rejectedAt} IS NULL OR ${t.rejectedAt} >= ${t.collectedAt})`,
+  ),
+]);
+
+/** Which ordered lab tests a specimen was taken for. Written with the specimen, never changed. */
+export const specimenTests = pgTable("specimen_tests", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  specimenId: uuid().notNull(),
+  orderItemId: uuid().notNull(),
+}, t => [
+  unique("specimen_tests_specimen_item_key").on(t.specimenId, t.orderItemId),
+  foreignKey({ name: "specimen_tests_specimen_fk", columns: [t.facilityId, t.specimenId], foreignColumns: [specimens.facilityId, specimens.id] }),
+  foreignKey({ name: "specimen_tests_order_item_fk", columns: [t.facilityId, t.orderItemId], foreignColumns: [orderItems.facilityId, orderItems.id] }),
+  index("specimen_tests_order_item_index").on(t.facilityId, t.orderItemId),
+]);
+
 // ---------------------------------------------------------------------------
 // Charges (SCHEMA.md §7.2)
 // ---------------------------------------------------------------------------
@@ -2610,6 +2703,8 @@ export const TENANT_TABLES = [
   "lab_reference_ranges",
   "orders",
   "order_items",
+  "specimens",
+  "specimen_tests",
   "billable_items",
   "price_lists",
   "price_changes",

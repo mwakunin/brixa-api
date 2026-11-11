@@ -3,6 +3,7 @@ import type { SQL } from "drizzle-orm";
 
 import { sql } from "drizzle-orm";
 
+import type { ResetPeriod } from "@/lib/number-series";
 import type { Profession } from "@/lib/professions";
 import type { MembershipRole, UserRole } from "@/lib/types";
 
@@ -13,7 +14,7 @@ import { createAccount } from "@/lib/accounts";
 import { FACILITY_HEADER } from "@/lib/constants";
 import { addDays, businessDate } from "@/lib/dates";
 import { sentEmails } from "@/lib/email";
-import { CLINICAL_SERIES, FISCAL_SERIES } from "@/lib/number-series";
+import { ACCESSION_SERIES, CLINICAL_SERIES, FISCAL_SERIES, periodOf } from "@/lib/number-series";
 import { isClinicalRole } from "@/lib/practitioners";
 import { professionsOf } from "@/lib/professions";
 import { redis } from "@/lib/redis";
@@ -185,17 +186,18 @@ export async function makeFacility(overrides: {
  */
 export async function makeOnboardedFacility(overrides: { name?: string } = {}): Promise<FacilityRow> {
   const facility = await makeFacility(overrides);
-  const series: (typeof numberSeries.$inferInsert & { resetPeriod: "never" | "yearly" })[] = [
+  const series: (typeof numberSeries.$inferInsert & { resetPeriod: ResetPeriod })[] = [
     { facilityId: facility.id, kind: "outpatient", prefix: "OP", resetPeriod: "never", padding: 4 },
     { facilityId: facility.id, kind: "inpatient", prefix: "IP", resetPeriod: "never", padding: 4 },
     { facilityId: facility.id, kind: "admission", prefix: "ADM-", resetPeriod: "yearly", padding: 4 },
     ...[...FISCAL_SERIES, ...CLINICAL_SERIES].map(([kind, prefix]) => ({ facilityId: facility.id, kind, prefix, resetPeriod: "yearly" as const, padding: 6 })),
+    { facilityId: facility.id, ...ACCESSION_SERIES },
   ];
 
   await db.transaction(async (tx) => {
     for (const s of series) {
       const [row] = await tx.insert(numberSeries).values(s).returning({ id: numberSeries.id });
-      await tx.insert(numberSeriesCounters).values({ facilityId: facility.id, seriesId: row.id, periodKey: s.resetPeriod === "yearly" ? businessDate().slice(0, 4) : "all" });
+      await tx.insert(numberSeriesCounters).values({ facilityId: facility.id, seriesId: row.id, periodKey: periodOf(s.resetPeriod, new Date()).key });
     }
     await tx.insert(priceLists).values({ facilityId: facility.id, name: "Cash", kind: "cash" });
   });
