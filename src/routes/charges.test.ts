@@ -226,6 +226,120 @@ describe("bed-days", () => {
     expect(await nights(second)).toEqual([[TODAY, 600_000]]);
   });
 
+  describe("the nightly run", () => {
+    /** Runs `fn` while the database refuses `encounterId`'s charges, as a stand-in for any failure. */
+    async function refusingChargesFor<T>(encounterId: string, fn: () => Promise<T>): Promise<T> {
+      await pool.query(`CREATE FUNCTION test_refuse_charge() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN IF NEW.encounter_id = '${encounterId}' THEN RAISE EXCEPTION 'refused for the test'; END IF; RETURN NEW; END $$`);
+      await pool.query("CREATE TRIGGER test_refuse_charge BEFORE INSERT ON charges FOR EACH ROW EXECUTE FUNCTION test_refuse_charge()");
+      try {
+        return await fn();
+      }
+      finally {
+        await pool.query("DROP TRIGGER test_refuse_charge ON charges");
+        await pool.query("DROP FUNCTION test_refuse_charge()");
+      }
+    }
+
+    const failures = async () => (await pool.query<{ subject_id: string | null; error: string; failed_at: Date; resolved_at: Date | null }>(
+      "SELECT subject_id, error, failed_at, resolved_at FROM job_failures WHERE job = 'bed_day_accrual' ORDER BY error",
+    )).rows;
+
+    it("charges each admission on its own, so one that fails leaves the rest charged and is named", async () => {
+      const broken = await admitted(h.beds.general);
+      const fine = await admitted(h.beds.private);
+
+      const tally = await refusingChargesFor(broken, () => accrueAllBedDays(at(1, 1)));
+
+      expect(tally).toMatchObject({ facilities: 1, charged: 1, failed: 1 });
+      expect(await nights(broken)).toEqual([]);
+      expect(await nights(fine)).toEqual([[TODAY, 600_000]]);
+      expect(await failures()).toMatchObject([{ subject_id: broken, resolved_at: null }]);
+
+      // The next clean run charges it and resolves the failure.
+      expect(await accrueAllBedDays(at(1, 1))).toMatchObject({ charged: 1, failed: 0 });
+      expect(await nights(broken)).toEqual([[TODAY, 250_000]]);
+      expect((await failures())[0].resolved_at).not.toBeNull();
+    });
+
+    it("resolves a facility's earlier failure once a later run succeeds, not one recorded since", async () => {
+      await pool.query(
+        `INSERT INTO job_failures (facility_id, job, error, failed_at) VALUES
+           ($1, 'bed_day_accrual', 'earlier', now() - interval '1 day'),
+           ($1, 'bed_day_accrual', 'overlapping', now() + interval '1 hour')`,
+        [h.facility.id],
+      );
+
+      expect(await accrueAllBedDays()).toMatchObject({ failed: 0 });
+
+      const rows = await failures();
+      expect(rows.map(r => [r.error, r.resolved_at !== null])).toEqual([["earlier", true], ["overlapping", false]]);
+    });
+
+    it("leaves a night it cannot price open through a clean run", async () => {
+      const encounterId = await admitted(h.beds.unrated);
+      await accrueAllBedDays(at(1, 1));
+      await pool.query("UPDATE job_failures SET failed_at = now() - interval '1 day'");
+
+      expect(await accrueAllBedDays(at(1, 1))).toMatchObject({ missing: 1, failed: 0 });
+
+      expect(await failures()).toMatchObject([{ subject_id: encounterId, error: "Ward Unrated has no bed-day item", resolved_at: null }]);
+    });
+
+    it("keeps a failure met again open with the time it was met, so a clean run that began before leaves it", async () => {
+      const broken = await admitted();
+      let metAgainFrom: Date;
+      await refusingChargesFor(broken, async () => {
+        await accrueAllBedDays(at(1, 1));
+        // As if first met long ago; an overlapping run now meets it again.
+        await pool.query("UPDATE job_failures SET failed_at = now() - interval '1 day'");
+        metAgainFrom = (await pool.query<{ t: Date }>("SELECT now() AS t")).rows[0].t;
+        expect(await accrueAllBedDays(at(1, 1))).toMatchObject({ charged: 0, failed: 1 });
+      });
+
+      const rows = await failures();
+      expect(rows).toHaveLength(1);
+      expect(rows[0].resolved_at).toBeNull();
+      // A clean run resolves only failures met before it began: this one now counts as met just now.
+      expect(rows[0].failed_at.getTime()).toBeGreaterThanOrEqual(metAgainFrom!.getTime());
+    });
+
+    it("never moves a failure met again back in time", async () => {
+      const broken = await admitted();
+      await refusingChargesFor(broken, async () => {
+        await accrueAllBedDays(at(1, 1));
+        // As if an overlapping run met it later and wrote first; this run's write lands after.
+        await pool.query("UPDATE job_failures SET failed_at = now() + interval '1 hour'");
+        await accrueAllBedDays(at(1, 1));
+      });
+
+      const { rows } = await pool.query("SELECT failed_at > now() + interval '30 minutes' AS later, resolved_at IS NULL AS open FROM job_failures");
+      expect(rows).toEqual([{ later: true, open: true }]);
+    });
+
+    it("carries on to the next facility when one facility's failures cannot be resolved", async () => {
+      const other = await hospital();
+      const stays = [await admitted()];
+      const { encounterId } = await runAsFacility(other.facility.id, async t =>
+        admitPatient(t, other.facility.id, { patientId: await other.patient(), bedId: other.beds.general }, other.nurse.actor, at(0, 10)));
+      stays.push(encounterId);
+      await pool.query("INSERT INTO job_failures (facility_id, job, error, failed_at) SELECT id, 'bed_day_accrual', 'earlier', now() - interval '1 day' FROM facilities");
+      // Resolving touches job_failures with an UPDATE; refuse every one.
+      await pool.query(`CREATE FUNCTION test_refuse_resolve() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'refused for the test'; END $$`);
+      await pool.query("CREATE TRIGGER test_refuse_resolve BEFORE UPDATE ON job_failures FOR EACH ROW EXECUTE FUNCTION test_refuse_resolve()");
+      try {
+        expect(await accrueAllBedDays(at(1, 1))).toMatchObject({ facilities: 2, charged: 2, failed: 2 });
+      }
+      finally {
+        await pool.query("DROP TRIGGER test_refuse_resolve ON job_failures");
+        await pool.query("DROP FUNCTION test_refuse_resolve()");
+      }
+      for (const stay of stays)
+        expect(await nights(stay)).toHaveLength(1);
+    });
+  });
+
   it("are charged only from a bed-day item", async () => {
     const res = await call("PATCH", `/wards/${(await (await call("GET", "/wards", h.facility.id, h.admin)).json()).wards[0].id}`, h.facility.id, h.admin, {
       bedDayItemId: h.items.consultation,
