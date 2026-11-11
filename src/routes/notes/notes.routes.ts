@@ -128,9 +128,12 @@ export const discardDraft = createRoute({
   tags,
   method: "post",
   path: "/notes/{id}/discard",
-  summary: "Discard a draft",
-  description: "It stays on the record, discarded, and is no longer shown.",
-  middleware: [noteStaff] as const,
+  summary: "Discard your draft",
+  description:
+    "It stays on the record, discarded, and is no longer shown. Your own "
+    + "draft only. It needs no clinical role or current licence, since "
+    + "discarding is not a clinical act, so a draft whose author's licence "
+    + "has lapsed can still be cleared.",
   request: { headers: facilityHeaders, params: IdParamsSchema },
   responses: {
     [HttpStatusCodes.OK]: jsonContent(z.object({ id: z.uuid(), status: z.literal("discarded") }), "Discarded"),

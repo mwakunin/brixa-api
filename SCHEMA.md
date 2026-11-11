@@ -608,7 +608,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - a draft may be discarded, which keeps it on the record, unshown, and never deletes it;
   - a draft is started only on an open encounter, and may be signed after the visit closes, for notes finished the next morning.
 - **Corrections are addenda**, written signed by any note-writing clinician and shown under the note. An addendum is never added to another addendum.
-- **The author saves and signs a draft only while still holding a role that writes its kind** (a nurse moved to the wards no longer signs a consultation note); discarding it needs no such role.
+- **The author saves and signs a draft only while still holding a role that writes its kind** (a nurse moved to the wards no longer signs a consultation note). Discarding needs neither a clinical role nor a current licence, since it is not a clinical act: an author whose licence lapsed, or whose roles changed, can still clear a draft that would keep a visit from being cancelled. Any note that is not one of the actor's own drafts is answered as not found. A facility admin discarding someone else's draft waits for memberships that can end.
 - **A signed note written on the wrong patient's record is marked entered in error**, with a reason, and stays on the record; it then takes no addendum. An addendum may be marked too (one added to the wrong patient's note), and is shown marked under its note.
 - **The trigger `clinical_notes_lifecycle`** holds all of this for every role:
   - drafts are written as drafts, and addenda signed, to a signed note on the same encounter that is neither an addendum nor marked entered in error (locked while checked);

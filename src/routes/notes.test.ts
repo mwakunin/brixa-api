@@ -165,6 +165,33 @@ describe("clinical notes", () => {
     expect((await at(c, nurse, "POST", `/notes/${dropped.id}/discard`)).status).toBe(200);
   });
 
+  it("let an author discard their own draft after their licence lapses or their roles change, and nobody else", async () => {
+    const c = await clinic();
+    const visit = await c.visit();
+    const lapsed = await c.person(["doctor"]);
+    const moved = await c.person(["clinical_officer"]);
+    const lapsedDraft = await start(c, lapsed, visit.id);
+    const movedDraft = await start(c, moved, visit.id);
+    const signed = await start(c, c.officer, visit.id);
+    await at(c, c.officer, "POST", `/notes/${signed.id}/sign`);
+    await pool.query("UPDATE memberships SET licence_expires_on = current_date - 2 WHERE id = $1", [lapsed.actor.membershipId]);
+    await pool.query(
+      "UPDATE memberships SET roles = ARRAY['cashier'], licence_profession = NULL, licence_number = NULL, licence_expires_on = NULL WHERE id = $1",
+      [moved.actor.membershipId],
+    );
+    const discard = (who: Person, id: string) => at(c, who, "POST", `/notes/${id}/discard`);
+
+    // Someone else's draft, or a signed note, is not theirs to discard: as if it did not exist.
+    expect((await discard(c.cashier, lapsedDraft.id)).status).toBe(404);
+    expect((await discard(moved, signed.id)).status).toBe(404);
+
+    expect((await discard(lapsed, lapsedDraft.id)).status).toBe(200);
+    expect((await discard(moved, movedDraft.id)).status).toBe(200);
+    // With the drafts gone and the signed note marked, the visit opened in error can be cancelled.
+    await at(c, c.officer, "POST", `/notes/${signed.id}/entered-in-error`, { reason: "Wrong patient" });
+    expect((await at(c, c.clerk, "POST", `/encounters/${visit.id}/cancel`, { reason: "Wrong patient" })).status).toBe(200);
+  });
+
   it("are hidden from another facility's staff", async () => {
     const c = await clinic();
     const visit = await c.visit();

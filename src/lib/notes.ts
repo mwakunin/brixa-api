@@ -189,8 +189,18 @@ export async function signNote(tx: AppDb, facilityId: string, noteId: string, ac
   return signed;
 }
 
-/** Discards a draft. It stays on the record, discarded, and is no longer shown. */
+/**
+ * Discards the actor's own draft. It stays on the record, discarded, and is
+ * no longer shown. Not a clinical act, so it needs no clinical role or
+ * current licence: an author whose licence has lapsed, or whose roles have
+ * changed, can still clear a draft that would keep a visit from being
+ * cancelled. Any note that is not one of the actor's own is answered as not
+ * found, so a member without clinical roles learns nothing about other notes.
+ */
 export async function discardDraft(tx: AppDb, facilityId: string, noteId: string, actor: PatientActor, now = new Date()): Promise<NoteRow> {
+  const [found] = await tx.select({ writtenBy: clinicalNotes.writtenBy }).from(clinicalNotes).where(eq(clinicalNotes.id, noteId)).limit(1);
+  if (!found || found.writtenBy !== actor.membershipId)
+    throw new NoteError("not_found");
   const current = await lockNote(tx, noteId, actor);
   if (current.status !== "draft")
     throw new NoteError("not_a_draft");
