@@ -127,6 +127,14 @@ describe("a visit's queue", () => {
     expect((await c.visit({ queueAt: b })).queue).toMatchObject({ servicePointName: "Triage B" });
   });
 
+  it("answers a queue that does not exist as a mistake in queueAt, not a missing page", async () => {
+    const c = await clinic();
+    const res = await post(c, "/encounters", c.clerk, { patientId: await c.patient(), kind: "opd", queueAt: "00000000-0000-4000-8000-000000000000" });
+
+    expect(res.status).toBe(422);
+    expect((await res.json()).error.issues[0]).toMatchObject({ path: ["queueAt"] });
+  });
+
   it("takes the patient from triage to a clinic, and names the clinician who saw them", async () => {
     const c = await clinic();
     const triage = await c.point("Triage", "triage");

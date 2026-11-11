@@ -528,7 +528,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - A patient billed at the end gets the final invoice as in P2.
   - Credit paid towards the visit is applied as the invoice is finalised, as in P2.
 - **The cashier's list** (`GET /cashier/due`, billers) shows every open outpatient visit or emergency attendance with money due, oldest first, 200 at a time (`offset` for the next page).
-  - What is due is the charges no live invoice asks for, plus what its finalised patient bills still owe.
+  - What is due is the charges no live invoice asks for, what its patient bills still in draft ask for (`draftedCents`: a draft left unfinalised keeps the visit listed), and what its finalised patient bills still owe.
   - It is derived (rule 4) and audited as `billing.due_listed`.
   - Admissions keep their own running bill and are not listed.
 - **Not yet:** the lab's warning on a test not yet paid for (5a).

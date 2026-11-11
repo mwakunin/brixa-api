@@ -97,6 +97,14 @@ describe("vital signs", () => {
     expect(await firstIssuePath(typo)).toEqual(["readings", 0, "value"]);
     expect((await record({ readings: [{ code: "bp_systolic", value: 120 }] })).status).toBe(422);
     expect((await record({ readings: [{ code: "pulse", value: 80 }, { code: "pulse", value: 82 }] })).status).toBe(422);
+    // Systolic and diastolic swapped: each in range, the pair impossible.
+    const swapped = await record({ readings: [{ code: "bp_systolic", value: 40 }, { code: "bp_diastolic", value: 200 }] });
+    expect(swapped.status).toBe(422);
+    expect(await firstIssuePath(swapped)).toEqual(["readings"]);
+    // More precise than is stored (two decimals) would be rounded: refused, not changed.
+    const fine = await record({ readings: [{ code: "temperature", value: 37.205 }] });
+    expect(await firstIssuePath(fine)).toEqual(["readings", 0, "value"]);
+    expect((await record({ readings: [{ code: "temperature", value: 37.25 }] })).status).toBe(201);
 
     const future = await record({ readings: [{ code: "pulse", value: 80 }], observedAt: new Date(Date.now() + 3_600_000).toISOString() });
     expect(future.status).toBe(422);
@@ -202,6 +210,9 @@ describe("allergies", () => {
 
     const penicillin = await record({ category: "drug", allergen: "Penicillin", reaction: "Rash", severity: "severe" }, c.pharmacist);
     expect(penicillin.status).toBe(201);
+    // Ending "no known allergies" is a removal too, audited as one.
+    const ended = await db.select().from(auditLog).where(and(eq(auditLog.action, "allergy.removed"), eq(auditLog.entityId, patient)));
+    expect(ended).toEqual([expect.objectContaining({ actorId: c.pharmacist.id, detail: expect.objectContaining({ allergyId: none.id, category: "none_known", reason: "no_longer_applies" }) })]);
     expect(await list()).toEqual([expect.objectContaining({ category: "drug", allergen: "Penicillin", reaction: "Rash", severity: "severe" })]);
     expect(await list("?includeEnded=true")).toContainEqual(expect.objectContaining({ id: none.id, removalReason: "no_longer_applies" }));
 

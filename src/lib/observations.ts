@@ -38,7 +38,7 @@ export class ObservationError extends Error {
       encounter_not_found: "No such encounter",
       not_open: "Vital signs are recorded on an open encounter",
       implausible: "A reading is outside what a real one can be; check it was typed right",
-      blood_pressure_pair: "Blood pressure needs both the systolic and the diastolic reading",
+      blood_pressure_pair: "Blood pressure needs both the systolic and the diastolic reading, the systolic the higher",
       observed_out_of_range: "The time taken must fall within the encounter, and not in the future",
       not_found: "No such reading",
       already_in_error: "This reading is already marked entered in error",
@@ -94,7 +94,9 @@ export async function recordVitals(
   if (!input.readings.every(plausible))
     throw new ObservationError("implausible");
   const codes = new Set(input.readings.map(r => r.code));
-  if (codes.has("bp_systolic") !== codes.has("bp_diastolic"))
+  const systolic = input.readings.find(r => r.code === "bp_systolic")?.value;
+  const diastolic = input.readings.find(r => r.code === "bp_diastolic")?.value;
+  if ((systolic === undefined) !== (diastolic === undefined) || (systolic !== undefined && diastolic !== undefined && systolic <= diastolic))
     throw new ObservationError("blood_pressure_pair");
   const observedAt = input.observedAt ?? now;
   if (observedAt > now || observedAt < encounter.startedAt)

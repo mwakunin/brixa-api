@@ -55,6 +55,7 @@ async function due() {
   return (await (await call("GET", "/cashier/due", h.facility.id, h.cashier)).json()).visits as {
     encounterId: string;
     unbilledCents: number;
+    draftedCents: number;
     owedCents: number;
     dueCents: number;
   }[];
@@ -174,6 +175,14 @@ describe("the cashier collecting what is due", () => {
 
     expect(after).toMatchObject({ kind: "supplementary", totalCents: 500 });
     expect(await due()).toEqual([expect.objectContaining({ encounterId: visit.id, unbilledCents: 0, owedCents: 50_500 })]);
+  });
+
+  it("keeps a visit on the list while its bill is drafted but not finalised", async () => {
+    const visit = await visitAt(await clinic());
+    const draft = await (await call("POST", `/encounters/${visit.id}/invoices`, h.facility.id, h.clerk, { kind: "final" })).json();
+    expect(draft).toMatchObject({ status: "draft", totalCents: 50_000 });
+
+    expect(await due()).toEqual([expect.objectContaining({ encounterId: visit.id, unbilledCents: 0, draftedCents: 50_000, owedCents: 0, dueCents: 50_000 })]);
   });
 
   it("lists only open outpatient visits, for billers, audited", async () => {

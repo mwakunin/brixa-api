@@ -42,7 +42,8 @@ async function lockPatient(tx: AppDb, patientId: string) {
 const standing = (patientId: string) => and(eq(patientAllergies.patientId, patientId), isNull(patientAllergies.removedAt));
 
 /**
- * Records an allergy, which ends a standing "no known allergies".
+ * Records an allergy, which ends a standing "no known allergies", audited as
+ * a removal of it.
  */
 export async function recordAllergy(
   tx: AppDb,
@@ -54,9 +55,21 @@ export async function recordAllergy(
 ): Promise<AllergyRow> {
   await lockPatient(tx, patientId);
 
-  await tx.update(patientAllergies)
+  const ended = await tx.update(patientAllergies)
     .set({ removedAt: now, removedBy: actor.membershipId, removalReason: "no_longer_applies" })
-    .where(and(standing(patientId), eq(patientAllergies.category, "none_known")));
+    .where(and(standing(patientId), eq(patientAllergies.category, "none_known")))
+    .returning({ id: patientAllergies.id });
+  for (const { id } of ended) {
+    await recordAudit(tx, {
+      facilityId,
+      actorId: actor.userId,
+      action: "allergy.removed",
+      entityType: "patient",
+      entityId: patientId,
+      summary: "Ended \"no known allergies\": an allergy was recorded",
+      detail: { allergyId: id, category: "none_known", reason: "no_longer_applies" },
+    });
+  }
 
   const [allergy] = await tx.insert(patientAllergies).values({
     facilityId,

@@ -36,10 +36,19 @@ const ReadingSchema = z.object({
       message: `${range.label} must be between ${range.min} and ${range.max} ${range.unit}; check it was typed right`,
     });
   }
+  // Stored to two decimals (numeric(7, 2)): finer would be rounded, so the record would differ from the reading.
+  if (Math.round(reading.value * 100) / 100 !== reading.value)
+    ctx.addIssue({ code: "custom", path: ["value"], message: `${range.label} takes at most two decimal places` });
 });
 
+function systolicAboveDiastolic(rs: { code: string; value: number }[]) {
+  const systolic = rs.find(r => r.code === "bp_systolic")?.value;
+  const diastolic = rs.find(r => r.code === "bp_diastolic")?.value;
+  return systolic === undefined || diastolic === undefined || systolic > diastolic;
+}
+
 const RecordBodySchema = z.object({
-  readings: z.array(ReadingSchema).min(1).max(VITAL_SIGN_CODES.length).refine(rs => new Set(rs.map(r => r.code)).size === rs.length, "Give each sign once").refine(rs => rs.some(r => r.code === "bp_systolic") === rs.some(r => r.code === "bp_diastolic"), "Blood pressure needs both readings"),
+  readings: z.array(ReadingSchema).min(1).max(VITAL_SIGN_CODES.length).refine(rs => new Set(rs.map(r => r.code)).size === rs.length, "Give each sign once").refine(rs => rs.some(r => r.code === "bp_systolic") === rs.some(r => r.code === "bp_diastolic"), "Blood pressure needs both readings").refine(systolicAboveDiastolic, "The systolic reading must be above the diastolic; check they were not swapped"),
   /** When they were taken, if not just now: within the encounter, never in the future. */
   observedAt: z.iso.datetime({ offset: true }).optional(),
 });

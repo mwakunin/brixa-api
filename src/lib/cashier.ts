@@ -10,7 +10,9 @@ import { recordAudit } from "./audit";
  * The cashier's "due now" list (ROADMAP.md P3, slice 1c): every open
  * outpatient visit or emergency attendance with money to collect from the
  * patient. That is the charges no live invoice asks for yet (`unbilled`),
- * plus what its finalised patient bills still owe (`owed`).
+ * what its patient bills still in draft ask for (`drafted`: finalise one to
+ * take payment against it), and what its finalised patient bills still owe
+ * (`owed`).
  *
  * Patients may pay at each point or once at the end, side by side, so the
  * list does not ask which: whatever is due is due. Derived, never stored
@@ -29,6 +31,7 @@ export interface DueVisit {
   startedAt: Date;
   patient: { id: string; name: string; opNumber: string | null };
   unbilledCents: number;
+  draftedCents: number;
   owedCents: number;
   dueCents: number;
 }
@@ -43,6 +46,7 @@ interface DueRow extends Record<string, unknown> {
   family_name: string;
   op_number: string | null;
   unbilled_cents: string;
+  drafted_cents: string;
   owed_cents: string;
 }
 
@@ -68,6 +72,14 @@ export async function dueNow(tx: AppDb, facilityId: string, actor: PatientActor,
       WHERE c.cancelled_at IS NULL AND c.encounter_id IN (SELECT id FROM visits)
       GROUP BY c.encounter_id
     ),
+    drafted AS (
+      SELECT i.encounter_id, sum(il.amount_cents) AS cents
+      FROM invoice_lines il
+      JOIN invoices i ON i.id = il.invoice_id
+      JOIN accounts ac ON ac.id = i.account_id AND ac.kind = 'patient'
+      WHERE i.status = 'draft' AND i.encounter_id IN (SELECT id FROM visits)
+      GROUP BY i.encounter_id
+    ),
     owed AS (
       SELECT i.encounter_id, sum(
         i.total_cents
@@ -83,13 +95,14 @@ export async function dueNow(tx: AppDb, facilityId: string, actor: PatientActor,
     )
     SELECT v.id AS encounter_id, v.kind, v.started_at,
       p.id AS patient_id, p.given_name, p.middle_names, p.family_name, pn.number AS op_number,
-      coalesce(u.cents, 0) AS unbilled_cents, coalesce(o.cents, 0) AS owed_cents
+      coalesce(u.cents, 0) AS unbilled_cents, coalesce(d.cents, 0) AS drafted_cents, coalesce(o.cents, 0) AS owed_cents
     FROM visits v
     JOIN patients p ON p.id = v.patient_id
     LEFT JOIN patient_numbers pn ON pn.patient_id = p.id AND pn.kind = 'outpatient'
     LEFT JOIN unbilled u ON u.encounter_id = v.id
+    LEFT JOIN drafted d ON d.encounter_id = v.id
     LEFT JOIN owed o ON o.encounter_id = v.id
-    WHERE coalesce(u.cents, 0) > 0 OR coalesce(o.cents, 0) > 0
+    WHERE coalesce(u.cents, 0) > 0 OR coalesce(d.cents, 0) > 0 OR coalesce(o.cents, 0) > 0
     ORDER BY v.started_at, v.id
     LIMIT ${DUE_LIMIT} OFFSET ${offset}
   `);
@@ -105,6 +118,7 @@ export async function dueNow(tx: AppDb, facilityId: string, actor: PatientActor,
 
   return rows.map((r) => {
     const unbilledCents = Number(r.unbilled_cents);
+    const draftedCents = Number(r.drafted_cents);
     const owedCents = Number(r.owed_cents);
     return {
       encounterId: r.encounter_id,
@@ -116,8 +130,9 @@ export async function dueNow(tx: AppDb, facilityId: string, actor: PatientActor,
         opNumber: r.op_number,
       },
       unbilledCents,
+      draftedCents,
       owedCents,
-      dueCents: unbilledCents + owedCents,
+      dueCents: unbilledCents + draftedCents + owedCents,
     };
   });
 }

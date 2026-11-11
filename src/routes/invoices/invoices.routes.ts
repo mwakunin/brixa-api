@@ -199,6 +199,8 @@ const DueVisitSchema = z.object({
   patient: z.object({ id: z.uuid(), name: z.string(), opNumber: z.string().nullable() }),
   /** Charges no live invoice asks for yet. */
   unbilledCents: z.number().int(),
+  /** What the visit's patient bills still in draft ask for: finalise one to take payment. */
+  draftedCents: z.number().int(),
   /** What the visit's finalised bills still owe. */
   owedCents: z.number().int(),
   dueCents: z.number().int(),
