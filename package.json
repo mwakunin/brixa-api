@@ -19,7 +19,9 @@
     "db:migrate:test": "cross-env NODE_ENV=test drizzle-kit migrate",
     "db:migrate:deploy": "node ./dist/src/db/migrate.js",
     "superadmin:create": "tsx src/cli/create-superadmin.ts",
-    "outbox:drain": "tsx src/cli/drain-outbox.ts"
+    "outbox:drain": "tsx src/cli/drain-outbox.ts",
+    "icd11:load": "tsx src/cli/load-icd11.ts",
+    "icd11:load:deploy": "node ./dist/src/cli/load-icd11.js"
   },
   "dependencies": {
     "@google-cloud/storage": "^8.4.0",

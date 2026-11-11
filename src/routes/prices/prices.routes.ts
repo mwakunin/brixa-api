@@ -90,6 +90,8 @@ export const createItem = createRoute({
   },
 });
 
+const ListQuerySchema = z.object({ status: z.enum(STATUSES).optional() });
+
 export const listChanges = createRoute({
   tags,
   method: "get",
@@ -97,9 +99,10 @@ export const listChanges = createRoute({
   summary: "Price change requests, newest first",
   description: "At most 100. Pending requests are few in practice; approve or reject them from here.",
   middleware: [keepersOnly] as const,
-  request: { headers: facilityHeaders, query: z.object({ status: z.enum(STATUSES).optional() }) },
+  request: { headers: facilityHeaders, query: ListQuerySchema },
   responses: {
     [HttpStatusCodes.OK]: jsonContent(z.object({ changes: z.array(ChangeSchema) }), "Changes"),
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(ListQuerySchema), "No such status"),
     ...tenantResponses,
   },
 });

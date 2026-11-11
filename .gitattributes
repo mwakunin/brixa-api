@@ -1,0 +1,3 @@
+# WHO's ICD-11 rows, copied byte for byte: the loader is tested against their
+# CRLF record ends and the bare line feeds inside a field, so git never converts them.
+src/test/fixtures/icd11-mms-sample.txt -text

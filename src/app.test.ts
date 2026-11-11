@@ -61,3 +61,24 @@ describe("every response", () => {
     expectHardened(res);
   });
 });
+
+describe("the API description", () => {
+  interface Operation {
+    parameters?: { in: string; name: string }[];
+    requestBody?: unknown;
+    responses: Record<string, unknown>;
+  }
+
+  // Stoker's defaultHook answers any input that fails its schema with a 422,
+  // so a route that takes input and does not say so misleads its clients.
+  it("declares the 422 of every route that validates a path, query or body", async () => {
+    const doc = await (await app.request("/doc")).json() as { paths: Record<string, Record<string, Operation>> };
+
+    const undeclared = Object.entries(doc.paths).flatMap(([path, operations]) =>
+      Object.entries(operations)
+        .filter(([, op]) => (op.requestBody || op.parameters?.some(p => p.in === "path" || p.in === "query")) && !op.responses["422"])
+        .map(([method]) => `${method.toUpperCase()} ${path}`));
+
+    expect(undeclared).toEqual([]);
+  });
+});

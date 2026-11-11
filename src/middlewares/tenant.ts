@@ -52,6 +52,7 @@ async function loadAccess(tx: AppDb, facilityId: string, userId: string) {
       id: memberships.id,
       facilityId: memberships.facilityId,
       roles: memberships.roles,
+      licenceExpiresOn: memberships.licenceExpiresOn,
     })
     .from(memberships)
     .where(and(

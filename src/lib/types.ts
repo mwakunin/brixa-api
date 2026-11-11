@@ -33,6 +33,8 @@ export interface Membership {
   facilityId: string;
   /** Every role this person holds here; a doctor may also be the admin. */
   roles: MembershipRole[];
+  /** The last day their practising licence is valid; null without a clinical role. */
+  licenceExpiresOn: string | null;
 }
 
 export interface AppBindings {

@@ -9,10 +9,14 @@ import { facilities, invitations, memberships, user } from "@/db/schema";
 import { runAsFacility } from "@/db/tenant-transaction";
 import env from "@/env";
 
+import type { LicenceInput } from "./practitioners";
+
 import { claimAccount, discardAccount } from "./accounts";
 import { recordAudit } from "./audit";
+import { businessDate } from "./dates";
 import { sendEmail } from "./email";
 import { enqueue } from "./outbox";
+import { licenceFor } from "./practitioners";
 
 /**
  * Invitations: how every staff account comes to exist (SPEC.md §2).
@@ -67,6 +71,10 @@ export function invitationToken(invitationId: string) {
  * Takes the caller's transaction: the facility admin's tenant transaction, or
  * the superadmin's onboarding transaction. Either way the invitation, the
  * email it needs and the audit entry commit together.
+ *
+ * A clinical role needs the person's practising licence, which the membership
+ * takes on when the invitation is accepted (`licenceFor` says which roles
+ * need one, and refuses a licence that has already lapsed).
  */
 export async function createInvitation(
   tx: AppDb,
@@ -75,12 +83,14 @@ export async function createInvitation(
     email: string;
     name: string;
     roles: MembershipRole[];
+    licence?: LicenceInput | null;
     invitedBy: string;
     now?: Date;
   },
-) {
+): Promise<typeof invitations.$inferSelect> {
   const now = input.now ?? new Date();
   const email = input.email.trim().toLowerCase();
+  const licence = licenceFor(input.roles, input.licence, businessDate(now));
 
   const [member] = await tx
     .select({ id: memberships.id })
@@ -135,6 +145,9 @@ export async function createInvitation(
       email,
       name: input.name.trim(),
       roles: input.roles,
+      licenceProfession: licence?.profession ?? null,
+      licenceNumber: licence?.number ?? null,
+      licenceExpiresOn: licence?.expiresOn ?? null,
       invitedBy: input.invitedBy,
       expiresAt: new Date(now.getTime() + INVITATION_TTL_DAYS * 24 * 60 * 60 * 1000),
     })
@@ -148,7 +161,7 @@ export async function createInvitation(
     entityType: "invitation",
     entityId: invitation.id,
     summary: `Invited ${email} as ${input.roles.join(", ")}`,
-    detail: { roles: input.roles },
+    detail: { roles: input.roles, licence },
   });
 
   return invitation;
@@ -293,17 +306,35 @@ async function acceptLocked(
   if (account.created)
     onAccountCreated(account.userId);
 
-  // An active membership keeps its roles and gains these; a former one
-  // (inactive) comes back with exactly what this invitation offers.
+  // An active membership keeps its roles and gains these, and keeps its
+  // licence unless this invitation brings one; a former one (inactive) comes
+  // back with exactly what this invitation offers. A licence still comes
+  // with a clinical role either way, as the membership CHECK requires.
   const [membership] = await tx
     .insert(memberships)
-    .values({ facilityId: invitation.facilityId, userId: account.userId, roles: invitation.roles })
+    .values({
+      facilityId: invitation.facilityId,
+      userId: account.userId,
+      roles: invitation.roles,
+      licenceProfession: invitation.licenceProfession,
+      licenceNumber: invitation.licenceNumber,
+      licenceExpiresOn: invitation.licenceExpiresOn,
+    })
     .onConflictDoUpdate({
       target: [memberships.userId, memberships.facilityId],
       set: {
         roles: sql`CASE WHEN ${memberships.isActive}
           THEN ARRAY(SELECT DISTINCT r FROM unnest(${memberships.roles} || excluded.roles) AS r ORDER BY r)
           ELSE excluded.roles END`,
+        licenceProfession: sql`CASE WHEN ${memberships.isActive}
+          THEN coalesce(excluded.licence_profession, ${memberships.licenceProfession})
+          ELSE excluded.licence_profession END`,
+        licenceNumber: sql`CASE WHEN ${memberships.isActive}
+          THEN coalesce(excluded.licence_number, ${memberships.licenceNumber})
+          ELSE excluded.licence_number END`,
+        licenceExpiresOn: sql`CASE WHEN ${memberships.isActive}
+          THEN coalesce(excluded.licence_expires_on, ${memberships.licenceExpiresOn})
+          ELSE excluded.licence_expires_on END`,
         isActive: true,
         updatedAt: now,
       },

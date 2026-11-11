@@ -8,6 +8,8 @@ import type { PatientActor } from "@/lib/patients";
 import type { TenantBindings, TenantRouteHandler } from "@/lib/types";
 
 import * as encounters from "@/lib/encounters";
+import { QueueError } from "@/lib/queues";
+import { queueRefusal } from "@/routes/queues/queues.handlers";
 
 import type {
   AdmitPatientRoute,
@@ -38,6 +40,8 @@ function encounterJson(e: EncounterDetail) {
     endedAt: iso(e.endedAt),
     cancelReason: e.cancelReason,
     parentEncounterId: e.parentEncounterId,
+    queue: e.queue && { ...e.queue, joinedAt: e.queue.joinedAt.toISOString(), servingAt: iso(e.queue.servingAt) },
+    attending: e.attending,
     admission: e.admission && {
       admissionNumber: e.admission.admissionNumber,
       admittedAt: e.admission.admittedAt.toISOString(),
@@ -52,6 +56,16 @@ const NOT_FOUND = new Set(["patient_not_found", "not_found", "bed_not_found"]);
 
 /** The refusal an encounter error answers with, or null to let it through. */
 function refusal(c: Context<TenantBindings>, err: unknown) {
+  // Only opening a visit names a service point, in its body's `queueAt`.
+  if (err instanceof QueueError && err.code === "service_point_not_found") {
+    return c.json({
+      success: false as const,
+      error: { name: "ValidationError", issues: [{ code: "custom" as const, path: ["queueAt"], message: "No such service point" }] },
+    }, HttpStatusCodes.UNPROCESSABLE_ENTITY);
+  }
+  const queued = queueRefusal(c, err);
+  if (queued)
+    return queued;
   if (!(err instanceof encounters.EncounterError))
     return null;
   if (NOT_FOUND.has(err.code))

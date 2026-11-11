@@ -11,5 +11,8 @@ router.use(withFacility);
 router.openapi(routes.createInvitation, handlers.createInvitation);
 router.openapi(routes.listInvitations, handlers.listInvitations);
 router.openapi(routes.revokeInvitation, handlers.revokeInvitation);
+router.openapi(routes.listMembers, handlers.listMembers);
+router.openapi(routes.setLicence, handlers.setLicence);
+router.openapi(routes.changeRoles, handlers.changeRoles);
 
 export default router;

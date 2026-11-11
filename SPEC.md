@@ -44,6 +44,7 @@ The earlier scoping (2026-09-21) targeted small outpatient clinics, with inpatie
 - **Backend stack:** Hono + `@hono/zod-openapi`, Drizzle ORM and Better Auth, with foundations ported from school-saas-api (`CLAUDE.md` §5). *(2026-11-03)*
 - **Tenant resolution:** one web address for every facility; the facility comes from the signed-in user, not the hostname. A user with one membership goes straight in; a user with several picks the facility to work in, and can switch without signing in again. Every request is checked against an active membership inside the tenant transaction, before the handler runs (so a refused request still briefly holds an app connection). Subdomains were rejected: only staff use v1 (no patient portal), staff who work at two facilities (locums, branches of one group) would need a login per facility, a PWA installed on one origin would need a separate install and offline store per facility, and Cloud Run would need a wildcard certificate behind a load balancer. This does not depend on data residency. *(2026-11-03)*
 - **Accounts are invite-only.** There is no public sign-up. A facility's first admin is invited when the facility is onboarded; that admin invites the rest of the staff. Login data (sessions, password hashes) sits behind its own database role, separate from the one tenant requests use. *(2026-11-03)*
+- **OPD and lab (P3):** patients may pay at each point before the service (**pay as you go**) or once at the end (**bill at the end**), side by side and with no setting to choose between them: the cashier bills whatever is unbilled whenever the patient pays. A test not yet paid for shows a warning at the lab (none in an emergency visit) and never blocks the work. Lab tests are charged when ordered. Consultation fees are set per clinic. Any lab member other than the person who entered a result may verify it. Verified results print as a numbered lab report. Walk-in lab clients (an outside doctor's request) are served in P3. The slicing, the recommendations accepted with these, and what is still proposed are in `ROADMAP.md` P3. *(2026-11-10)*
 
 ---
 
@@ -73,7 +74,7 @@ The earlier scoping (2026-09-21) targeted small outpatient clinics, with inpatie
 5. **Storage bucket location.** GCS is the chosen provider. A bucket's location cannot be changed after creation (moving means creating a new bucket and copying objects), so choose the production location after question 1.
 6. **Records retention.** Confirm medical-records retention requirements before setting storage lifecycle rules.
 7. **PPB dispensing obligations.** Confirm what a hospital pharmacy must record under the Pharmacy and Poisons Act (Cap 244), including the Poisons Book provisions.
-8. **ICD-10 or ICD-11.** Which version SHA claims and MOH reports require, and which intervention or procedure coding SHA uses.
+8. **ICD-10 or ICD-11: ICD-11** *(decided 2026-11-10)*. DHA's [Claims Submission Guide](https://afyalink.dha.go.ke/claim-integration) says SHA requires ICD-11 codes on every claim, and DHA's FHIR guides (Kenya Core, ePrescription, eClaims) use ICD-11. No SHA circular or effective date was found. **Still open:** which intervention or procedure coding SHA uses.
 9. **PHC capitation at Level 4.** Whether SHA's primary-care capitation applies at Level 4 and above. It is money not tied to any invoice, so it is deliberately not modelled until answered (`SCHEMA.md` §9).
 10. **KRA eTIMS.** Whether a hospital's invoices must be transmitted through eTIMS even though medical services are VAT-exempt. See D7.
 11. **What DHA certification requires of this product.** Which system classification to certify under; whether certification judges clinical modules (it almost certainly does, so certification follows the complete system); whether a billing-only classification exists; the cost, the certificate's validity, and whether each new release must be re-certified. Read regulations 36–43 of Legal Notice 76 of 2025 and DHA's certification guide in Phase 0 (§10).
@@ -226,7 +227,7 @@ The pilot candidate's staff find their certified system too complex (§2). In a 
 3. Who are your top five insurers? For each: price list, co-pay rules, how claims are submitted, and the remittance format.
 4. What is your SHA rejection rate, and the top reasons? Do you bill patients for shortfalls?
 5. How do you count bed-days? Do casualty charges roll into the inpatient bill?
-6. Is OPD cash-first or post-paid? Are lab tests charged when ordered or when performed?
+6. Is OPD cash-first or post-paid? Are lab tests charged when ordered or when performed? *(Decided 2026-11-10 without the pilot: both kinds of visit are supported side by side, with no setting, and lab is charged at order, §2. Still ask which is their usual case: it decides what the screens put first, never which kind of visit is allowed.)*
 7. Do you sell drugs per tablet, or only in packs?
 8. Who approves waivers and charity care, and how is it recorded?
 9. How are your stores laid out, and who approves transfers to wards?

@@ -32,6 +32,17 @@ export const EncounterSchema = z.object({
   endedAt: z.string().nullable(),
   cancelReason: z.string().nullable(),
   parentEncounterId: z.uuid().nullable(),
+  /** The queue the patient is in now; null in none, and for an admission. */
+  queue: z.object({
+    entryId: z.uuid(),
+    servicePointId: z.uuid(),
+    servicePointName: z.string(),
+    status: z.enum(["waiting", "serving"]),
+    joinedAt: z.string(),
+    servingAt: z.string().nullable(),
+  }).nullable(),
+  /** Whoever most recently saw the patient at a consultation point. */
+  attending: z.object({ membershipId: z.uuid(), name: z.string() }).nullable(),
   admission: z.object({
     admissionNumber: z.string(),
     admittedAt: z.string(),
@@ -48,7 +59,16 @@ export const EncounterSchema = z.object({
 });
 
 const IdParamsSchema = z.object({ id: z.uuid() });
-const OpenBodySchema = z.object({ patientId: z.uuid(), kind: z.enum(["opd", "emergency"]) });
+const OpenBodySchema = z.object({
+  patientId: z.uuid(),
+  kind: z.enum(["opd", "emergency"]),
+  /**
+   * The service point the patient waits at first. Left out, they join the
+   * facility's triage point if it has exactly one; `null` joins no queue
+   * (a walk-in for the lab).
+   */
+  queueAt: z.uuid().nullable().optional(),
+});
 const CancelBodySchema = z.object({ reason: z.string().trim().min(3).max(200).regex(/^\P{C}+$/u, "One line") });
 const AdmitBodySchema = z.object({
   patientId: z.uuid(),

@@ -1,5 +1,6 @@
 /* eslint-disable no-console */
 import { drainOutbox } from "@/jobs/outbox-worker";
+import { errorLine } from "@/lib/error-summary";
 
 /**
  * Runs one pass of the outbox worker by hand: `pnpm outbox:drain`.
@@ -13,6 +14,7 @@ drainOutbox().then((tally) => {
   console.log(`Outbox: ${tally.done} done, ${tally.skipped} skipped, ${tally.retried} to retry, ${tally.failed} failed.`);
   process.exit(0);
 }, (err) => {
-  console.error("Outbox drain failed:", err instanceof Error ? err.message : err);
+  // A database error's message carries its SQL parameters (CLAUDE.md rule 10).
+  console.error("Outbox drain failed:", errorLine(err));
   process.exit(1);
 });

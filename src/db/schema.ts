@@ -18,11 +18,20 @@ import {
 
 import type { DocumentContent } from "@/lib/document-content";
 
+import { CLINICAL_ROLES, LICENCE_NUMBER_PATTERN, PROFESSIONS } from "@/lib/professions";
+import { VITAL_SIGNS } from "@/lib/vital-signs";
+
 import { account, session, user, verification } from "./auth-schema";
 
 // Re-exported so the rest of the app imports every table from one module,
 // without caring that identity tables live in a Better-Auth-generated file.
 export { account, session, user, verification };
+
+// One file past the 800-line guideline, deliberately: nearly every table
+// reaches others through composite (facility_id, id) foreign keys, the CHECKs
+// share helpers and lists, `TENANT_TABLES` must name every tenant table, and
+// drizzle-kit generates migrations from this file. Splitting it by domain is
+// a refactor of its own, not a side effect of a feature.
 
 // ---------------------------------------------------------------------------
 // Shared column builders
@@ -109,6 +118,50 @@ export function allOf(name: string, column: unknown, values: readonly string[]) 
   return check(name, sql`${column} <@ ARRAY[${sql.raw(list)}]::text[]`);
 }
 
+/** `ARRAY['a', 'b']::text[]` for DDL, from known literals. */
+function textArray(name: string, values: readonly string[]) {
+  assertDdlSafe(name, values);
+  return sql.raw(`ARRAY[${values.map(v => `'${v}'`).join(", ")}]::text[]`);
+}
+
+/**
+ * Keeps a practising licence in step with the roles it is held for (rule 25),
+ * on a membership and on the invitation that will become one:
+ *
+ *   licence_iff_clinical a licence exactly when a clinical role is held, and
+ *                        its profession, number and expiry always together
+ *   licence_fits_roles   the licence's profession is that of a role held, so
+ *                        it covers other professions' roles only alongside
+ *                        one of its own
+ *   licence_number_shape as `normaliseLicenceNumber` leaves it
+ *
+ * Every operand is non-null (`roles` is NOT NULL, and `IS NULL` never is), so
+ * no branch can pass by evaluating to NULL.
+ */
+function licenceChecks(table: string, t: { roles: unknown; licenceProfession: unknown; licenceNumber: unknown; licenceExpiresOn: unknown }) {
+  const { roles, licenceProfession, licenceNumber, licenceExpiresOn } = t;
+  const fits = Object.entries(PROFESSIONS).map(([profession, p]) => {
+    assertDdlSafe(table, [profession]);
+    return sql`WHEN ${sql.raw(`'${profession}'`)} THEN ${roles} && ${textArray(table, p.roles)}`;
+  });
+  return [
+    check(
+      `${table}_licence_fits_roles`,
+      sql`${licenceProfession} IS NULL OR (CASE ${licenceProfession} ${sql.join(fits, sql` `)} ELSE false END)`,
+    ),
+    check(
+      `${table}_licence_iff_clinical`,
+      sql`(${roles} && ${textArray(table, CLINICAL_ROLES)}) = (${licenceNumber} IS NOT NULL)
+        AND (${licenceNumber} IS NULL) = (${licenceExpiresOn} IS NULL)
+        AND (${licenceNumber} IS NULL) = (${licenceProfession} IS NULL)`,
+    ),
+    check(
+      `${table}_licence_number_shape`,
+      sql`${licenceNumber} IS NULL OR ${licenceNumber} ~ ${sql.raw(`'${LICENCE_NUMBER_PATTERN}'`)}`,
+    ),
+  ];
+}
+
 // ---------------------------------------------------------------------------
 // Tenancy and access (SCHEMA.md §3)
 // ---------------------------------------------------------------------------
@@ -144,8 +197,12 @@ export const facilities = pgTable("facilities", {
  *
  * One row per person per facility, holding a SET of roles: a doctor may also
  * be the facility admin, and a clinical act names one membership (rule 25),
- * not one of several rows for the same person. The cadre and licence columns
- * rule 25 needs arrive with the first clinical act (P3).
+ * not one of several rows for the same person.
+ *
+ * A member holding a clinical role carries their practising licence: their
+ * profession (which names the council), the number and the last day it is
+ * valid. Their roles may span professions, a nurse who also dispenses at
+ * night, and all of them are exercised under that one licence.
  */
 export const memberships = pgTable("memberships", {
   id: uuid().primaryKey().defaultRandom(),
@@ -169,6 +226,12 @@ export const memberships = pgTable("memberships", {
     | "claims_officer"
     | "finance_manager"
   )[]>().notNull(),
+  /** The profession the licence is held in, which names its council (`lib/professions.ts`). */
+  licenceProfession: text().$type<"medical_practitioner" | "clinical_officer" | "nurse" | "laboratory" | "pharmacy">(),
+  /** As the council issued it, normalised by `normaliseLicenceNumber`. */
+  licenceNumber: text(),
+  /** The last Kenyan day the licence is valid; a clinical act after it is refused. */
+  licenceExpiresOn: date({ mode: "string" }),
   isActive: boolean().default(true).notNull(),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
@@ -198,6 +261,8 @@ export const memberships = pgTable("memberships", {
   ]),
   // A membership with no role passes no guard and fails every one.
   check("memberships_roles_not_empty", sql`cardinality(${t.roles}) > 0`),
+  oneOf("memberships_licence_profession_known", t.licenceProfession, ["medical_practitioner", "clinical_officer", "nurse", "laboratory", "pharmacy"]),
+  ...licenceChecks("memberships", t),
 ]);
 
 /**
@@ -225,6 +290,7 @@ export const auditLog = pgTable("audit_log", {
     | "membership.granted"
     | "membership.roles_changed"
     | "membership.revoked"
+    | "membership.licence_changed"
     | "document.issued"
     | "document.voided"
     | "document.viewed"
@@ -288,6 +354,29 @@ export const auditLog = pgTable("audit_log", {
     | "adjustment.reversal_rejected"
     | "adjustment.reversal_withdrawn"
     | "adjustment.reversals_listed"
+    | "service_point.created"
+    | "service_point.updated"
+    | "queue.joined"
+    | "queue.served"
+    | "queue.finished"
+    | "queue.removed"
+    | "queue.viewed"
+    | "charge.captured"
+    | "billing.due_listed"
+    | "observation.recorded"
+    | "observation.entered_in_error"
+    | "allergy.recorded"
+    | "allergy.removed"
+    | "diagnosis.recorded"
+    | "diagnosis.confirmed"
+    | "diagnosis.principal_set"
+    | "diagnosis.ended"
+    | "note.drafted"
+    | "note.edited"
+    | "note.signed"
+    | "note.discarded"
+    | "note.addendum_added"
+    | "note.entered_in_error"
   >().notNull(),
   /** What it happened to. Not a foreign key: the log outlives what it names. */
   entityType: text().notNull(),
@@ -306,6 +395,7 @@ export const auditLog = pgTable("audit_log", {
     "membership.granted",
     "membership.roles_changed",
     "membership.revoked",
+    "membership.licence_changed",
     "document.issued",
     "document.voided",
     "document.viewed",
@@ -369,6 +459,29 @@ export const auditLog = pgTable("audit_log", {
     "adjustment.reversal_rejected",
     "adjustment.reversal_withdrawn",
     "adjustment.reversals_listed",
+    "service_point.created",
+    "service_point.updated",
+    "queue.joined",
+    "queue.served",
+    "queue.finished",
+    "queue.removed",
+    "queue.viewed",
+    "charge.captured",
+    "billing.due_listed",
+    "observation.recorded",
+    "observation.entered_in_error",
+    "allergy.recorded",
+    "allergy.removed",
+    "diagnosis.recorded",
+    "diagnosis.confirmed",
+    "diagnosis.principal_set",
+    "diagnosis.ended",
+    "note.drafted",
+    "note.edited",
+    "note.signed",
+    "note.discarded",
+    "note.addendum_added",
+    "note.entered_in_error",
   ]),
 ]);
 
@@ -510,6 +623,10 @@ export const invitations = pgTable("invitations", {
     | "claims_officer"
     | "finance_manager"
   )[]>().notNull(),
+  /** The licence the membership will carry, for a clinical role (as on `memberships`). */
+  licenceProfession: text().$type<"medical_practitioner" | "clinical_officer" | "nurse" | "laboratory" | "pharmacy">(),
+  licenceNumber: text(),
+  licenceExpiresOn: date({ mode: "string" }),
   invitedBy: userRef("invited_by").notNull().references(() => user.id),
   status: text().$type<"pending" | "accepted" | "revoked">().default("pending").notNull(),
   tokenHash: text().unique(),
@@ -543,6 +660,8 @@ export const invitations = pgTable("invitations", {
     "finance_manager",
   ]),
   check("invitations_roles_not_empty", sql`cardinality(${t.roles}) > 0`),
+  oneOf("invitations_licence_profession_known", t.licenceProfession, ["medical_practitioner", "clinical_officer", "nurse", "laboratory", "pharmacy"]),
+  ...licenceChecks("invitations", t),
   oneOf("invitations_status_known", t.status, ["pending", "accepted", "revoked"]),
   check("invitations_email_lowercase", sql`${t.email} = lower(${t.email})`),
   // Accepted means by someone, at some time; anything else means neither.
@@ -932,7 +1051,7 @@ export const encounters = pgTable("encounters", {
   startedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
   endedAt: timestamp({ withTimezone: true }),
   openedBy: uuid().notNull(),
-  /** Who closed or cancelled it. */
+  /** Who closed or cancelled it; null for a visit the nightly run closed. */
   closedBy: uuid(),
   cancelReason: text(),
   /** The visit this one came from, e.g. the emergency attendance an admission followed. */
@@ -957,7 +1076,7 @@ export const encounters = pgTable("encounters", {
   check(
     "encounters_lifecycle",
     sql`(${t.status} = 'open' AND ${t.endedAt} IS NULL AND ${t.closedBy} IS NULL AND ${t.cancelReason} IS NULL)
-      OR (${t.status} = 'closed' AND ${t.endedAt} IS NOT NULL AND ${t.closedBy} IS NOT NULL AND ${t.cancelReason} IS NULL)
+      OR (${t.status} = 'closed' AND ${t.endedAt} IS NOT NULL AND ${t.cancelReason} IS NULL)
       OR (${t.status} = 'cancelled' AND ${t.endedAt} IS NOT NULL AND ${t.closedBy} IS NOT NULL
           AND ${t.cancelReason} IS NOT NULL AND length(btrim(${t.cancelReason})) > 0)`,
   ),
@@ -1028,6 +1147,401 @@ export const bedStays = pgTable("bed_stays", {
 ]);
 
 // ---------------------------------------------------------------------------
+// Service points and queues (SCHEMA.md §8)
+// ---------------------------------------------------------------------------
+
+/**
+ * Where a patient waits to be seen: a triage desk, or a clinic (General OPD,
+ * MCH, a specialist clinic). Set up by the facility admin; renamed or
+ * retired, never removed, since past queue entries name it.
+ *
+ * Only triage and consultation have queues of their own. The lab, the
+ * pharmacy and the cashier work from what is waiting for them (orders not
+ * yet done, charges not yet paid), so their lists are derived, not stored.
+ *
+ * A clinic may name the billable item its consultation is charged as; its
+ * price comes from the price list on the day, as a ward's bed-day does.
+ */
+export const servicePoints = pgTable("service_points", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  name: text().notNull(),
+  kind: text().$type<"triage" | "consultation">().notNull(),
+  /** What being seen here is charged as, once per visit; null for no fee. */
+  consultationItemId: uuid(),
+  isActive: boolean().default(true).notNull(),
+  createdAt: createdAt(),
+}, t => [
+  unique("service_points_facility_id_id_key").on(t.facilityId, t.id),
+  unique("service_points_facility_id_name_key").on(t.facilityId, t.name),
+  foreignKey({
+    name: "service_points_consultation_item_fk",
+    columns: [t.facilityId, t.consultationItemId],
+    foreignColumns: [billableItems.facilityId, billableItems.id],
+  }),
+  oneOf("service_points_kind_known", t.kind, ["triage", "consultation"]),
+  check("service_points_fee_at_a_clinic", sql`${t.kind} = 'consultation' OR ${t.consultationItemId} IS NULL`),
+  check("service_points_name_present", sql`length(btrim(${t.name})) > 0`),
+]);
+
+/**
+ * One patient's turn at one service point during a visit: waiting, then
+ * being served, then done; or taken out while still waiting, because they
+ * left unseen or were sent there in error. `status` is lifecycle only.
+ *
+ * A patient is in one queue at a time (a partial unique index), so moving on
+ * is finishing here and joining the next. Migration 0042 adds the trigger
+ * that holds the lifecycle for every role: an entry is inserted waiting, into
+ * an open outpatient or emergency visit, at a service point in use; it moves
+ * waiting → serving → done, or waiting → left or cancelled; what it was
+ * never changes, and an ended entry never changes again.
+ */
+export const queueEntries = pgTable("queue_entries", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  encounterId: uuid().notNull(),
+  servicePointId: uuid().notNull(),
+  status: text().$type<"waiting" | "serving" | "done" | "left" | "cancelled">().default("waiting").notNull(),
+  joinedAt: timestamp({ withTimezone: true }).notNull(),
+  joinedBy: uuid().notNull(),
+  /** When the patient was called in, and by whom: the clinician who saw them. */
+  servingAt: timestamp({ withTimezone: true }),
+  servedBy: uuid(),
+  endedAt: timestamp({ withTimezone: true }),
+  /** Null when the nightly run ended it. */
+  endedBy: uuid(),
+  /**
+   * How soon the patient must be seen, set as triage finishes with them. The
+   * clinic queues order by the visit's latest one (derived, not copied).
+   */
+  priority: text().$type<"emergency" | "urgent" | "routine">(),
+}, t => [
+  unique("queue_entries_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({ name: "queue_entries_encounter_fk", columns: [t.facilityId, t.encounterId], foreignColumns: [encounters.facilityId, encounters.id] }),
+  foreignKey({ name: "queue_entries_service_point_fk", columns: [t.facilityId, t.servicePointId], foreignColumns: [servicePoints.facilityId, servicePoints.id] }),
+  foreignKey({ name: "queue_entries_joined_by_fk", columns: [t.facilityId, t.joinedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "queue_entries_served_by_fk", columns: [t.facilityId, t.servedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "queue_entries_ended_by_fk", columns: [t.facilityId, t.endedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  uniqueIndex("queue_entries_one_live_per_encounter")
+    .on(t.encounterId)
+    .where(sql`${t.status} IN ('waiting', 'serving')`),
+  index("queue_entries_live_index")
+    .on(t.facilityId, t.servicePointId, t.joinedAt)
+    .where(sql`${t.status} IN ('waiting', 'serving')`),
+  index("queue_entries_encounter_index").on(t.facilityId, t.encounterId, t.joinedAt),
+  oneOf("queue_entries_status_known", t.status, ["waiting", "serving", "done", "left", "cancelled"]),
+  oneOf("queue_entries_priority_known", t.priority, ["emergency", "urgent", "routine"]),
+  check("queue_entries_priority_when_done", sql`${t.priority} IS NULL OR ${t.status} = 'done'`),
+  check(
+    "queue_entries_lifecycle",
+    sql`(${t.status} = 'waiting' AND ${t.servingAt} IS NULL AND ${t.servedBy} IS NULL AND ${t.endedAt} IS NULL AND ${t.endedBy} IS NULL)
+      OR (${t.status} = 'serving' AND ${t.servingAt} IS NOT NULL AND ${t.servedBy} IS NOT NULL AND ${t.endedAt} IS NULL AND ${t.endedBy} IS NULL)
+      OR (${t.status} = 'done' AND ${t.servingAt} IS NOT NULL AND ${t.servedBy} IS NOT NULL AND ${t.endedAt} IS NOT NULL)
+      OR (${t.status} = 'left' AND ${t.servingAt} IS NULL AND ${t.servedBy} IS NULL AND ${t.endedAt} IS NOT NULL)
+      OR (${t.status} = 'cancelled' AND ${t.servingAt} IS NULL AND ${t.servedBy} IS NULL AND ${t.endedAt} IS NOT NULL AND ${t.endedBy} IS NOT NULL)`,
+  ),
+  check(
+    "queue_entries_in_order",
+    sql`(${t.servingAt} IS NULL OR ${t.servingAt} >= ${t.joinedAt})
+      AND (${t.endedAt} IS NULL OR ${t.endedAt} >= coalesce(${t.servingAt}, ${t.joinedAt}))`,
+  ),
+]);
+
+// ---------------------------------------------------------------------------
+// The clinical record (SCHEMA.md §8)
+// ---------------------------------------------------------------------------
+
+/** The plausible-range CHECK for each vital sign, from `lib/vital-signs.ts`. */
+function plausibleVitalSign(code: unknown, value: unknown) {
+  const branches = Object.entries(VITAL_SIGNS).map(([vital, range]) => {
+    assertDdlSafe("observations", [vital]);
+    if (!Number.isFinite(range.min) || !Number.isFinite(range.max))
+      throw new Error(`observations: no numeric range for ${vital}`);
+    return sql`WHEN ${sql.raw(`'${vital}'`)} THEN ${value} BETWEEN ${sql.raw(`${range.min} AND ${range.max}`)}`;
+  });
+  return check("observations_value_plausible", sql`CASE ${code} ${sql.join(branches, sql` `)} ELSE false END`);
+}
+
+/**
+ * One vital sign taken during an encounter: at triage, in the clinic, on the
+ * ward. A reading taken with others (a set at triage) shares their
+ * `observed_at`. Values outside what a real reading can be are refused by a
+ * CHECK; a wrong value is marked entered in error, with a reason, and never
+ * edited (a trigger, migration 0046).
+ */
+export const observations = pgTable("observations", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  encounterId: uuid().notNull(),
+  code: text().$type<
+    | "temperature"
+    | "pulse"
+    | "respiratory_rate"
+    | "bp_systolic"
+    | "bp_diastolic"
+    | "spo2"
+    | "weight"
+    | "height"
+    | "muac"
+    | "blood_glucose"
+    | "pain_score"
+  >().notNull(),
+  /** In the vital sign's one unit (`lib/vital-signs.ts`). */
+  value: numeric({ precision: 7, scale: 2, mode: "string" }).notNull(),
+  observedAt: timestamp({ withTimezone: true }).notNull(),
+  recordedAt: timestamp({ withTimezone: true }).notNull(),
+  /** The membership that took it (rule 25). */
+  recordedBy: uuid().notNull(),
+  enteredInErrorAt: timestamp({ withTimezone: true }),
+  enteredInErrorBy: uuid(),
+  enteredInErrorReason: text(),
+}, t => [
+  unique("observations_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({ name: "observations_encounter_fk", columns: [t.facilityId, t.encounterId], foreignColumns: [encounters.facilityId, encounters.id] }),
+  foreignKey({ name: "observations_recorded_by_fk", columns: [t.facilityId, t.recordedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "observations_entered_in_error_by_fk", columns: [t.facilityId, t.enteredInErrorBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  index("observations_encounter_index").on(t.facilityId, t.encounterId, t.observedAt),
+  oneOf("observations_code_known", t.code, [
+    "temperature",
+    "pulse",
+    "respiratory_rate",
+    "bp_systolic",
+    "bp_diastolic",
+    "spo2",
+    "weight",
+    "height",
+    "muac",
+    "blood_glucose",
+    "pain_score",
+  ]),
+  plausibleVitalSign(t.code, t.value),
+  check(
+    "observations_error_complete",
+    sql`(${t.enteredInErrorAt} IS NULL AND ${t.enteredInErrorBy} IS NULL AND ${t.enteredInErrorReason} IS NULL)
+      OR (${t.enteredInErrorAt} IS NOT NULL AND ${t.enteredInErrorBy} IS NOT NULL
+          AND ${t.enteredInErrorReason} IS NOT NULL AND length(btrim(${t.enteredInErrorReason})) > 0)`,
+  ),
+]);
+
+/**
+ * What a patient is allergic to, or a recorded "no known allergies", which
+ * is not the same as nobody having asked. Kept per patient, not per visit,
+ * and shown wherever a drug is prescribed or given.
+ *
+ * Ended, never deleted: entered in error, or no longer applying (recording an
+ * allergy ends a standing "no known allergies"). Drug allergies are free text
+ * for now; slice 4b links them to the drug catalogue so prescribing can check
+ * them. Other alerts get their own table when one is needed.
+ */
+export const patientAllergies = pgTable("patient_allergies", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  patientId: uuid().notNull(),
+  category: text().$type<"drug" | "food" | "environment" | "other" | "none_known">().notNull(),
+  /** What the patient reacts to, as told; null for "no known allergies". */
+  allergen: text(),
+  reaction: text(),
+  severity: text().$type<"mild" | "moderate" | "severe">(),
+  recordedAt: timestamp({ withTimezone: true }).notNull(),
+  recordedBy: uuid().notNull(),
+  removedAt: timestamp({ withTimezone: true }),
+  removedBy: uuid(),
+  removalReason: text().$type<"entered_in_error" | "no_longer_applies">(),
+}, t => [
+  unique("patient_allergies_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({ name: "patient_allergies_patient_fk", columns: [t.facilityId, t.patientId], foreignColumns: [patients.facilityId, patients.id] }),
+  foreignKey({ name: "patient_allergies_recorded_by_fk", columns: [t.facilityId, t.recordedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "patient_allergies_removed_by_fk", columns: [t.facilityId, t.removedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  index("patient_allergies_patient_index").on(t.facilityId, t.patientId),
+  uniqueIndex("patient_allergies_one_none_known")
+    .on(t.patientId)
+    .where(sql`${t.category} = 'none_known' AND ${t.removedAt} IS NULL`),
+  oneOf("patient_allergies_category_known", t.category, ["drug", "food", "environment", "other", "none_known"]),
+  oneOf("patient_allergies_severity_known", t.severity, ["mild", "moderate", "severe"]),
+  oneOf("patient_allergies_removal_reason_known", t.removalReason, ["entered_in_error", "no_longer_applies"]),
+  check(
+    "patient_allergies_allergen_unless_none_known",
+    sql`(${t.category} = 'none_known' AND ${t.allergen} IS NULL AND ${t.reaction} IS NULL AND ${t.severity} IS NULL)
+      OR (${t.category} <> 'none_known' AND ${t.allergen} IS NOT NULL AND length(btrim(${t.allergen})) > 0)`,
+  ),
+  check(
+    "patient_allergies_removal_complete",
+    sql`(${t.removedAt} IS NULL AND ${t.removedBy} IS NULL AND ${t.removalReason} IS NULL)
+      OR (${t.removedAt} IS NOT NULL AND ${t.removedBy} IS NOT NULL AND ${t.removalReason} IS NOT NULL)`,
+  ),
+]);
+
+/**
+ * ICD-11 for Mortality and Morbidity Statistics (MMS), the diagnosis codes
+ * SHA claims and MOH reports use (SPEC.md §4, question 8, decided
+ * 2026-11-10). A shared reference table (CLAUDE.md rule 1): no `facility_id`,
+ * read-only to the app role, loaded by `pnpm icd11:load` from WHO's release
+ * file (`lib/icd11-load.ts`).
+ *
+ * WHO's licence (CC BY-ND 3.0 IGO, icd.who.int) lets software store the
+ * classification provided each code keeps its title and URI, which is why
+ * all three are here, and why a diagnosis copies all three. Chapters 01–25
+ * only: extension codes (X) qualify other codes and are never a diagnosis on
+ * their own, and the supplementary chapters (V, 26) are not loaded.
+ * `is_residual` and `retired_at` are this system's own fields, not WHO's.
+ */
+export const icdCodes = pgTable("icd_codes", {
+  /** e.g. `1F40.0`. */
+  code: text().primaryKey(),
+  /** As WHO titles it, without the depth markers its file prefixes. */
+  title: text().notNull(),
+  /** The MMS linearization URI, which every code has (residual ones have no foundation URI). */
+  uri: text().notNull(),
+  /** `01` to `25`. */
+  chapter: text().notNull(),
+  /** Only a leaf is coded as a diagnosis: a code with children is too broad. */
+  isLeaf: boolean().notNull(),
+  /** "Other specified" (`.Y`) or "unspecified" (`.Z`). */
+  isResidual: boolean().notNull(),
+  /** The release this code was last loaded from, e.g. `2026-01`. */
+  release: text().notNull(),
+  /** Set when a later release no longer has the code. Past diagnoses keep it. */
+  retiredAt: timestamp({ withTimezone: true }),
+}, t => [
+  check("icd_codes_code_shape", sql`${t.code} ~ '^[0-9A-Z]{4}(\\.[0-9A-Z]{1,2})*$'`),
+  check("icd_codes_chapter_shape", sql`${t.chapter} ~ '^(0[1-9]|1[0-9]|2[0-5])$'`),
+  check("icd_codes_release_shape", sql`${t.release} ~ '^[0-9]{4}-[0-9]{2}$'`),
+  check("icd_codes_uri_shape", sql`${t.uri} LIKE 'http://id.who.int/icd/release/11/%'`),
+]);
+
+/**
+ * A diagnosis made during an encounter, coded in ICD-11 (rule 8). The code's
+ * title, URI and release are copied as diagnosed (rule 7, and WHO's licence),
+ * so a later release never changes what was recorded.
+ *
+ * Provisional or confirmed; principal or secondary, with at most one standing
+ * principal per encounter (what a claim names first). It moves only forward:
+ * a provisional diagnosis is confirmed once; the principal may be moved to
+ * another; a diagnosis is ended once, as ruled out or entered in error, and
+ * never edited or deleted (trigger, migration 0049).
+ */
+export const diagnoses = pgTable("diagnoses", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  encounterId: uuid().notNull(),
+  icdCode: text().notNull().references(() => icdCodes.code),
+  icdTitle: text().notNull(),
+  icdUri: text().notNull(),
+  icdRelease: text().notNull(),
+  certainty: text().$type<"provisional" | "confirmed">().notNull(),
+  rank: text().$type<"principal" | "secondary">().notNull(),
+  diagnosedAt: timestamp({ withTimezone: true }).notNull(),
+  /** The membership that made it (rule 25). */
+  diagnosedBy: uuid().notNull(),
+  /** When a provisional diagnosis was confirmed, and by whom. */
+  confirmedAt: timestamp({ withTimezone: true }),
+  confirmedBy: uuid(),
+  endedAt: timestamp({ withTimezone: true }),
+  endedBy: uuid(),
+  endReason: text().$type<"ruled_out" | "entered_in_error">(),
+}, t => [
+  unique("diagnoses_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({ name: "diagnoses_encounter_fk", columns: [t.facilityId, t.encounterId], foreignColumns: [encounters.facilityId, encounters.id] }),
+  foreignKey({ name: "diagnoses_diagnosed_by_fk", columns: [t.facilityId, t.diagnosedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "diagnoses_confirmed_by_fk", columns: [t.facilityId, t.confirmedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "diagnoses_ended_by_fk", columns: [t.facilityId, t.endedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  index("diagnoses_encounter_index").on(t.facilityId, t.encounterId, t.diagnosedAt),
+  uniqueIndex("diagnoses_one_standing_principal")
+    .on(t.encounterId)
+    .where(sql`${t.rank} = 'principal' AND ${t.endedAt} IS NULL`),
+  oneOf("diagnoses_certainty_known", t.certainty, ["provisional", "confirmed"]),
+  oneOf("diagnoses_rank_known", t.rank, ["principal", "secondary"]),
+  oneOf("diagnoses_end_reason_known", t.endReason, ["ruled_out", "entered_in_error"]),
+  check(
+    "diagnoses_confirmation",
+    sql`(${t.confirmedAt} IS NULL AND ${t.confirmedBy} IS NULL)
+      OR (${t.confirmedAt} IS NOT NULL AND ${t.confirmedBy} IS NOT NULL AND ${t.certainty} = 'confirmed')`,
+  ),
+  check(
+    "diagnoses_end_complete",
+    sql`(${t.endedAt} IS NULL AND ${t.endedBy} IS NULL AND ${t.endReason} IS NULL)
+      OR (${t.endedAt} IS NOT NULL AND ${t.endedBy} IS NOT NULL AND ${t.endReason} IS NOT NULL)`,
+  ),
+]);
+
+/**
+ * A clinical note on an encounter (P3 slice 3b): a consultation note in the
+ * sections of an outpatient card, a nursing note, or an addendum to a signed
+ * note. `status` is lifecycle only.
+ *
+ * A note is drafted and edited by its author alone, then signed, which
+ * freezes it (rule 19): a signed note is corrected only by an addendum, which
+ * is written signed. A draft may be discarded, never deleted. A signed note
+ * written on the wrong patient's record is marked entered in error, with a
+ * reason, and stays on the record. The trigger `clinical_notes_lifecycle`
+ * (migration 0051) holds all of this for every role.
+ */
+export const clinicalNotes = pgTable("clinical_notes", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  encounterId: uuid().notNull(),
+  kind: text().$type<"consultation" | "nursing" | "addendum">().notNull(),
+  /** The signed note an addendum corrects or adds to. */
+  addendumOf: uuid(),
+  /** A consultation note's sections; at least one is written. */
+  presentingComplaint: text(),
+  history: text(),
+  examination: text(),
+  plan: text(),
+  /** A nursing note's or an addendum's text. */
+  text: text(),
+  status: text().$type<"draft" | "signed" | "discarded">().notNull(),
+  /** The author: the membership that wrote it and signs it (rule 25). */
+  writtenBy: uuid().notNull(),
+  createdAt: timestamp({ withTimezone: true }).notNull(),
+  updatedAt: timestamp({ withTimezone: true }).notNull(),
+  signedAt: timestamp({ withTimezone: true }),
+  discardedAt: timestamp({ withTimezone: true }),
+  enteredInErrorAt: timestamp({ withTimezone: true }),
+  enteredInErrorBy: uuid(),
+  enteredInErrorReason: text(),
+}, t => [
+  unique("clinical_notes_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({ name: "clinical_notes_encounter_fk", columns: [t.facilityId, t.encounterId], foreignColumns: [encounters.facilityId, encounters.id] }),
+  foreignKey({ name: "clinical_notes_addendum_of_fk", columns: [t.facilityId, t.addendumOf], foreignColumns: [t.facilityId, t.id] }),
+  foreignKey({ name: "clinical_notes_written_by_fk", columns: [t.facilityId, t.writtenBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "clinical_notes_entered_in_error_by_fk", columns: [t.facilityId, t.enteredInErrorBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  index("clinical_notes_encounter_index").on(t.facilityId, t.encounterId, t.createdAt),
+  index("clinical_notes_addendum_of_index").on(t.facilityId, t.addendumOf),
+  oneOf("clinical_notes_kind_known", t.kind, ["consultation", "nursing", "addendum"]),
+  oneOf("clinical_notes_status_known", t.status, ["draft", "signed", "discarded"]),
+  check(
+    "clinical_notes_shape",
+    sql`(${t.kind} = 'consultation' AND ${t.text} IS NULL AND ${t.addendumOf} IS NULL
+          AND num_nonnulls(${t.presentingComplaint}, ${t.history}, ${t.examination}, ${t.plan}) >= 1)
+      OR (${t.kind} = 'nursing' AND ${t.text} IS NOT NULL AND ${t.addendumOf} IS NULL
+          AND num_nonnulls(${t.presentingComplaint}, ${t.history}, ${t.examination}, ${t.plan}) = 0)
+      OR (${t.kind} = 'addendum' AND ${t.text} IS NOT NULL AND ${t.addendumOf} IS NOT NULL
+          AND num_nonnulls(${t.presentingComplaint}, ${t.history}, ${t.examination}, ${t.plan}) = 0)`,
+  ),
+  check(
+    "clinical_notes_text_present",
+    sql`(${t.text} IS NULL OR length(btrim(${t.text})) > 0)
+      AND (${t.presentingComplaint} IS NULL OR length(btrim(${t.presentingComplaint})) > 0)
+      AND (${t.history} IS NULL OR length(btrim(${t.history})) > 0)
+      AND (${t.examination} IS NULL OR length(btrim(${t.examination})) > 0)
+      AND (${t.plan} IS NULL OR length(btrim(${t.plan})) > 0)`,
+  ),
+  check(
+    "clinical_notes_lifecycle",
+    sql`(${t.status} = 'draft' AND ${t.signedAt} IS NULL AND ${t.discardedAt} IS NULL)
+      OR (${t.status} = 'signed' AND ${t.signedAt} IS NOT NULL AND ${t.discardedAt} IS NULL)
+      OR (${t.status} = 'discarded' AND ${t.discardedAt} IS NOT NULL AND ${t.signedAt} IS NULL)`,
+  ),
+  check(
+    "clinical_notes_error_complete",
+    sql`(${t.enteredInErrorAt} IS NULL AND ${t.enteredInErrorBy} IS NULL AND ${t.enteredInErrorReason} IS NULL)
+      OR (${t.enteredInErrorAt} IS NOT NULL AND ${t.enteredInErrorBy} IS NOT NULL AND ${t.status} = 'signed'
+          AND ${t.enteredInErrorReason} IS NOT NULL AND length(btrim(${t.enteredInErrorReason})) > 0)`,
+  ),
+]);
+
+// ---------------------------------------------------------------------------
 // Charges (SCHEMA.md §7.2)
 // ---------------------------------------------------------------------------
 
@@ -1054,12 +1568,15 @@ export const charges = pgTable("charges", {
   /** The Kenyan day the service was given; for a bed-day, the night it began. */
   serviceDate: date({ mode: "string" }).notNull(),
   bedStayId: uuid(),
+  /** The consultation fee for being seen at a clinic (P3): its queue entry. */
+  queueEntryId: uuid(),
   /** Why it was posted by hand, when it has no source. */
   manualReason: text(),
   /** Who posted it; null when the system captured it (a bed-day). */
   capturedBy: uuid(),
   capturedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
   cancelledAt: timestamp({ withTimezone: true }),
+  /** Null when the system cancelled it: the nightly run, for a patient who left unseen. */
   cancelledBy: uuid(),
   cancellationReason: text(),
 }, t => [
@@ -1068,11 +1585,14 @@ export const charges = pgTable("charges", {
   foreignKey({ name: "charges_item_fk", columns: [t.facilityId, t.billableItemId], foreignColumns: [billableItems.facilityId, billableItems.id] }),
   foreignKey({ name: "charges_price_fk", columns: [t.facilityId, t.priceListItemId], foreignColumns: [priceListItems.facilityId, priceListItems.id] }),
   foreignKey({ name: "charges_bed_stay_fk", columns: [t.facilityId, t.bedStayId], foreignColumns: [bedStays.facilityId, bedStays.id] }),
+  foreignKey({ name: "charges_queue_entry_fk", columns: [t.facilityId, t.queueEntryId], foreignColumns: [queueEntries.facilityId, queueEntries.id] }),
   foreignKey({ name: "charges_captured_by_fk", columns: [t.facilityId, t.capturedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
   foreignKey({ name: "charges_cancelled_by_fk", columns: [t.facilityId, t.cancelledBy], foreignColumns: [memberships.facilityId, memberships.id] }),
   index("charges_encounter_index").on(t.facilityId, t.encounterId, t.serviceDate),
   // One bed-day per admission per night, however often accrual runs.
   uniqueIndex("charges_one_bed_day_per_night").on(t.encounterId, t.serviceDate).where(sql`${t.bedStayId} IS NOT NULL`),
+  // One fee per turn at a clinic; once per visit per clinic is the service's, under the encounter's lock.
+  uniqueIndex("charges_one_per_queue_entry").on(t.queueEntryId).where(sql`${t.queueEntryId} IS NOT NULL`),
   check("charges_quantity_positive", sql`${t.quantity} > 0`),
   check("charges_unit_price_nonnegative", sql`${t.unitPriceCents} >= 0`),
   // Whole shillings: neither cash nor M-Pesa carries cents (SPEC.md D2).
@@ -1080,15 +1600,15 @@ export const charges = pgTable("charges", {
   // At most one source; none means a manual posting, which needs a reason and a person.
   check(
     "charges_source_or_reason",
-    sql`num_nonnulls(${t.bedStayId}) <= 1
-      AND ((num_nonnulls(${t.bedStayId}) = 0) = (${t.manualReason} IS NOT NULL AND length(btrim(${t.manualReason})) > 0))`,
+    sql`num_nonnulls(${t.bedStayId}, ${t.queueEntryId}) <= 1
+      AND ((num_nonnulls(${t.bedStayId}, ${t.queueEntryId}) = 0) = (${t.manualReason} IS NOT NULL AND length(btrim(${t.manualReason})) > 0))`,
   ),
   check("charges_manual_has_person", sql`${t.manualReason} IS NULL OR ${t.capturedBy} IS NOT NULL`),
   check(
     "charges_cancellation_complete",
     sql`(${t.cancelledAt} IS NULL AND ${t.cancelledBy} IS NULL AND ${t.cancellationReason} IS NULL)
-      OR (${t.cancelledAt} IS NOT NULL AND ${t.cancelledBy} IS NOT NULL
-          AND ${t.cancellationReason} IS NOT NULL AND length(btrim(${t.cancellationReason})) > 0)`,
+      OR (${t.cancelledAt} IS NOT NULL AND ${t.cancellationReason} IS NOT NULL AND length(btrim(${t.cancellationReason})) > 0
+          AND (${t.cancelledBy} IS NOT NULL OR ${t.queueEntryId} IS NOT NULL))`,
   ),
 ]);
 
@@ -1101,7 +1621,7 @@ export const charges = pgTable("charges", {
 export const jobFailures = pgTable("job_failures", {
   id: uuid().primaryKey().defaultRandom(),
   facilityId: uuid().notNull().references(() => facilities.id),
-  job: text().$type<"bed_day_accrual" | "reconciliation">().notNull(),
+  job: text().$type<"bed_day_accrual" | "reconciliation" | "visit_close">().notNull(),
   /** What it was working on, e.g. the encounter. Not a foreign key: the log outlives it. */
   subjectId: uuid(),
   /** What is wrong, for whoever fixes it. Ids and codes only (rule 10). */
@@ -1113,7 +1633,7 @@ export const jobFailures = pgTable("job_failures", {
   uniqueIndex("job_failures_open_once")
     .on(t.facilityId, t.job, sql`coalesce(${t.subjectId}, '00000000-0000-0000-0000-000000000000'::uuid)`, t.error)
     .where(sql`${t.resolvedAt} IS NULL`),
-  oneOf("job_failures_job_known", t.job, ["bed_day_accrual", "reconciliation"]),
+  oneOf("job_failures_job_known", t.job, ["bed_day_accrual", "reconciliation", "visit_close"]),
 ]);
 
 // ---------------------------------------------------------------------------
@@ -1766,6 +2286,12 @@ export const TENANT_TABLES = [
   "encounters",
   "admissions",
   "bed_stays",
+  "service_points",
+  "queue_entries",
+  "observations",
+  "patient_allergies",
+  "diagnoses",
+  "clinical_notes",
   "billable_items",
   "price_lists",
   "price_changes",

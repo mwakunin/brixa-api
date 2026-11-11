@@ -286,6 +286,28 @@ export async function draftInvoice(
   return invoice.id;
 }
 
+/**
+ * Bills what is due now, for a patient paying as they go: every charge not
+ * yet billed, on an invoice drafted and finalised in one step, so the
+ * cashier takes the money against a numbered bill. Before the final invoice
+ * that is an interim one; after it, a supplementary one. A patient billed at
+ * the end gets the final invoice the usual way instead.
+ */
+export async function billDueNow(tx: AppDb, facilityId: string, encounterId: string, actor: PatientActor, at = new Date()): Promise<string> {
+  const encounter = await lockEncounter(tx, encounterId);
+  const accountId = await ensureAccount(tx, facilityId, { patientId: encounter.patientId });
+  const [final] = await tx
+    .select({ status: invoices.status })
+    .from(invoices)
+    .where(and(eq(invoices.encounterId, encounterId), eq(invoices.accountId, accountId), eq(invoices.kind, "final"), ne(invoices.status, "void")))
+    .limit(1);
+
+  const kind = final?.status === "finalised" ? "supplementary" : "interim";
+  const invoiceId = await draftInvoice(tx, facilityId, { encounterId, kind }, actor);
+  await finaliseInvoice(tx, facilityId, invoiceId, actor, at);
+  return invoiceId;
+}
+
 async function invoiceById(tx: AppDb, invoiceId: string, lock = false): Promise<InvoiceRow> {
   const query = tx.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
   const [invoice] = lock ? await query.for("update") : await query;

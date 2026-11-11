@@ -281,6 +281,90 @@
       "when": 1794231198636,
       "tag": "0039_stk_checkout_hash_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1794318580594,
+      "tag": "0040_practitioner_licences",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1794320791392,
+      "tag": "0041_queues",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1794320797585,
+      "tag": "0042_queues_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1794323499217,
+      "tag": "0043_consultation_fees",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1794323503353,
+      "tag": "0044_consultation_fees_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1794328527154,
+      "tag": "0045_triage",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1794328531148,
+      "tag": "0046_triage_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1794330538672,
+      "tag": "0047_licence_fits_roles",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1794331924033,
+      "tag": "0048_diagnoses",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1794331930189,
+      "tag": "0049_diagnoses_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1794332972746,
+      "tag": "0050_clinical_notes",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1794332978249,
+      "tag": "0051_clinical_notes_rls",
+      "breakpoints": true
     }
   ]
 }

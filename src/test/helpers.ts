@@ -2,6 +2,7 @@ import type { SQL } from "drizzle-orm";
 
 import { sql } from "drizzle-orm";
 
+import type { Profession } from "@/lib/professions";
 import type { MembershipRole, UserRole } from "@/lib/types";
 
 import app from "@/app";
@@ -9,9 +10,11 @@ import db, { pool } from "@/db";
 import { facilities, memberships, numberSeries, numberSeriesCounters, priceLists } from "@/db/schema";
 import { createAccount } from "@/lib/accounts";
 import { FACILITY_HEADER } from "@/lib/constants";
-import { businessDate } from "@/lib/dates";
+import { addDays, businessDate } from "@/lib/dates";
 import { sentEmails } from "@/lib/email";
 import { FISCAL_SERIES } from "@/lib/number-series";
+import { isClinicalRole } from "@/lib/practitioners";
+import { professionsOf } from "@/lib/professions";
 import { redis } from "@/lib/redis";
 
 /**
@@ -197,16 +200,34 @@ export async function makeOnboardedFacility(overrides: { name?: string } = {}) {
   return facility;
 }
 
-/** Gives `userId` a membership at `facilityId` holding `roles`. */
+/**
+ * Gives `userId` a membership at `facilityId` holding `roles`. A clinical role
+ * comes with a practising licence valid for a year, in the profession of the
+ * first clinical role, as the membership CHECK requires, unless `licence`
+ * says otherwise.
+ */
 export async function addMembership(
   userId: string,
   facilityId: string,
   roles: MembershipRole[],
-  options: { isActive?: boolean } = {},
-) {
+  options: { isActive?: boolean; licence?: { profession?: Profession; number: string; expiresOn: string } | null } = {},
+): Promise<typeof memberships.$inferSelect> {
+  const given = options.licence !== undefined
+    ? options.licence
+    : roles.some(isClinicalRole) ? { number: "TEST-0001", expiresOn: addDays(businessDate(), 365) } : null;
+  const licence = given && { ...given, profession: given.profession ?? professionsOf(roles)[0] };
+
   const [row] = await db
     .insert(memberships)
-    .values({ userId, facilityId, roles, isActive: options.isActive ?? true })
+    .values({
+      userId,
+      facilityId,
+      roles,
+      licenceProfession: licence?.profession ?? null,
+      licenceNumber: licence?.number ?? null,
+      licenceExpiresOn: licence?.expiresOn ?? null,
+      isActive: options.isActive ?? true,
+    })
     .returning();
 
   return row;

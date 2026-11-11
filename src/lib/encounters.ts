@@ -5,11 +5,16 @@ import type { AppDb } from "@/db";
 import { admissions, beds, bedStays, encounters, patientNumbers, patients, wards } from "@/db/schema";
 
 import type { PatientActor } from "./patients";
+import type { LiveEntry } from "./queues";
 
 import { recordAudit } from "./audit";
 import { accrueBedDays, liveChargeCount } from "./charges";
 import { isExclusionViolation, isUniqueViolation } from "./db-errors";
+import { hasStandingDiagnoses } from "./diagnoses";
+import { hasStandingNotes } from "./notes";
 import { issueNumber } from "./number-series";
+import { hasStandingObservations } from "./observations";
+import { attendingOfEach, defaultTriagePoint, endLiveEntry, joinLocked, liveEntryOf, liveEntryOfEach } from "./queues";
 import { bedOccupied, bedWithWard } from "./wards";
 
 /**
@@ -40,7 +45,9 @@ export class EncounterError extends Error {
     | "bed_occupied"
     | "same_bed"
     | "parent_mismatch"
-    | "has_charges") {
+    | "has_charges"
+    | "has_clinical_records"
+    | "still_queued") {
     super({
       patient_not_found: "No such patient",
       not_found: "No such encounter",
@@ -55,6 +62,8 @@ export class EncounterError extends Error {
       same_bed: "The patient is already in that bed",
       parent_mismatch: "That visit belongs to another patient",
       has_charges: "This encounter has charges; cancel them first",
+      has_clinical_records: "This encounter has vital signs, diagnoses or notes on record; mark them entered in error (and discard drafts) first if it was opened by mistake",
+      still_queued: "The patient is still in a queue; finish with them or take them out of it first",
     }[code]);
     this.name = "EncounterError";
   }
@@ -117,11 +126,15 @@ async function endOpenStay(tx: AppDb, admissionId: string, at: Date, actor: Pati
  * Opens an outpatient visit or an emergency attendance. Its start comes from
  * the app's clock, as its end will: a start from the database's clock could
  * fall after an end taken moments later if the two clocks differ.
+ *
+ * The patient joins a queue in the same step: `queueAt` names the service
+ * point, `null` joins none (a walk-in for the lab), and leaving it out joins
+ * the facility's triage point when it has exactly one.
  */
 export async function openEncounter(
   tx: AppDb,
   facilityId: string,
-  input: { patientId: string; kind: "opd" | "emergency" },
+  input: { patientId: string; kind: "opd" | "emergency"; queueAt?: string | null },
   actor: PatientActor,
   at = new Date(),
 ): Promise<EncounterRow> {
@@ -152,14 +165,24 @@ export async function openEncounter(
     summary: `Opened ${input.kind === "opd" ? "an outpatient visit" : "an emergency attendance"}`,
     detail: { patientId: input.patientId, kind: input.kind },
   });
+
+  const queueAt = input.queueAt === undefined ? await defaultTriagePoint(tx) : input.queueAt;
+  if (queueAt)
+    await joinLocked(tx, facilityId, encounter, queueAt, actor, at);
   return encounter;
 }
 
-/** Ends a visit. An admission ends by discharge instead. */
+/**
+ * Ends a visit. An admission ends by discharge instead. A patient still in a
+ * queue is never dropped from it by closing their visit: they are finished
+ * with or taken out first, so nobody waits for a call that cannot come.
+ */
 export async function closeEncounter(tx: AppDb, facilityId: string, id: string, actor: PatientActor, at = new Date()) {
   const encounter = await lockEncounter(tx, id);
   if (encounter.kind === "ipd")
     throw new EncounterError("use_discharge");
+  if (await liveEntryOf(tx, id))
+    throw new EncounterError("still_queued");
 
   const [closed] = await tx.update(encounters)
     .set({ status: "closed", endedAt: at, closedBy: actor.membershipId })
@@ -179,13 +202,21 @@ export async function closeEncounter(tx: AppDb, facilityId: string, id: string, 
 
 /**
  * Cancels an encounter opened by mistake, for a stated reason. A cancelled
- * admission leaves its bed at once. One with charges still standing cannot
- * be cancelled: the charges are cancelled first, each for its own reason.
+ * admission leaves its bed at once, and a cancelled visit its queue. One with
+ * charges still standing cannot be cancelled: the charges are cancelled
+ * first, each for its own reason. Nor can one with clinical records still
+ * standing (vital signs, diagnoses, notes and drafts): a visit with care
+ * recorded was not simply a mistake, and the records are marked entered in
+ * error (drafts discarded) first if it was.
  */
 export async function cancelEncounter(tx: AppDb, facilityId: string, id: string, reason: string, actor: PatientActor, at = new Date()) {
   const encounter = await lockEncounter(tx, id);
+  // Its queue first: cancelling the entry cancels the fee it raised, if unbilled.
+  await endLiveEntry(tx, facilityId, id, actor, at);
   if (await liveChargeCount(tx, id) > 0)
     throw new EncounterError("has_charges");
+  if (await hasStandingObservations(tx, id) || await hasStandingDiagnoses(tx, id) || await hasStandingNotes(tx, id))
+    throw new EncounterError("has_clinical_records");
 
   if (encounter.kind === "ipd") {
     const [admission] = await tx.select({ id: admissions.id }).from(admissions).where(eq(admissions.encounterId, id)).limit(1);
@@ -208,6 +239,35 @@ export async function cancelEncounter(tx: AppDb, facilityId: string, id: string,
     detail: { reason },
   });
   return cancelled;
+}
+
+/**
+ * Closes an outpatient visit still open after its day, for the nightly run:
+ * a waiting patient is marked as having left, one still being seen as done,
+ * and nobody is named as closing it. Skips a visit closed since it was listed.
+ *
+ * Timed once the visit is locked, not when the run began: anyone who queued
+ * or called the patient in since then has done so by now, so nothing ends
+ * before it started.
+ */
+export async function closeStaleVisit(tx: AppDb, facilityId: string, id: string): Promise<boolean> {
+  const [encounter] = await tx.select().from(encounters).where(eq(encounters.id, id)).for("update").limit(1);
+  if (!encounter || encounter.status !== "open" || encounter.kind !== "opd")
+    return false;
+  const at = new Date();
+
+  await endLiveEntry(tx, facilityId, id, null, at);
+  await tx.update(encounters).set({ status: "closed", endedAt: at, closedBy: null }).where(eq(encounters.id, id));
+  await recordAudit(tx, {
+    facilityId,
+    actorId: null,
+    action: "encounter.closed",
+    entityType: "encounter",
+    entityId: id,
+    summary: "Closed by the nightly run: the visit was still open after its day",
+    detail: { by: "nightly_run" },
+  });
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -377,6 +437,10 @@ export async function dischargePatient(
 // ---------------------------------------------------------------------------
 
 export interface EncounterDetail extends Omit<EncounterRow, "facilityId" | "openedBy" | "closedBy" | "updatedAt"> {
+  /** The queue the patient is in now. */
+  queue: LiveEntry | null;
+  /** Derived: whoever most recently saw the patient at a consultation point. */
+  attending: { membershipId: string; name: string } | null;
   admission: null | {
     admissionNumber: string;
     admittedAt: Date;
@@ -386,10 +450,30 @@ export interface EncounterDetail extends Omit<EncounterRow, "facilityId" | "open
   };
 }
 
+function shown(encounter: EncounterRow) {
+  const { facilityId: _f, openedBy: _o, closedBy: _c, updatedAt: _u, ...fields } = encounter;
+  return fields;
+}
+
+/**
+ * Encounters as shown, a page at a time: the queue and attending clinician
+ * of every outpatient one in two queries, not two per encounter.
+ */
+async function details(tx: AppDb, rows: EncounterRow[]): Promise<EncounterDetail[]> {
+  const outpatient = rows.filter(r => r.kind !== "ipd");
+  const live = await liveEntryOfEach(tx, outpatient.filter(r => r.status === "open").map(r => r.id));
+  const attending = await attendingOfEach(tx, outpatient.map(r => r.id));
+  return Promise.all(rows.map(row => row.kind === "ipd"
+    ? inpatientDetail(tx, row)
+    : { ...shown(row), queue: live.get(row.id) ?? null, attending: attending.get(row.id) ?? null, admission: null }));
+}
+
 async function detail(tx: AppDb, encounter: EncounterRow): Promise<EncounterDetail> {
-  const { facilityId: _f, openedBy: _o, closedBy: _c, updatedAt: _u, ...rest } = encounter;
-  if (encounter.kind !== "ipd")
-    return { ...rest, admission: null };
+  return (await details(tx, [encounter]))[0];
+}
+
+async function inpatientDetail(tx: AppDb, encounter: EncounterRow): Promise<EncounterDetail> {
+  const rest = { ...shown(encounter), queue: null, attending: null };
 
   const [admission] = await tx.select().from(admissions).where(eq(admissions.encounterId, encounter.id)).limit(1);
   if (!admission)
@@ -442,7 +526,7 @@ export async function encounterDetail(tx: AppDb, id: string): Promise<EncounterD
 }
 
 /** A patient's encounters, newest first, a page of 100 at a time, with an audit entry. */
-export async function listEncounters(tx: AppDb, facilityId: string, patientId: string, actor: PatientActor, offset = 0) {
+export async function listEncounters(tx: AppDb, facilityId: string, patientId: string, actor: PatientActor, offset = 0): Promise<EncounterDetail[]> {
   await patientExists(tx, patientId);
   const rows = await tx
     .select()
@@ -460,5 +544,5 @@ export async function listEncounters(tx: AppDb, facilityId: string, patientId: s
     entityId: patientId,
     summary: `Listed a patient's encounters (${rows.length})`,
   });
-  return Promise.all(rows.map(row => detail(tx, row)));
+  return details(tx, rows);
 }

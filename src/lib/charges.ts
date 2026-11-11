@@ -2,7 +2,7 @@ import { and, asc, count, eq, isNotNull, isNull, notInArray, sql } from "drizzle
 
 import type { AppDb } from "@/db";
 
-import { admissions, beds, bedStays, billableItems, charges, encounters, jobFailures, wards } from "@/db/schema";
+import { admissions, beds, bedStays, billableItems, charges, encounters, jobFailures, queueEntries, wards } from "@/db/schema";
 
 import type { PatientActor } from "./patients";
 
@@ -15,7 +15,8 @@ import { cashPriceList, resolvePrice } from "./prices";
 /**
  * Charges (SCHEMA.md §7.2): what the hospital did, at the price of the day.
  *
- * In P2 a charge comes from a bed-day or a manual posting. Every charge is
+ * A charge comes from a bed-day, a turn at a clinic (its consultation fee,
+ * P3), or a manual posting. Every charge is
  * priced by `resolvePrice` from the cash list, which prices the patient
  * account; P4's billing plan routes covered items to a payer's list. Callers
  * hold the encounter's lock first (lock order M8).
@@ -120,6 +121,101 @@ export async function postManualCharge(
     detail: { encounterId: encounter.id, code: item.code, amountCents: charge.amountCents, reason: input.reason },
   });
   return charge;
+}
+
+// ---------------------------------------------------------------------------
+// Consultation fees
+// ---------------------------------------------------------------------------
+
+/**
+ * Charges a clinic's consultation fee as the patient joins its queue, so a
+ * patient paying as they go can pay before they are seen. Once per visit per
+ * clinic: a patient sent back with results is not charged again, unless the
+ * earlier fee was cancelled. The caller holds the encounter's lock (M8),
+ * which is what makes "once" hold under concurrency; `charges_one_per_queue_entry`
+ * is the backstop for one turn. Returns null when the visit already has it.
+ */
+export async function captureConsultationFee(
+  tx: AppDb,
+  facilityId: string,
+  input: { encounterId: string; queueEntryId: string; servicePointId: string; billableItemId: string; at: Date },
+  actor: PatientActor,
+): Promise<ChargeRow | null> {
+  const [already] = await tx
+    .select({ id: charges.id })
+    .from(charges)
+    .innerJoin(queueEntries, eq(queueEntries.id, charges.queueEntryId))
+    .where(and(
+      eq(charges.encounterId, input.encounterId),
+      eq(queueEntries.servicePointId, input.servicePointId),
+      isNull(charges.cancelledAt),
+    ))
+    .limit(1);
+  if (already)
+    return null;
+
+  const serviceDate = businessDate(input.at);
+  const [item] = await tx.select().from(billableItems).where(eq(billableItems.id, input.billableItemId)).limit(1);
+  const price = item?.isActive
+    ? await resolvePrice(tx, { billableItemId: item.id, priceListId: await cashPriceList(tx), serviceDate })
+    : null;
+  if (!item || !price)
+    throw new ChargeError("not_covered");
+
+  const [charge] = await tx.insert(charges).values({
+    facilityId,
+    encounterId: input.encounterId,
+    billableItemId: item.id,
+    quantity: "1",
+    unitPriceCents: price.unitPriceCents,
+    amountCents: chargeAmountCents("1", price.unitPriceCents),
+    priceListItemId: price.priceListItemId,
+    serviceDate,
+    queueEntryId: input.queueEntryId,
+    capturedBy: actor.membershipId,
+  }).returning();
+
+  await recordAudit(tx, {
+    facilityId,
+    actorId: actor.userId,
+    action: "charge.captured",
+    entityType: "charge",
+    entityId: charge.id,
+    summary: `Charged ${item.code} for joining a clinic's queue`,
+    detail: { encounterId: input.encounterId, queueEntryId: input.queueEntryId, code: item.code, amountCents: charge.amountCents },
+  });
+  return charge;
+}
+
+/**
+ * Cancels the fee a queue entry raised, when the patient leaves that queue
+ * unseen, while no live invoice asks for it. A fee already billed stands:
+ * the bill is credited or the money refunded, as for any billed charge. The
+ * caller holds the encounter's lock. `actor` is null for the nightly run.
+ */
+export async function cancelEntryFee(tx: AppDb, facilityId: string, queueEntryId: string, reason: string, actor: PatientActor | null): Promise<boolean> {
+  const [fee] = await tx
+    .select()
+    .from(charges)
+    .where(and(eq(charges.queueEntryId, queueEntryId), isNull(charges.cancelledAt)))
+    .for("update")
+    .limit(1);
+  if (!fee || (await assignedByCharge(tx, [fee.id])).has(fee.id))
+    return false;
+
+  await tx.update(charges)
+    .set({ cancelledAt: new Date(), cancelledBy: actor?.membershipId ?? null, cancellationReason: reason })
+    .where(eq(charges.id, fee.id));
+  await recordAudit(tx, {
+    facilityId,
+    actorId: actor?.userId ?? null,
+    action: "charge.cancelled",
+    entityType: "charge",
+    entityId: fee.id,
+    summary: `Cancelled a consultation fee: ${reason}`,
+    detail: { encounterId: fee.encounterId, queueEntryId, amountCents: fee.amountCents, reason },
+  });
+  return true;
 }
 
 /** Marks an encounter's bed-day failures resolved, except those still missing. */

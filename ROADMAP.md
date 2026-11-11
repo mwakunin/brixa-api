@@ -97,6 +97,42 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
 
 **Exit:** a full OPD journey (registration → triage → consultation → lab → cashier) with no manual charge posting. Medication orders produce printable prescriptions; dispensing joins the journey in P4.
 
+**Slices** (2026-11-10). Each follows P2's pattern: a migration pair, a lib module, routes and tests, and an "As built" note in `SCHEMA.md`.
+
+| PR | Slice | Builds |
+|---|---|---|
+| A | 1a Practitioners | A licence (profession, number, expiry) on memberships and invitations for every clinical role; roles may span professions under the person's one licence; the admin changes a member's roles and renews licences, and sees those expiring within 30 days; clinical routes refuse a lapsed licence |
+| A | 1b Service points and queues | Service points; queue entries for triage and consultation only (the lab, pharmacy and cashier lists are derived from the work waiting); the attending clinician, derived; a nightly run closes outpatient visits still open after their day. A visit closing itself once nothing is pending waits for 4a, when "pending" (orders not done) exists |
+| A | 1c Consultation fee and paying | A fee item per clinic, charged once per visit per clinic when the patient joins its queue; the cashier's "due now" list; the cashier bills what is unbilled whenever the patient pays, on an interim invoice, or at the end on the final invoice |
+| A | 2 Triage | Vitals as observations (marked entered in error, never edited); allergies; triage priority orders the consultation queue |
+| A | 3a Diagnoses | `icd_codes`, the first shared reference table, loaded from WHO's ICD-11 release; search by name; diagnoses copy the code and title |
+| A | 3b Clinical notes | Signed notes frozen and corrected by addendum; clinical reads limited to clinical roles and audited |
+| B | 4a Orders and lab catalogue | Orders and their items (lab, medication, service); lab tests with analytes and reference ranges; lab and service items charged at order, the charge cancelled with an order not yet done; walk-in lab clients with an outside requester |
+| B | 4b Prescriptions | The shared `drug_catalogue` at generic level; medication items with quantities in dose units, so the units-of-sale question (`SPEC.md` §4, question 2) stays with P4; a printed `RX-` prescription with the prescriber's licence and the patient's allergies; no charge until dispensing (P4) |
+| B | 5a Specimens | The lab worklist; collection issues the daily accession number; receive, reject and recollect; a warning on any test not yet paid for, except in an emergency visit |
+| B | 5b Results | Entry per analyte; flags from the ranges; verification by another lab member; frozen with the range applied; a correction is a new version; a printed lab report |
+| C | 6 Appointments | Book, move, cancel, check in; SMS reminders through the outbox by Africa's Talking, the code built now and its credentials configured later |
+| C | 7 Sensitive records | Marking sensitive items, and break-glass (rule 27) |
+| C | 8 Exit | The scripted journey with no manual charges and a clean reconciliation; a clinical-functions page in the certification pack |
+
+**Decided 2026-11-10** (product owner): patients pay at each point or at the end, with no setting to choose between them, and an unpaid test a warning at the lab, never a block; roles may span professions (a nurse who also dispenses works under her nursing licence), and the admin changes a member's roles; SMS by Africa's Talking, the code first and its credentials later; lab charged at order; the consultation fee per clinic; any lab member other than the one who entered a result verifies it; a printed lab report; walk-in lab clients in P3. Recommendations accepted with them: queues stored for triage and consultation only; a licence required for every clinical role, its expiry stored, warned 30 days ahead and refused once lapsed, with no registry check until AfyaConnect (`SPEC.md` §10, question 4); a visit closes itself once nothing is pending; order kinds lab, medication and service; the drug catalogue at generic level in 4b; notes, diagnoses and results readable by clinical roles only.
+
+**Proposed, to confirm:**
+- **From the ecc healthcare guidance:**
+  - Prescribing against a recorded drug allergy is blocked unless overridden with a reason, and the override is audited.
+  - Prescribing for a child needs a weight taken that day.
+  - Lab analytes carry critical limits, and verifying a critical result records who was told and when.
+  - The ordering clinician gets a results-to-review list and acknowledges each result.
+  - Abnormal vital signs are flagged for adults; children's thresholds depend on age and need care.
+  - Sensitive billable items print under a neutral name.
+  - Sensitivity comes from ICD codes, lab tests and clinics.
+  - Break-glass alerts go to an in-app list for the attending clinician and the facility admin.
+- **One lab member on night duty:** a result released unverified, with a reason, and verified by the next person on duty. This changes `SCHEMA.md` §8 ("a result reaches the clinician only once verified").
+
+**Decided 2026-11-10:** diagnoses are coded in ICD-11 (`SPEC.md` §4, question 8).
+
+**Still open:** whether the MOH 705 report's grouping of ICD-11 codes into MOH's condition list needs WHO's written agreement, since WHO's licence puts mappings between classifications outside it (`SCHEMA.md` §8, slice 3a); the pilot's MOH 705 and 717 forms, so P3 captures what P6 reports need (§9, question 10); whether SMS reminders need the patient's consent; drug-interaction and dose data (none in v1 without a licensed source).
+
 ### P4 · Pharmacy and stores
 
 **Size:** L.
@@ -113,7 +149,7 @@ Main store, pharmacy and ward sub-stores; transfers; goods received; batches and
 
 **Size:** L.
 
-Bed board; transfers; nursing notes; observation charts; the medication administration record (MAR); ward rounds; the discharge summary.
+Bed board; transfers; nursing notes; observation charts, with the NEWS2 early-warning score for adults (moved here from P3 on 2026-11-10: it is built for spotting deterioration on the wards, and outpatient triage uses the emergency/urgent/routine priority instead); the medication administration record (MAR); ward rounds; the discharge summary.
 
 **Exit:** admission to discharge with a signed discharge summary and no paper.
 

@@ -1,12 +1,16 @@
 import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import type { MembershipRole } from "@/lib/types";
+
 import app from "@/app";
 import db, { pool } from "@/db";
-import { auditLog, invitations, memberships, numberSeries, outbox } from "@/db/schema";
+import { auditLog, invitations, memberships, numberSeries, outbox, user } from "@/db/schema";
 import { drainOutbox } from "@/jobs/outbox-worker";
+import { addDays, businessDate } from "@/lib/dates";
 import { sentEmails } from "@/lib/email";
 import { hashToken, invitationToken } from "@/lib/invitations";
+import { isClinicalRole } from "@/lib/practitioners";
 import {
   addMembership,
   facilityHeaders,
@@ -342,8 +346,21 @@ describe("a facility admin inviting staff", () => {
     await resetDb();
   });
 
+  /** A clinical role gets a valid licence unless the test names one (or `undefined`). */
   function invite(facilityId: string, admin: { headers: { cookie: string } }, body: Record<string, unknown>) {
-    return postJson("/staff/invitations", body, facilityHeaders(facilityId, admin as never));
+    const clinical = (body.roles as MembershipRole[]).some(isClinicalRole);
+    const withLicence = "licence" in body || !clinical
+      ? body
+      : { ...body, licence: { number: "NCK-1001", expiresOn: addDays(businessDate(), 365) } };
+    return postJson("/staff/invitations", withLicence, facilityHeaders(facilityId, admin as never));
+  }
+
+  async function membershipOf(facilityId: string, userEmail: string) {
+    const rows = await db.select({ membership: memberships, email: user.email })
+      .from(memberships)
+      .innerJoin(user, eq(user.id, memberships.userId))
+      .where(eq(memberships.facilityId, facilityId));
+    return rows.find(r => r.email === userEmail)?.membership;
   }
 
   it("invites, and the new member accepts and holds exactly those roles", async () => {
@@ -400,7 +417,7 @@ describe("a facility admin inviting staff", () => {
     // Over two hundred newer, closed invitations.
     await pool.query(`
       INSERT INTO invitations (facility_id, email, name, roles, invited_by, status, expires_at)
-      SELECT $1, 'old' || n || '@example.test', 'Old Invitee', ARRAY['nurse'], $2, 'revoked', now()
+      SELECT $1, 'old' || n || '@example.test', 'Old Invitee', ARRAY['records_clerk'], $2, 'revoked', now()
       FROM generate_series(1, 205) AS n
     `, [facility.id, admin.id]);
 
@@ -497,6 +514,81 @@ describe("a facility admin inviting staff", () => {
     expect((await accept({ token: tokenFor(former.email) })).status).toBe(200);
 
     const [membership] = await db.select().from(memberships).where(eq(memberships.userId, former.id));
-    expect(membership).toMatchObject({ isActive: true, roles: ["pharm_tech"] });
+    expect(membership).toMatchObject({ isActive: true, roles: ["pharm_tech"], licenceNumber: "NCK-1001" });
+  });
+
+  it("needs the practising licence of anyone invited to a clinical role, and gives it to their membership", async () => {
+    const facility = await makeFacility();
+    const admin = await signedInUserAt(facility.id, ["facility_admin"]);
+    const email = nextEmail();
+    const expiresOn = addDays(businessDate(), 200);
+
+    const without = await invite(facility.id, admin, { email, name: "Achieng Otieno", roles: ["nurse"], licence: undefined });
+    expect(without.status).toBe(422);
+    expect((await without.json()).error.issues[0].path).toEqual(["licence"]);
+
+    const res = await invite(facility.id, admin, { email, name: "Achieng Otieno", roles: ["nurse"], licence: { number: " nck 12.345 ", expiresOn } });
+    expect(res.status).toBe(201);
+    expect((await res.json()).licence).toEqual({ profession: "nurse", number: "NCK12345", expiresOn });
+
+    await drainOutbox();
+    expect((await accept({ token: tokenFor(email), password: NEW_PASSWORD })).status).toBe(200);
+    expect(await membershipOf(facility.id, email)).toMatchObject({
+      roles: ["nurse"],
+      licenceProfession: "nurse",
+      licenceNumber: "NCK12345",
+      licenceExpiresOn: expiresOn,
+    });
+  });
+
+  it("refuses a licence nobody needs, an unclear profession, and a licence already lapsed", async () => {
+    const facility = await makeFacility();
+    const admin = await signedInUserAt(facility.id, ["facility_admin"]);
+    const licence = { number: "A1234", expiresOn: addDays(businessDate(), 90) };
+    const refusedAt = async (body: Record<string, unknown>) => {
+      const res = await invite(facility.id, admin, { email: nextEmail(), name: "Someone Else", ...body });
+      expect(res.status, JSON.stringify(body)).toBe(422);
+      return (await res.json()).error.issues[0].path;
+    };
+
+    expect(await refusedAt({ roles: ["cashier"], licence })).toEqual(["licence"]);
+    expect(await refusedAt({ roles: ["nurse", "pharm_tech"], licence })).toEqual(["licence", "profession"]);
+    expect(await refusedAt({ roles: ["doctor"], licence: { ...licence, profession: "pharmacy" } })).toEqual(["licence", "profession"]);
+    expect(await refusedAt({ roles: ["doctor"], licence: { ...licence, expiresOn: addDays(businessDate(), -1) } })).toEqual(["licence", "expiresOn"]);
+    expect(await refusedAt({ roles: ["doctor"], licence: { ...licence, number: "A 12#4" } })).toEqual(["licence", "number"]);
+
+    // Valid through its last day; an admin who is also a doctor is one profession.
+    const lastDay = await invite(facility.id, admin, {
+      email: nextEmail(),
+      name: "Dr Kiprono",
+      roles: ["facility_admin", "doctor"],
+      licence: { ...licence, expiresOn: businessDate() },
+    });
+    expect(lastDay.status).toBe(201);
+    expect((await lastDay.json()).licence.profession).toBe("medical_practitioner");
+  });
+
+  it("lets a nurse hold a pharmacy role under her nursing licence", async () => {
+    const facility = await makeFacility();
+    const admin = await signedInUserAt(facility.id, ["facility_admin"]);
+    const licence = { profession: "nurse", number: "NCK55", expiresOn: addDays(businessDate(), 90) };
+
+    const res = await invite(facility.id, admin, { email: nextEmail(), name: "Night Nurse", roles: ["nurse", "pharm_tech"], licence });
+
+    expect(res.status).toBe(201);
+    expect((await res.json()).licence).toEqual(licence);
+  });
+
+  it("brings a former clinical member back without a licence when no clinical role is offered", async () => {
+    const facility = await makeFacility();
+    const admin = await signedInUserAt(facility.id, ["facility_admin"]);
+    const former = await signedInUser();
+    await addMembership(former.id, facility.id, ["nurse"], { isActive: false });
+
+    await invite(facility.id, admin, { email: former.email, name: "Former", roles: ["records_clerk"] });
+    await drainOutbox();
+    expect((await accept({ token: tokenFor(former.email) })).status).toBe(200);
+
+    expect(await membershipOf(facility.id, former.email)).toMatchObject({ roles: ["records_clerk"], licenceNumber: null, licenceExpiresOn: null });
   });
 });
