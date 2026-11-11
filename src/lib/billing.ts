@@ -19,6 +19,7 @@ import {
   payers,
 } from "@/db/schema";
 
+import type { AdjustmentKind, AdjustmentStatus } from "./adjustments";
 import type { PrintedContent } from "./document-content";
 import type { PatientActor } from "./patients";
 
@@ -333,13 +334,20 @@ async function linesOf(tx: AppDb, invoiceId: string) {
 
 type Line = Awaited<ReturnType<typeof linesOf>>[number];
 
+export interface FinalisedInvoice {
+  invoice: InvoiceRow;
+  number: string;
+  /** Deposits paid towards the encounter and applied to this invoice. */
+  creditAppliedCents: number;
+}
+
 /**
  * Finalises a draft: freezes its total and issues its number and printed
  * document. A final invoice needs every standing charge of the encounter on
  * a live invoice (M4), so nothing done for the patient goes unbilled. Credit
  * paid towards the encounter (a deposit) is then applied to it.
  */
-export async function finaliseInvoice(tx: AppDb, facilityId: string, invoiceId: string, actor: PatientActor, at = new Date()) {
+export async function finaliseInvoice(tx: AppDb, facilityId: string, invoiceId: string, actor: PatientActor, at = new Date()): Promise<FinalisedInvoice> {
   const { encounterId, accountId } = await invoiceById(tx, invoiceId);
   const encounter = await lockEncounter(tx, encounterId);
   const live = await lockLiveCharges(tx, encounterId);
@@ -391,7 +399,7 @@ export async function voidInvoice(
   input: { invoiceId: string; reason: string; mayVoidFinalised: boolean },
   actor: PatientActor,
   at = new Date(),
-) {
+): Promise<InvoiceRow> {
   const { encounterId } = await invoiceById(tx, input.invoiceId);
   await lockEncounter(tx, encounterId);
   const invoice = await invoiceById(tx, input.invoiceId, true);
@@ -520,8 +528,36 @@ async function printedInvoice(
 // Reading
 // ---------------------------------------------------------------------------
 
+/** An adjustment as its invoice lists it. */
+export interface InvoiceAdjustmentLine {
+  id: string;
+  kind: AdjustmentKind;
+  amountCents: number;
+  reason: string;
+  status: AdjustmentStatus;
+  /** An approved credit note's number. */
+  number: string | null;
+  requestedAt: Date;
+  decidedAt: Date | null;
+  reversedAt: Date | null;
+}
+
+export interface InvoiceDetail extends Omit<InvoiceRow, "totalCents"> {
+  number: string | null;
+  accountKind: (typeof accounts.$inferSelect)["kind"];
+  payerName: string | null;
+  /** The frozen total, or a draft's lines' sum. */
+  totalCents: number;
+  /** Σ live allocations. */
+  paidCents: number;
+  /** Derived (rule 4), and only once finalised. */
+  balanceCents: number | null;
+  lines: Line[];
+  adjustments: InvoiceAdjustmentLine[];
+}
+
 /** One invoice with its lines. A draft's total is its lines' sum; a bill's balance is derived (rule 4). */
-export async function invoiceDetail(tx: AppDb, invoiceId: string) {
+export async function invoiceDetail(tx: AppDb, invoiceId: string): Promise<InvoiceDetail> {
   const [row] = await tx
     .select({ invoice: invoices, number: documents.number, accountKind: accounts.kind, payerName: payers.name })
     .from(invoices)
@@ -560,15 +596,12 @@ export async function invoiceDetail(tx: AppDb, invoiceId: string) {
     accountKind: row.accountKind,
     payerName: row.payerName,
     totalCents,
-    /** Σ live allocations. */
     paidCents,
     balanceCents: row.invoice.status === "finalised" ? totalCents - adjusted - paidCents : null,
     lines,
     adjustments,
   };
 }
-
-export type InvoiceDetail = Awaited<ReturnType<typeof invoiceDetail>>;
 
 /** Opens an invoice: a read of what was done for the patient, audited (rule 9). */
 export async function viewInvoice(tx: AppDb, facilityId: string, invoiceId: string, actor: PatientActor): Promise<InvoiceDetail> {
@@ -585,8 +618,21 @@ export async function viewInvoice(tx: AppDb, facilityId: string, invoiceId: stri
   return detail;
 }
 
+export interface ListedInvoice {
+  id: string;
+  kind: InvoiceKind;
+  status: InvoiceRow["status"];
+  number: string | null;
+  accountKind: (typeof accounts.$inferSelect)["kind"];
+  payerName: string | null;
+  totalCents: number;
+  createdAt: Date;
+  finalisedAt: Date | null;
+  voidedAt: Date | null;
+}
+
 /** An encounter's invoices, oldest first. A draft's total is its lines' sum. */
-export async function listInvoices(tx: AppDb, encounterId: string) {
+export async function listInvoices(tx: AppDb, encounterId: string): Promise<ListedInvoice[]> {
   return tx
     .select({
       id: invoices.id,

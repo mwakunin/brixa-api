@@ -18,7 +18,9 @@ import { isUniqueViolation } from "./db-errors";
  * approval records every item's old and new price (CLAUDE.md §6).
  */
 
-export type ItemCategory = (typeof billableItems.$inferSelect)["category"];
+type BillableItemRow = typeof billableItems.$inferSelect;
+type PriceChangeRow = typeof priceChanges.$inferSelect;
+export type ItemCategory = BillableItemRow["category"];
 
 export class PriceError extends Error {
   constructor(readonly code:
@@ -86,7 +88,7 @@ export async function createBillableItem(
   facilityId: string,
   input: { code: string; name: string; category: ItemCategory },
   actor: PatientActor,
-) {
+): Promise<BillableItemRow> {
   try {
     const [item] = await tx.insert(billableItems).values({ facilityId, ...input }).returning();
     await recordAudit(tx, {
@@ -107,8 +109,17 @@ export async function createBillableItem(
   }
 }
 
+export interface ListedBillableItem {
+  id: string;
+  code: string;
+  name: string;
+  category: ItemCategory;
+  isActive: boolean;
+  cashPriceCents: number | null;
+}
+
 /** The catalogue, each item with its cash price today (null when it has none). */
-export async function listBillableItems(tx: AppDb, today = businessDate()) {
+export async function listBillableItems(tx: AppDb, today = businessDate()): Promise<ListedBillableItem[]> {
   const listId = await cashPriceList(tx);
   return tx
     .select({
@@ -138,7 +149,7 @@ export async function requestPriceChange(
   facilityId: string,
   input: { effectiveFrom: string; reason: string; lines: { billableItemId: string; unitPriceCents: number }[] },
   actor: PatientActor,
-) {
+): Promise<PriceChangeRow> {
   if (input.effectiveFrom < businessDate())
     throw new PriceError("effective_in_past");
 
@@ -188,7 +199,7 @@ async function lockPending(tx: AppDb, id: string) {
  * replaces whatever would have applied. An earlier price ends that day; a
  * later one already approved ends on its own start, so it never applies.
  */
-export async function approvePriceChange(tx: AppDb, facilityId: string, id: string, actor: PatientActor) {
+export async function approvePriceChange(tx: AppDb, facilityId: string, id: string, actor: PatientActor): Promise<void> {
   const change = await lockPending(tx, id);
   if (change.requestedBy === actor.membershipId)
     throw new PriceError("same_person");
@@ -243,7 +254,7 @@ export async function approvePriceChange(tx: AppDb, facilityId: string, id: stri
   });
 }
 
-export async function rejectPriceChange(tx: AppDb, facilityId: string, id: string, actor: PatientActor) {
+export async function rejectPriceChange(tx: AppDb, facilityId: string, id: string, actor: PatientActor): Promise<void> {
   const change = await lockPending(tx, id);
   if (change.requestedBy === actor.membershipId)
     throw new PriceError("same_person");
@@ -259,7 +270,7 @@ export async function rejectPriceChange(tx: AppDb, facilityId: string, id: strin
   });
 }
 
-export async function withdrawPriceChange(tx: AppDb, facilityId: string, id: string, actor: PatientActor) {
+export async function withdrawPriceChange(tx: AppDb, facilityId: string, id: string, actor: PatientActor): Promise<void> {
   const change = await lockPending(tx, id);
   if (change.requestedBy !== actor.membershipId)
     throw new PriceError("not_requester");
@@ -275,11 +286,24 @@ export async function withdrawPriceChange(tx: AppDb, facilityId: string, id: str
   });
 }
 
+/** One item's new price in a price change. */
+export interface PriceChangeLine {
+  priceChangeId: string;
+  billableItemId: string;
+  code: string;
+  name: string;
+  unitPriceCents: number;
+}
+
+export interface ListedPriceChange extends PriceChangeRow {
+  lines: PriceChangeLine[];
+}
+
 /** Price changes, newest first, each with its lines: all, one status's, or one. */
 export async function listPriceChanges(
   tx: AppDb,
-  filter: { status?: (typeof priceChanges.$inferSelect)["status"]; id?: string } = {},
-) {
+  filter: { status?: PriceChangeRow["status"]; id?: string } = {},
+): Promise<ListedPriceChange[]> {
   const changes = await tx
     .select()
     .from(priceChanges)

@@ -29,6 +29,6 @@ redis.on("error", () => {
   // callers that matter already log once with context.
 });
 
-export async function closeRedis() {
+export async function closeRedis(): Promise<void> {
   await redis.quit().catch(() => redis.disconnect());
 }

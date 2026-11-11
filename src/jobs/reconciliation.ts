@@ -20,8 +20,18 @@ import { reconcile } from "@/lib/reconciliation";
  */
 const FINDINGS_PER_INSERT = 500;
 
-export async function reconcileAll() {
-  const tally = { facilities: 0, drifted: 0, findings: 0, failed: 0 };
+/** What a run found; the internal route answers with it. */
+export interface ReconciliationTally {
+  facilities: number;
+  /** Facilities with at least one finding. */
+  drifted: number;
+  findings: number;
+  /** Facilities whose check could not run. */
+  failed: number;
+}
+
+export async function reconcileAll(): Promise<ReconciliationTally> {
+  const tally: ReconciliationTally = { facilities: 0, drifted: 0, findings: 0, failed: 0 };
   const all = await db.select({ id: facilities.id }).from(facilities);
 
   for (const facility of all) {

@@ -1,3 +1,4 @@
+import type { User } from "better-auth";
 import type { SQL } from "drizzle-orm";
 
 import { sql } from "drizzle-orm";
@@ -49,7 +50,7 @@ async function redisReady() {
  * Wipes every table between tests. Discovered dynamically, so a new table
  * cannot silently start leaking state across tests.
  */
-export async function resetDb() {
+export async function resetDb(): Promise<void> {
   // Captured mail and rate-limit counters are per-test state like anything else.
   sentEmails.length = 0;
   await redisReady();
@@ -76,12 +77,12 @@ let ipCounter = 0;
  * address the rate limiter sees; giving each harness request its own keeps
  * one test's sign-ins from spending another's budget.
  */
-export function nextIp() {
+export function nextIp(): string {
   ipCounter += 1;
   return `10.${(ipCounter >> 16) & 255}.${(ipCounter >> 8) & 255}.${ipCounter & 255}`;
 }
 
-export async function postJson(path: string, body: unknown, headers: Record<string, string> = {}) {
+export async function postJson(path: string, body: unknown, headers: Record<string, string> = {}): Promise<Response> {
   return app.request(path, {
     method: "POST",
     headers: { "content-type": "application/json", "x-forwarded-for": nextIp(), ...headers },
@@ -107,7 +108,7 @@ function cookieFrom(setCookie: string) {
 let emailCounter = 0;
 
 /** A unique address, so tests never collide on user.email's unique index. */
-export function nextEmail() {
+export function nextEmail(): string {
   emailCounter += 1;
   return `person${emailCounter}@example.test`;
 }
@@ -115,7 +116,7 @@ export function nextEmail() {
 export const TEST_PASSWORD = "correct-horse-battery";
 
 /** An account made on the server, as an invitation makes one (lib/accounts.ts). */
-export async function createTestAccount(email: string, name = "Test User", role: UserRole = "user") {
+export async function createTestAccount(email: string, name = "Test User", role: UserRole = "user"): Promise<User> {
   return createAccount({ email, name, password: TEST_PASSWORD, role });
 }
 
@@ -151,6 +152,8 @@ export async function signedInUser(
 
 let facilityCounter = 0;
 
+type FacilityRow = typeof facilities.$inferSelect;
+
 /**
  * A facility, on the OWNER connection. Test setup legitimately works across
  * tenants: an isolation test needs two facilities before either can be shown
@@ -159,7 +162,7 @@ let facilityCounter = 0;
 export async function makeFacility(overrides: {
   name?: string;
   status?: "active" | "suspended";
-} = {}) {
+} = {}): Promise<FacilityRow> {
   facilityCounter += 1;
 
   const [facility] = await db
@@ -180,7 +183,7 @@ export async function makeFacility(overrides: {
  * (`OP0001`, `IP0001`, `ADM-2026-0001`), the fiscal series
  * (`INV-2026-000001`) and a cash price list.
  */
-export async function makeOnboardedFacility(overrides: { name?: string } = {}) {
+export async function makeOnboardedFacility(overrides: { name?: string } = {}): Promise<FacilityRow> {
   const facility = await makeFacility(overrides);
   const series: (typeof numberSeries.$inferInsert & { resetPeriod: "never" | "yearly" })[] = [
     { facilityId: facility.id, kind: "outpatient", prefix: "OP", resetPeriod: "never", padding: 4 },
@@ -248,7 +251,7 @@ export async function signedInUserAt(
  * forgets the facility header is testing the 400 path rather than what it
  * meant to.
  */
-export function facilityHeaders(facilityId: string, person?: TestUser) {
+export function facilityHeaders(facilityId: string, person?: TestUser): Record<string, string> {
   return {
     [FACILITY_HEADER]: facilityId,
     ...(person ? person.headers : {}),

@@ -52,7 +52,7 @@ const tokens = new Map<string, { value: string; expiresAt: number }>();
 /** A token request already on its way, shared by callers that miss the cache together. */
 const inFlight = new Map<string, Promise<string>>();
 
-export function resetDarajaTokens() {
+export function resetDarajaTokens(): void {
   tokens.clear();
   inFlight.clear();
 }

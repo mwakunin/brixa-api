@@ -4,7 +4,7 @@ import type { AppOpenAPI } from "./types";
 
 import packageJSON from "../../package.json" with { type: "json" };
 
-export default function configureOpenAPI(app: AppOpenAPI) {
+export default function configureOpenAPI(app: AppOpenAPI): void {
   app.doc("/doc", {
     openapi: "3.0.0",
     info: {

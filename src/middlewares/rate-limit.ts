@@ -1,4 +1,4 @@
-import type { Context } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
 import type { Redis } from "ioredis";
 import type { RateLimiterRes } from "rate-limiter-flexible";
 
@@ -115,7 +115,7 @@ export const bySignInEmailFromAddress: KeySource = async (c) => {
   return account === null ? null : `${account}:${await byAddress(c)}`;
 };
 
-export function rateLimit(options: RateLimitOptions) {
+export function rateLimit(options: RateLimitOptions): MiddlewareHandler<AppBindings> {
   const limiter = new RateLimiterRedis({
     storeClient: options.client ?? redis,
     keyPrefix: `rl:${options.keyPrefix}`,
@@ -209,4 +209,4 @@ export const rateLimits = {
    * domain, so this caps mail-bombing through a compromised admin account.
    */
   invitationsSent: () => rateLimit({ points: 50, duration: 3600, keyPrefix: "invite-send", key: byUserOrAddress }),
-};
+} satisfies Record<string, () => MiddlewareHandler<AppBindings>>;

@@ -28,8 +28,23 @@ export interface TasksClient {
 
 const googleAuth = new GoogleAuth({ scopes: "https://www.googleapis.com/auth/cloud-platform" });
 
+/** A Cloud Tasks create call: where it is sent, and the task it makes. */
+export interface DrainTaskRequest {
+  url: string;
+  data: {
+    task: {
+      name: string;
+      httpRequest: {
+        url: string;
+        httpMethod: "POST";
+        oidcToken: { serviceAccountEmail: string; audience: string };
+      };
+    };
+  };
+}
+
 /** The task that drains the outbox for one queued job. */
-export function drainTask(queue: string, outboxId: string, invokerEmail: string) {
+export function drainTask(queue: string, outboxId: string, invokerEmail: string): DrainTaskRequest {
   return {
     url: `https://cloudtasks.googleapis.com/v2/${queue}/tasks`,
     data: {

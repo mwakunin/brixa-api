@@ -201,7 +201,7 @@ export async function sendStkPush(job: { facilityId: string; subjectId: string; 
  * during it. One still `queued` or `sending` would otherwise wait for ever,
  * with the cashier polling it, so it is closed, and never sent again.
  */
-export async function closeAbandonedStkPush(job: { facilityId: string; subjectId: string }) {
+export async function closeAbandonedStkPush(job: { facilityId: string; subjectId: string }): Promise<void> {
   await runAsFacility(job.facilityId, async (tx) => {
     const [request] = await tx.select({ status: mpesaStkRequests.status }).from(mpesaStkRequests).where(eq(mpesaStkRequests.id, job.subjectId)).for("update").limit(1);
     if (request?.status === "sending")
@@ -217,12 +217,12 @@ export async function closeAbandonedStkPush(job: { facilityId: string; subjectId
  * first one's rows, so an early callback is never missed by both. Released
  * when the transaction ends.
  */
-export async function lockCheckout(tx: AppDb, facilityId: string, checkoutRequestId: string) {
+export async function lockCheckout(tx: AppDb, facilityId: string, checkoutRequestId: string): Promise<void> {
   await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`stk:${facilityId}:${checkoutRequestId}`}, 0))`);
 }
 
 /** Records that Safaricom has the prompt, and applies a callback that beat this here. */
-export async function recordSent(tx: AppDb, facilityId: string, requestId: string, sent: Awaited<ReturnType<typeof stkPush>>) {
+export async function recordSent(tx: AppDb, facilityId: string, requestId: string, sent: Awaited<ReturnType<typeof stkPush>>): Promise<void> {
   await lockCheckout(tx, facilityId, sent.checkoutRequestId);
   await recordExchange(tx, facilityId, { operation: "stk_push", stkRequestId: requestId, ...sent });
   // Safaricom has it, even if another delivery closed the request as interrupted meanwhile: reopened as sent.
@@ -460,8 +460,15 @@ export async function settleStkCallback(tx: AppDb, facilityId: string, requestId
   return settleForRequest(tx, facilityId, request, transaction);
 }
 
+export interface StkRequestView extends StkRow {
+  /** The M-Pesa receipt, once the prompt is paid. */
+  receiptNumber: string | null;
+  paymentId: string | null;
+  paymentReversed: boolean;
+}
+
 /** A prompt as the cashier polls it, with the payment it became and whether that was reversed. */
-export async function stkRequestView(tx: AppDb, id: string) {
+export async function stkRequestView(tx: AppDb, id: string): Promise<StkRequestView | null> {
   const [request] = await tx.select().from(mpesaStkRequests).where(eq(mpesaStkRequests.id, id)).limit(1);
   if (!request)
     return null;

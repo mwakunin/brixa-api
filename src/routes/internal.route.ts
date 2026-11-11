@@ -3,7 +3,7 @@ import * as HttpStatusCodes from "stoker/http-status-codes";
 import * as HttpStatusPhrases from "stoker/http-status-phrases";
 
 import type { InvokerVerifier } from "@/lib/invoker-auth";
-import type { AppBindings } from "@/lib/types";
+import type { AppBindings, AppOpenAPI } from "@/lib/types";
 
 import env from "@/env";
 import { accrueAllBedDays } from "@/jobs/bed-days";
@@ -42,7 +42,7 @@ export const RECONCILIATION_PATH = "/internal/jobs/reconciliation";
 /** The nightly close of outpatient visits left open. */
 export const CLOSE_VISITS_PATH = "/internal/jobs/close-visits";
 
-export function createInternalRouter(verifier: InvokerVerifier) {
+export function createInternalRouter(verifier: InvokerVerifier): AppOpenAPI {
   const router = createRouter();
 
   router.use("/internal/*", createMiddleware<AppBindings>(async (c, next) => {

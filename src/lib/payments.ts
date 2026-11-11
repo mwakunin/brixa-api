@@ -6,6 +6,7 @@ import { accounts, admissions, allocations, cashierShifts, documents, encounters
 
 import type { PrintedContent } from "./document-content";
 import type { PatientActor } from "./patients";
+import type { RefundStatus } from "./refunds";
 
 import { allocate, unallocatedCents } from "./allocations";
 import { recordAudit } from "./audit";
@@ -98,8 +99,21 @@ export async function openShift(tx: AppDb, facilityId: string, openingFloatCents
   }
 }
 
+export interface ShiftSummary extends ShiftRow {
+  cashCents: number;
+  cardCents: number;
+  paymentCount: number;
+  cashRefundsCents: number;
+  cardRefundsCents: number;
+  refundCount: number;
+  /** The opening float, plus cash taken, less cash refunded. */
+  expectedCashCents: number;
+  /** Counted less expected, once the shift is closed. */
+  varianceCents: number | null;
+}
+
 /** A shift with its takings and refunds paid out, derived: cash expected in the drawer, and the variance once closed. */
-export async function shiftSummary(tx: AppDb, shiftId: string) {
+export async function shiftSummary(tx: AppDb, shiftId: string): Promise<ShiftSummary> {
   const [shift] = await tx.select().from(cashierShifts).where(eq(cashierShifts.id, shiftId)).limit(1);
   if (!shift)
     throw new PaymentError("shift_not_found");
@@ -141,8 +155,6 @@ export async function shiftSummary(tx: AppDb, shiftId: string) {
   };
 }
 
-export type ShiftSummary = Awaited<ReturnType<typeof shiftSummary>>;
-
 export async function currentShift(tx: AppDb, membershipId: string): Promise<ShiftRow | null> {
   const [shift] = await tx
     .select()
@@ -153,7 +165,7 @@ export async function currentShift(tx: AppDb, membershipId: string): Promise<Shi
 }
 
 /** Closes the cashier's own shift with the cash they counted. */
-export async function closeShift(tx: AppDb, facilityId: string, shiftId: string, declaredCashCents: number, actor: PatientActor) {
+export async function closeShift(tx: AppDb, facilityId: string, shiftId: string, declaredCashCents: number, actor: PatientActor): Promise<ShiftSummary> {
   const [shift] = await tx.select().from(cashierShifts).where(eq(cashierShifts.id, shiftId)).for("update").limit(1);
   if (!shift)
     throw new PaymentError("shift_not_found");
@@ -178,7 +190,7 @@ export async function closeShift(tx: AppDb, facilityId: string, shiftId: string,
 }
 
 /** Recent shifts, newest first, for finance to review. */
-export async function listShifts(tx: AppDb) {
+export async function listShifts(tx: AppDb): Promise<ShiftRow[]> {
   return tx.select().from(cashierShifts).orderBy(desc(cashierShifts.openedAt), desc(cashierShifts.id)).limit(50);
 }
 
@@ -364,7 +376,7 @@ export async function recordPayment(tx: AppDb, facilityId: string, input: Paymen
  * (decided 2026-11-04). Refused while a refund from it stands: approved
  * and not reversed, whether paid out yet or not.
  */
-export async function reversePayment(tx: AppDb, facilityId: string, paymentId: string, reason: string, actor: PatientActor, at = new Date()) {
+export async function reversePayment(tx: AppDb, facilityId: string, paymentId: string, reason: string, actor: PatientActor, at = new Date()): Promise<void> {
   const [payment] = await tx.select().from(payments).where(eq(payments.id, paymentId)).for("update").limit(1);
   if (!payment)
     throw new PaymentError("payment_not_found");
@@ -402,8 +414,36 @@ export async function reversePayment(tx: AppDb, facilityId: string, paymentId: s
   });
 }
 
+/** Where part of a payment went: a bill it settles. */
+export interface PaymentAllocation {
+  id: string;
+  invoiceId: string;
+  invoiceNumber: string | null;
+  amountCents: number;
+  allocatedAt: Date;
+  reversedAt: Date | null;
+}
+
+/** A refund asked for out of a payment. */
+export interface PaymentRefund {
+  id: string;
+  amountCents: number;
+  status: RefundStatus;
+  number: string | null;
+  paidAt: Date | null;
+  reversedAt: Date | null;
+}
+
+export interface PaymentDetail extends PaymentRow {
+  receiptNumber: string;
+  /** What is left as credit; nothing on a reversed payment. */
+  unallocatedCents: number;
+  allocations: PaymentAllocation[];
+  refunds: PaymentRefund[];
+}
+
 /** A payment, its receipt number, where it went (bills and refunds), and what is left of it. */
-export async function paymentDetail(tx: AppDb, paymentId: string) {
+export async function paymentDetail(tx: AppDb, paymentId: string): Promise<PaymentDetail> {
   const [row] = await tx
     .select({ payment: payments, receiptNumber: documents.number })
     .from(payments)
@@ -451,8 +491,6 @@ export async function paymentDetail(tx: AppDb, paymentId: string) {
   };
 }
 
-export type PaymentDetail = Awaited<ReturnType<typeof paymentDetail>>;
-
 /** Opens a payment: a read of a patient's money, audited (rule 9). */
 export async function viewPayment(tx: AppDb, facilityId: string, paymentId: string, actor: PatientActor): Promise<PaymentDetail> {
   const detail = await paymentDetail(tx, paymentId);
@@ -467,11 +505,35 @@ export async function viewPayment(tx: AppDb, facilityId: string, paymentId: stri
   return detail;
 }
 
+/** A payment with credit left on it. */
+export interface AccountCredit {
+  paymentId: string;
+  encounterId: string | null;
+  receivedAt: Date;
+  unallocatedCents: number;
+}
+
+/** A finalised bill on the account, with what it still owes. */
+export interface AccountInvoice {
+  id: string;
+  number: string;
+  encounterId: string;
+  totalCents: number;
+  balanceCents: number;
+}
+
+export interface AccountView {
+  creditCents: number;
+  owedCents: number;
+  credit: AccountCredit[];
+  invoices: AccountInvoice[];
+}
+
 /**
  * A patient's account as the cashier sees it: credit not yet applied, and
  * every finalised bill with what it still owes. Opening it is audited (rule 9).
  */
-export async function viewAccount(tx: AppDb, facilityId: string, patientId: string, actor: PatientActor) {
+export async function viewAccount(tx: AppDb, facilityId: string, patientId: string, actor: PatientActor): Promise<AccountView> {
   const [patient] = await tx.select({ id: patients.id }).from(patients).where(eq(patients.id, patientId)).limit(1);
   if (!patient)
     throw new PaymentError("patient_not_found");

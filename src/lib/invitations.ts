@@ -48,7 +48,7 @@ export class InvitationError extends Error {
 }
 
 /** Only the hash is stored, so a database reader cannot accept an invitation. */
-export function hashToken(token: string) {
+export function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
@@ -61,7 +61,7 @@ export function hashToken(token: string) {
  * first email, so an earlier link never stops working while the invitation
  * is open. Rotating the secret invalidates every open link; invite again.
  */
-export function invitationToken(invitationId: string) {
+export function invitationToken(invitationId: string): string {
   return createHmac("sha256", env.BETTER_AUTH_SECRET).update(`invitation-token:${invitationId}`).digest("base64url");
 }
 
@@ -217,6 +217,13 @@ export async function sendInvitation(job: { facilityId: string; subjectId: strin
   return "done";
 }
 
+export interface AcceptedInvitation {
+  facilityId: string;
+  facilityName: string;
+  /** Whether accepting made a new account, rather than joining an existing one. */
+  accountCreated: boolean;
+}
+
 /**
  * Accepts the invitation a link's token names.
  *
@@ -226,7 +233,7 @@ export async function sendInvitation(job: { facilityId: string; subjectId: strin
  * runs in that facility's tenant transaction, with the invitation locked so a
  * double click cannot grant two memberships.
  */
-export async function acceptInvitation(input: { token: string; password?: string }) {
+export async function acceptInvitation(input: { token: string; password?: string }): Promise<AcceptedInvitation> {
   const tokenHash = hashToken(input.token);
 
   const [found] = await db
@@ -367,7 +374,7 @@ async function acceptLocked(
 export async function revokeInvitation(
   tx: AppDb,
   input: { facilityId: string; invitationId: string; actorId: string },
-) {
+): Promise<void> {
   const [invitation] = await tx
     .select({ id: invitations.id, email: invitations.email, status: invitations.status })
     .from(invitations)

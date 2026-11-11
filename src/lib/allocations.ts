@@ -25,6 +25,7 @@ import { formatKes } from "./money";
 
 type PaymentRow = typeof payments.$inferSelect;
 type InvoiceRow = typeof invoices.$inferSelect;
+type AllocationRow = typeof allocations.$inferSelect;
 
 export class AllocationError extends Error {
   constructor(readonly code:
@@ -141,7 +142,7 @@ export async function allocate(
  * payments tagged to it, oldest first, then by id. Called before the
  * invoice's lock (M8: payments before invoices).
  */
-export async function lockEncounterCredit(tx: AppDb, encounterId: string, accountId: string) {
+export async function lockEncounterCredit(tx: AppDb, encounterId: string, accountId: string): Promise<{ id: string; freeCents: number }[]> {
   const rows = await tx
     .select({ id: payments.id, amountCents: payments.amountCents })
     .from(payments)
@@ -209,7 +210,7 @@ export async function applyCredit(
  * reversed payment the allocation already counts for nothing, and there is
  * no credit to return.
  */
-export async function reverseAllocation(tx: AppDb, facilityId: string, id: string, reason: string, actor: PatientActor) {
+export async function reverseAllocation(tx: AppDb, facilityId: string, id: string, reason: string, actor: PatientActor): Promise<AllocationRow> {
   const [allocation] = await tx.select().from(allocations).where(eq(allocations.id, id)).for("update").limit(1);
   if (!allocation)
     throw new AllocationError("allocation_not_found");

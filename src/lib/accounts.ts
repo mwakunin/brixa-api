@@ -1,3 +1,5 @@
+import type { User } from "better-auth";
+
 import { auth } from "./auth";
 
 /**
@@ -40,7 +42,7 @@ export async function createAccount(input: {
   name: string;
   password: string;
   role?: "user" | "superadmin";
-}) {
+}): Promise<User> {
   const context = await auth.$context;
   const email = input.email.toLowerCase();
   const hash = await context.password.hash(input.password);

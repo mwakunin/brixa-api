@@ -129,7 +129,7 @@ export async function requestRefund(
   return refund.id;
 }
 
-export async function approveRefund(tx: AppDb, facilityId: string, id: string, actor: PatientActor, at = new Date()) {
+export async function approveRefund(tx: AppDb, facilityId: string, id: string, actor: PatientActor, at = new Date()): Promise<void> {
   const [found] = await tx.select({ paymentId: refunds.paymentId }).from(refunds).where(eq(refunds.id, id)).limit(1);
   if (!found)
     throw new RefundError("not_found");
@@ -153,7 +153,7 @@ export async function approveRefund(tx: AppDb, facilityId: string, id: string, a
   });
 }
 
-export async function rejectRefund(tx: AppDb, facilityId: string, id: string, actor: PatientActor) {
+export async function rejectRefund(tx: AppDb, facilityId: string, id: string, actor: PatientActor): Promise<void> {
   const refund = await lockPending(tx, id);
   if (refund.requestedBy === actor.membershipId)
     throw new RefundError("same_person");
@@ -170,7 +170,7 @@ export async function rejectRefund(tx: AppDb, facilityId: string, id: string, ac
   });
 }
 
-export async function withdrawRefund(tx: AppDb, facilityId: string, id: string, actor: PatientActor) {
+export async function withdrawRefund(tx: AppDb, facilityId: string, id: string, actor: PatientActor): Promise<void> {
   const refund = await lockPending(tx, id);
   if (refund.requestedBy !== actor.membershipId)
     throw new RefundError("not_requester");
@@ -278,7 +278,7 @@ export async function payRefund(
  * payout recorded in error, voiding its document. Either way its amount
  * returns to the payment's credit.
  */
-export async function reverseRefund(tx: AppDb, facilityId: string, id: string, reason: string, actor: PatientActor, at = new Date()) {
+export async function reverseRefund(tx: AppDb, facilityId: string, id: string, reason: string, actor: PatientActor, at = new Date()): Promise<void> {
   const refund = await lockRefund(tx, id);
   if (refund.status !== "approved")
     throw new RefundError("not_approved");
@@ -304,18 +304,40 @@ export async function reverseRefund(tx: AppDb, facilityId: string, id: string, r
   });
 }
 
+export interface ListedRefund {
+  id: string;
+  paymentId: string;
+  /** The receipt of the payment refunded. */
+  receiptNumber: string;
+  /** The refund's own document and number, once paid out. */
+  documentId: string | null;
+  number: string | null;
+  amountCents: number;
+  reason: string;
+  status: RefundStatus;
+  requestedBy: string;
+  requestedAt: Date;
+  decidedBy: string | null;
+  decidedAt: Date | null;
+  paidBy: string | null;
+  paidAt: Date | null;
+  method: RefundMethod | null;
+  reference: string | null;
+  reversedAt: Date | null;
+  reversalReason: string | null;
+}
+
 /**
  * Refunds, newest first: the approver's queue at `pending`; with `toPay`, the
  * cashier's (approved, not paid out, not reversed). Names no patient.
  */
-export async function listRefunds(tx: AppDb, filter: { status?: RefundStatus; toPay?: boolean; id?: string } = {}) {
+export async function listRefunds(tx: AppDb, filter: { status?: RefundStatus; toPay?: boolean; id?: string } = {}): Promise<ListedRefund[]> {
   const receipt = alias(documents, "receipt");
   return tx
     .select({
       id: refunds.id,
       paymentId: refunds.paymentId,
       receiptNumber: receipt.number,
-      /** The refund's own document and number, once paid out. */
       documentId: refunds.documentId,
       number: documents.number,
       amountCents: refunds.amountCents,
@@ -344,5 +366,3 @@ export async function listRefunds(tx: AppDb, filter: { status?: RefundStatus; to
     .orderBy(desc(refunds.requestedAt), desc(refunds.id))
     .limit(100);
 }
-
-export type ListedRefund = Awaited<ReturnType<typeof listRefunds>>[number];

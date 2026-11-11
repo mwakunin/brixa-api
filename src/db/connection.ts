@@ -72,7 +72,7 @@ function weakeningIn(connectionString: string): string | null {
  * verified certificate, so a misconfigured deployment fails at startup
  * rather than sending health data in the clear.
  */
-export function sslConfigFor(connectionString: string) {
+export function sslConfigFor(connectionString: string): false | { rejectUnauthorized: true } {
   if (isLocalDatabase(connectionString))
     return false as const;
 
