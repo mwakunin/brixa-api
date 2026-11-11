@@ -1,3 +1,6 @@
+import type { facilities } from "@/db/schema";
+import type { PatientActor } from "@/lib/patients";
+
 import app from "@/app";
 import { addDays, businessDate, startOfBusinessDay } from "@/lib/dates";
 
@@ -10,7 +13,7 @@ import { addMembership, facilityHeaders, makeOnboardedFacility, nextIp, signedIn
 
 export type Person = Awaited<ReturnType<typeof signedInUser>>;
 
-export function call(method: string, path: string, facilityId: string, person: Person, body?: unknown) {
+export async function call(method: string, path: string, facilityId: string, person: Person, body?: unknown): Promise<Response> {
   return app.request(path, {
     method,
     headers: { ...facilityHeaders(facilityId, person), "content-type": "application/json", "x-forwarded-for": nextIp() },
@@ -29,8 +32,30 @@ export function call(method: string, path: string, facilityId: string, person: P
 export let TODAY = businessDate();
 
 /** `hours` after the start of the Kenyan day `offset` days from today. */
-export function at(offset: number, hours: number) {
+export function at(offset: number, hours: number): Date {
   return new Date(startOfBusinessDay(addDays(TODAY, offset)).getTime() + hours * 3_600_000);
+}
+
+/** Someone on the hospital's staff, with the actor their acts are recorded as. */
+export interface StaffMember extends Person {
+  actor: PatientActor;
+}
+
+export interface Hospital {
+  facility: typeof facilities.$inferSelect;
+  admin: StaffMember;
+  finance: StaffMember;
+  clerk: StaffMember;
+  cashier: StaffMember;
+  auditor: StaffMember;
+  /** A nurse who also registers patients. */
+  nurse: StaffMember;
+  /** Billable item ids. */
+  items: { consultation: string; tablet: string; generalNight: string; privateNight: string; unpriced: string };
+  /** A bed in each ward. */
+  beds: { general: string; private: string; unrated: string };
+  /** Registers a new patient and returns their id. */
+  patient: () => Promise<string>;
 }
 
 /**
@@ -38,7 +63,7 @@ export function at(offset: number, hours: number) {
  * KES 2.50, and two bed-days), two wards whose nights are charged at those
  * rates and one whose are not, and the staff to work it.
  */
-export async function hospital() {
+export async function hospital(): Promise<Hospital> {
   TODAY = businessDate();
   const facility = await makeOnboardedFacility();
   const person = async (roles: Parameters<typeof addMembership>[2]) => {
@@ -98,5 +123,3 @@ export async function hospital() {
 
   return { facility, admin, finance, clerk, cashier, auditor, nurse, items, beds, patient };
 }
-
-export type Hospital = Awaited<ReturnType<typeof hospital>>;

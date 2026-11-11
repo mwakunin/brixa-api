@@ -12,7 +12,7 @@ import { Pool } from "pg";
  * The migrator is called directly rather than through the drizzle-kit binary,
  * so the same setup runs under Windows' cmd.exe and Linux CI alike.
  */
-export default async function setup() {
+export default async function setup(): Promise<void> {
   if (process.env.NODE_ENV !== "test")
     throw new Error("Test global-setup ran outside NODE_ENV=test");
 

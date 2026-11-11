@@ -138,7 +138,7 @@ async function printedCreditNote(tx: AppDb, invoice: typeof invoices.$inferSelec
 }
 
 /** Approves an adjustment, by someone other than the requester. A credit note takes its number now. */
-export async function approveAdjustment(tx: AppDb, facilityId: string, id: string, actor: PatientActor, at = new Date()) {
+export async function approveAdjustment(tx: AppDb, facilityId: string, id: string, actor: PatientActor, at = new Date()): Promise<{ number: string | null }> {
   const [found] = await tx.select({ invoiceId: invoiceAdjustments.invoiceId }).from(invoiceAdjustments).where(eq(invoiceAdjustments.id, id)).limit(1);
   if (!found)
     throw new AdjustmentError("not_found");
@@ -172,7 +172,7 @@ export async function approveAdjustment(tx: AppDb, facilityId: string, id: strin
   return { number: document?.number ?? null };
 }
 
-export async function rejectAdjustment(tx: AppDb, facilityId: string, id: string, actor: PatientActor) {
+export async function rejectAdjustment(tx: AppDb, facilityId: string, id: string, actor: PatientActor): Promise<void> {
   const adjustment = await lockPending(tx, id);
   if (adjustment.requestedBy === actor.membershipId)
     throw new AdjustmentError("same_person");
@@ -189,7 +189,7 @@ export async function rejectAdjustment(tx: AppDb, facilityId: string, id: string
   });
 }
 
-export async function withdrawAdjustment(tx: AppDb, facilityId: string, id: string, actor: PatientActor) {
+export async function withdrawAdjustment(tx: AppDb, facilityId: string, id: string, actor: PatientActor): Promise<void> {
   const adjustment = await lockPending(tx, id);
   if (adjustment.requestedBy !== actor.membershipId)
     throw new AdjustmentError("not_requester");
@@ -206,15 +206,33 @@ export async function withdrawAdjustment(tx: AppDb, facilityId: string, id: stri
   });
 }
 
+export interface ListedAdjustment {
+  id: string;
+  invoiceId: string;
+  invoiceNumber: string | null;
+  /** An approved credit note's own document and number. */
+  documentId: string | null;
+  number: string | null;
+  kind: AdjustmentKind;
+  amountCents: number;
+  reason: string;
+  status: AdjustmentStatus;
+  requestedBy: string;
+  requestedAt: Date;
+  decidedBy: string | null;
+  decidedAt: Date | null;
+  reversedAt: Date | null;
+  reversalReason: string | null;
+}
+
 /** Adjustments, newest first: the approver's queue when filtered to `pending`. Names no patient. */
-export async function listAdjustments(tx: AppDb, filter: { status?: AdjustmentStatus; id?: string } = {}) {
+export async function listAdjustments(tx: AppDb, filter: { status?: AdjustmentStatus; id?: string } = {}): Promise<ListedAdjustment[]> {
   const invoiceDocument = alias(documents, "invoice_document");
   return tx
     .select({
       id: invoiceAdjustments.id,
       invoiceId: invoiceAdjustments.invoiceId,
       invoiceNumber: invoiceDocument.number,
-      /** An approved credit note's own document and number. */
       documentId: invoiceAdjustments.documentId,
       number: documents.number,
       kind: invoiceAdjustments.kind,
@@ -298,7 +316,7 @@ async function lockPendingReversal(tx: AppDb, id: string) {
  * again, and a credit note's document is voided (it keeps its number).
  * Locks the adjustment, then the request (M8: adjustments after invoices).
  */
-export async function approveReversal(tx: AppDb, facilityId: string, id: string, actor: PatientActor, at = new Date()) {
+export async function approveReversal(tx: AppDb, facilityId: string, id: string, actor: PatientActor, at = new Date()): Promise<void> {
   const [found] = await tx.select({ adjustmentId: adjustmentReversals.adjustmentId }).from(adjustmentReversals).where(eq(adjustmentReversals.id, id)).limit(1);
   if (!found)
     throw new AdjustmentError("reversal_not_found");
@@ -328,7 +346,7 @@ export async function approveReversal(tx: AppDb, facilityId: string, id: string,
   });
 }
 
-export async function rejectReversal(tx: AppDb, facilityId: string, id: string, actor: PatientActor) {
+export async function rejectReversal(tx: AppDb, facilityId: string, id: string, actor: PatientActor): Promise<void> {
   const reversal = await lockPendingReversal(tx, id);
   if (reversal.requestedBy === actor.membershipId)
     throw new AdjustmentError("same_person");
@@ -344,7 +362,7 @@ export async function rejectReversal(tx: AppDb, facilityId: string, id: string, 
   });
 }
 
-export async function withdrawReversal(tx: AppDb, facilityId: string, id: string, actor: PatientActor) {
+export async function withdrawReversal(tx: AppDb, facilityId: string, id: string, actor: PatientActor): Promise<void> {
   const reversal = await lockPendingReversal(tx, id);
   if (reversal.requestedBy !== actor.membershipId)
     throw new AdjustmentError("not_requester");
@@ -360,8 +378,22 @@ export async function withdrawReversal(tx: AppDb, facilityId: string, id: string
   });
 }
 
+export interface ListedReversal {
+  id: string;
+  adjustmentId: string;
+  invoiceId: string;
+  kind: AdjustmentKind;
+  amountCents: number;
+  reason: string;
+  status: AdjustmentStatus;
+  requestedBy: string;
+  requestedAt: Date;
+  decidedBy: string | null;
+  decidedAt: Date | null;
+}
+
 /** Reversal requests, newest first: the approver's queue at `pending`. At most 100. Names no patient. */
-export async function listReversals(tx: AppDb, filter: { status?: AdjustmentStatus; id?: string; offset?: number } = {}) {
+export async function listReversals(tx: AppDb, filter: { status?: AdjustmentStatus; id?: string; offset?: number } = {}): Promise<ListedReversal[]> {
   return tx
     .select({
       id: adjustmentReversals.id,

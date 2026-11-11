@@ -14,6 +14,9 @@ import { isUniqueViolation } from "./db-errors";
  * transfer. Occupancy is derived from open bed stays, never stored (rule 4).
  */
 
+type WardRow = typeof wards.$inferSelect;
+type BedRow = typeof beds.$inferSelect;
+
 export class WardError extends Error {
   constructor(readonly code: "ward_not_found" | "name_taken" | "label_taken" | "not_a_bed_day_item") {
     super({
@@ -31,7 +34,7 @@ export class WardError extends Error {
  * price list on each night's date, so a ward's rate changes by price change,
  * not by editing the ward.
  */
-export async function setBedDayItem(tx: AppDb, facilityId: string, wardId: string, itemId: string, actor: PatientActor) {
+export async function setBedDayItem(tx: AppDb, facilityId: string, wardId: string, itemId: string, actor: PatientActor): Promise<WardRow> {
   const [item] = await tx.select().from(billableItems).where(eq(billableItems.id, itemId)).limit(1);
   if (!item || item.category !== "bed_day" || !item.isActive)
     throw new WardError("not_a_bed_day_item");
@@ -52,7 +55,7 @@ export async function setBedDayItem(tx: AppDb, facilityId: string, wardId: strin
   return ward;
 }
 
-export async function createWard(tx: AppDb, facilityId: string, name: string, actor: PatientActor) {
+export async function createWard(tx: AppDb, facilityId: string, name: string, actor: PatientActor): Promise<WardRow> {
   try {
     const [ward] = await tx.insert(wards).values({ facilityId, name }).returning();
     await recordAudit(tx, {
@@ -72,7 +75,7 @@ export async function createWard(tx: AppDb, facilityId: string, name: string, ac
   }
 }
 
-export async function addBed(tx: AppDb, facilityId: string, wardId: string, label: string, actor: PatientActor) {
+export async function addBed(tx: AppDb, facilityId: string, wardId: string, label: string, actor: PatientActor): Promise<BedRow> {
   const [ward] = await tx.select({ id: wards.id, name: wards.name }).from(wards).where(eq(wards.id, wardId)).limit(1);
   if (!ward)
     throw new WardError("ward_not_found");
@@ -96,8 +99,16 @@ export async function addBed(tx: AppDb, facilityId: string, wardId: string, labe
   }
 }
 
+export interface ListedWard {
+  id: string;
+  name: string;
+  isActive: boolean;
+  bedDayItemId: string | null;
+  beds: { id: string; label: string; isActive: boolean; occupied: boolean }[];
+}
+
 /** Every ward with its beds, and whether each bed is occupied now. */
-export async function listWards(tx: AppDb) {
+export async function listWards(tx: AppDb): Promise<ListedWard[]> {
   const rows = await tx
     .select({
       wardId: wards.id,
@@ -115,13 +126,7 @@ export async function listWards(tx: AppDb) {
     .leftJoin(beds, eq(beds.wardId, wards.id))
     .orderBy(asc(wards.name), asc(beds.label));
 
-  const byWard = new Map<string, {
-    id: string;
-    name: string;
-    isActive: boolean;
-    bedDayItemId: string | null;
-    beds: { id: string; label: string; isActive: boolean; occupied: boolean }[];
-  }>();
+  const byWard = new Map<string, ListedWard>();
   for (const row of rows) {
     const ward = byWard.get(row.wardId)
       ?? { id: row.wardId, name: row.wardName, isActive: row.wardActive, bedDayItemId: row.bedDayItemId, beds: [] };
@@ -132,8 +137,16 @@ export async function listWards(tx: AppDb) {
   return [...byWard.values()];
 }
 
+export interface BedWithWard {
+  id: string;
+  label: string;
+  isActive: boolean;
+  wardName: string;
+  wardActive: boolean;
+}
+
 /** The bed and its ward, if it exists here. */
-export async function bedWithWard(tx: AppDb, bedId: string) {
+export async function bedWithWard(tx: AppDb, bedId: string): Promise<BedWithWard | null> {
   const [bed] = await tx
     .select({ id: beds.id, label: beds.label, isActive: beds.isActive, wardName: wards.name, wardActive: wards.isActive })
     .from(beds)

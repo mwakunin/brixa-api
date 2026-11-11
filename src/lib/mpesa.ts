@@ -54,8 +54,14 @@ export class MpesaError extends Error {
 // Settings
 // ---------------------------------------------------------------------------
 
+export interface CallbackUrls {
+  confirmation: string;
+  validation: string;
+  stk: string;
+}
+
 /** The URLs Safaricom calls for this facility. The token in them is a secret. */
-export function callbackUrls(token: string) {
+export function callbackUrls(token: string): CallbackUrls {
   const base = `${new URL(env.BETTER_AUTH_URL).origin}/webhooks/mpesa/${token}`;
   return { confirmation: `${base}/c2b/confirmation`, validation: `${base}/c2b/validation`, stk: `${base}/stk/callback` };
 }
@@ -75,7 +81,7 @@ export async function saveSettings(
   facilityId: string,
   input: { shortcode: string } & DarajaCredentials,
   actor: PatientActor,
-) {
+): Promise<void> {
   const [existing] = await tx.select({ callbackToken: mpesaSettings.callbackToken }).from(mpesaSettings).limit(1);
   const credentials = encryptSecret(JSON.stringify({
     consumerKey: input.consumerKey,
@@ -99,8 +105,16 @@ export async function saveSettings(
   });
 }
 
+export interface MpesaSettingsView {
+  shortcode: string;
+  urlsRegisteredAt: Date | null;
+  /** The last registration attempt's error, if it failed. */
+  lastRegistrationError: string | null;
+  callbackUrls: CallbackUrls;
+}
+
 /** What the admin sees: never the credentials, only that they are set. */
-export async function settingsView(tx: AppDb) {
+export async function settingsView(tx: AppDb): Promise<MpesaSettingsView | null> {
   const [settings] = await tx.select().from(mpesaSettings).limit(1);
   if (!settings)
     return null;
@@ -122,7 +136,7 @@ export async function recordExchange(
   tx: AppDb,
   facilityId: string,
   row: { operation: typeof gatewayExchanges.$inferInsert["operation"]; stkRequestId?: string | null; error?: string } & Partial<Exchange>,
-) {
+): Promise<void> {
   await tx.insert(gatewayExchanges).values({
     facilityId,
     gateway: "daraja",
@@ -291,8 +305,23 @@ export async function matchTransaction(tx: AppDb, facilityId: string, id: string
 // The queue
 // ---------------------------------------------------------------------------
 
+export interface ListedTransaction {
+  id: string;
+  source: TransactionRow["source"];
+  transactionId: string;
+  accountReference: string | null;
+  msisdn: string;
+  payerName: string | null;
+  amountCents: number;
+  transactedAt: Date;
+  status: TransactionRow["status"];
+  statusReason: string | null;
+  /** The live payment it became, if placed. */
+  paymentId: string | null;
+}
+
 /** M-Pesa transactions, newest first; `unmatched` is the cashier's queue. At most 100. */
-export async function listTransactions(tx: AppDb, filter: { status?: TransactionRow["status"]; id?: string; transactionId?: string; offset?: number } = {}) {
+export async function listTransactions(tx: AppDb, filter: { status?: TransactionRow["status"]; id?: string; transactionId?: string; offset?: number } = {}): Promise<ListedTransaction[]> {
   return tx
     .select({
       id: mpesaTransactions.id,
@@ -318,8 +347,6 @@ export async function listTransactions(tx: AppDb, filter: { status?: Transaction
     .limit(100)
     .offset(filter.offset ?? 0);
 }
-
-export type ListedTransaction = Awaited<ReturnType<typeof listTransactions>>[number];
 
 async function lockUnmatched(tx: AppDb, id: string): Promise<TransactionRow> {
   const [transaction] = await tx.select().from(mpesaTransactions).where(eq(mpesaTransactions.id, id)).for("update").limit(1);
@@ -358,7 +385,7 @@ export async function assignTransaction(tx: AppDb, facilityId: string, id: strin
 }
 
 /** Finance sets a transaction aside, e.g. paid in error and reversed with Safaricom. */
-export async function rejectTransaction(tx: AppDb, facilityId: string, id: string, reason: string, actor: PatientActor) {
+export async function rejectTransaction(tx: AppDb, facilityId: string, id: string, reason: string, actor: PatientActor): Promise<void> {
   const transaction = await lockUnmatched(tx, id);
   await tx.update(mpesaTransactions).set({ status: "rejected", statusReason: reason }).where(eq(mpesaTransactions.id, id));
   await recordAudit(tx, {

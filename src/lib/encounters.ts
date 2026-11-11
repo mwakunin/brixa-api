@@ -177,7 +177,7 @@ export async function openEncounter(
  * queue is never dropped from it by closing their visit: they are finished
  * with or taken out first, so nobody waits for a call that cannot come.
  */
-export async function closeEncounter(tx: AppDb, facilityId: string, id: string, actor: PatientActor, at = new Date()) {
+export async function closeEncounter(tx: AppDb, facilityId: string, id: string, actor: PatientActor, at = new Date()): Promise<EncounterRow> {
   const encounter = await lockEncounter(tx, id);
   if (encounter.kind === "ipd")
     throw new EncounterError("use_discharge");
@@ -209,7 +209,7 @@ export async function closeEncounter(tx: AppDb, facilityId: string, id: string, 
  * recorded was not simply a mistake, and the records are marked entered in
  * error (drafts discarded) first if it was.
  */
-export async function cancelEncounter(tx: AppDb, facilityId: string, id: string, reason: string, actor: PatientActor, at = new Date()) {
+export async function cancelEncounter(tx: AppDb, facilityId: string, id: string, reason: string, actor: PatientActor, at = new Date()): Promise<EncounterRow> {
   const encounter = await lockEncounter(tx, id);
   // Its queue first: cancelling the entry cancels the fee it raised, if unbilled.
   await endLiveEntry(tx, facilityId, id, actor, at);
@@ -370,7 +370,7 @@ export async function transferPatient(
   bedId: string,
   actor: PatientActor,
   at = new Date(),
-) {
+): Promise<void> {
   const encounter = await lockEncounter(tx, encounterId);
   const admission = await admissionOf(tx, encounter);
 
@@ -408,7 +408,7 @@ export async function dischargePatient(
   disposition: Disposition,
   actor: PatientActor,
   at = new Date(),
-) {
+): Promise<void> {
   const encounter = await lockEncounter(tx, encounterId);
   const admission = await admissionOf(tx, encounter);
 

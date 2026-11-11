@@ -1,4 +1,5 @@
-import type { Schema } from "hono";
+import type { MiddlewareHandler, Schema } from "hono";
+import type { MergeSchemaPath } from "hono/types";
 
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { cors } from "hono/cors";
@@ -11,13 +12,13 @@ import { withSession } from "@/middlewares/auth";
 import { pinoLogger } from "@/middlewares/pino-logger";
 import { rateLimits } from "@/middlewares/rate-limit";
 
-import type { AppBindings, AppOpenAPI, TenantBindings } from "./types";
+import type { AppBindings, AppOpenAPI, TenantBindings, TenantOpenAPI } from "./types";
 
 import { appOrigin, auth } from "./auth";
 import { FACILITY_HEADER } from "./constants";
 import { onError } from "./on-error";
 
-export function createRouter() {
+export function createRouter(): AppOpenAPI {
   return new OpenAPIHono<AppBindings>({
     strict: false,
     defaultHook,
@@ -32,7 +33,7 @@ export function createRouter() {
  * for a module-level connection is a type error. Mount these behind
  * `withFacility`.
  */
-export function createTenantRouter() {
+export function createTenantRouter(): TenantOpenAPI {
   return new OpenAPIHono<TenantBindings>({
     strict: false,
     defaultHook,
@@ -50,7 +51,7 @@ export function createTenantRouter() {
  * `withFacility` sees it. If the API is later served from
  * the app's own origin through a proxy, this simply never fires.
  */
-export function staffAppCors() {
+export function staffAppCors(): MiddlewareHandler {
   return cors({
     origin: origin => (origin === appOrigin ? origin : null),
     credentials: true,
@@ -68,14 +69,14 @@ export function staffAppCors() {
  * read by the staff app's site, not only this origin, since the app opens a
  * document's PDF from its own pages.
  */
-export function hardenedHeaders() {
+export function hardenedHeaders(): MiddlewareHandler {
   return secureHeaders({
     strictTransportSecurity: "max-age=31536000; includeSubDomains",
     crossOriginResourcePolicy: "same-site",
   });
 }
 
-export default function createApp() {
+export default function createApp(): AppOpenAPI {
   const app = createRouter();
   // Headers first: a CORS preflight is answered by `staffAppCors` without
   // reaching anything registered after it, and it must carry them too.
@@ -106,6 +107,6 @@ export default function createApp() {
   return app;
 }
 
-export function createTestApp<S extends Schema>(router: AppOpenAPI<S>) {
+export function createTestApp<S extends Schema>(router: AppOpenAPI<S>): AppOpenAPI<MergeSchemaPath<S, "/">> {
   return createApp().route("/", router);
 }

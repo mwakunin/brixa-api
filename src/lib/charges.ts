@@ -5,6 +5,7 @@ import type { AppDb } from "@/db";
 import { admissions, beds, bedStays, billableItems, charges, encounters, jobFailures, queueEntries, wards } from "@/db/schema";
 
 import type { PatientActor } from "./patients";
+import type { ItemCategory } from "./prices";
 
 import { recordAudit } from "./audit";
 import { assignedByCharge } from "./billing";
@@ -234,7 +235,7 @@ async function resolveFailures(tx: AppDb, encounterId: string, stillMissing: str
  * Cancels a charge, for a stated reason, while no live invoice asks for it
  * (M4). One on a bill is released by voiding that bill first.
  */
-export async function cancelCharge(tx: AppDb, facilityId: string, chargeId: string, reason: string, actor: PatientActor) {
+export async function cancelCharge(tx: AppDb, facilityId: string, chargeId: string, reason: string, actor: PatientActor): Promise<ChargeRow> {
   const [found] = await tx.select({ encounterId: charges.encounterId }).from(charges).where(eq(charges.id, chargeId)).limit(1);
   if (!found)
     throw new ChargeError("charge_not_found");
@@ -263,8 +264,26 @@ export async function cancelCharge(tx: AppDb, facilityId: string, chargeId: stri
   return cancelled;
 }
 
+export interface ListedCharge {
+  id: string;
+  code: string;
+  name: string;
+  category: ItemCategory;
+  quantity: string;
+  unitPriceCents: number;
+  amountCents: number;
+  serviceDate: string;
+  /** Raised by the nightly bed-day run. */
+  bedDay: boolean;
+  /** Set on a charge posted by hand. */
+  manualReason: string | null;
+  capturedAt: Date;
+  cancelledAt: Date | null;
+  cancellationReason: string | null;
+}
+
 /** An encounter's charges, oldest first, with each item's code and name. */
-export async function listCharges(tx: AppDb, encounterId: string) {
+export async function listCharges(tx: AppDb, encounterId: string): Promise<ListedCharge[]> {
   return tx
     .select({
       id: charges.id,

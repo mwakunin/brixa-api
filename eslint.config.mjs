@@ -19,6 +19,9 @@ export default antfu({
     "antfu/no-top-level-await": ["off"],
     "node/prefer-global/process": ["off"],
     "node/no-process-env": ["error"],
+    // Exported functions declare what they return, so a change to a body
+    // cannot quietly change a module's contract.
+    "ts/explicit-module-boundary-types": ["error"],
     "perfectionist/sort-imports": ["error", {
       tsconfigRootDir: ".",
     }],

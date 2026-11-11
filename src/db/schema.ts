@@ -1,3 +1,6 @@
+import type { HasDefault, NotNull, SQL } from "drizzle-orm";
+import type { CheckBuilder, PgTimestampBuilderInitial } from "drizzle-orm/pg-core";
+
 import { sql } from "drizzle-orm";
 import {
   boolean,
@@ -38,13 +41,13 @@ export { account, session, user, verification };
 // ---------------------------------------------------------------------------
 
 /** Instants are timestamptz (CLAUDE.md rule 14). */
-export function createdAt() {
+export function createdAt(): HasDefault<NotNull<PgTimestampBuilderInitial<"created_at">>> {
   return timestamp("created_at", { withTimezone: true }).notNull().defaultNow();
 }
 
 // `.$onUpdate` is what makes updated_at move; `.defaultNow()` alone freezes it
 // at insert time.
-export function updatedAt() {
+export function updatedAt(): HasDefault<HasDefault<NotNull<PgTimestampBuilderInitial<"updated_at">>>> {
   return timestamp("updated_at", { withTimezone: true })
     .notNull()
     .defaultNow()
@@ -81,7 +84,7 @@ function assertDdlSafe(name: string, values: readonly string[]) {
  * A CHECK rather than a pgEnum because it changes in one ordinary migration.
  * The values are literals, not bind parameters: DDL cannot take `$1`.
  */
-export function oneOf(name: string, column: unknown, values: readonly string[]) {
+export function oneOf(name: string, column: unknown, values: readonly string[]): CheckBuilder {
   assertDdlSafe(name, values);
   const list = values.map(v => `'${v}'`).join(", ");
   return check(name, sql`${column} IN (${sql.raw(list)})`);
@@ -94,7 +97,7 @@ export function oneOf(name: string, column: unknown, values: readonly string[]) 
  * that serve them: Postgres uses an expression index only for the very same
  * expression.
  */
-export function normalisedNumber(column: unknown) {
+export function normalisedNumber(column: unknown): SQL {
   return sql`upper(regexp_replace(${column}, '[\\s/\\-_.]', '', 'g'))`;
 }
 
@@ -103,7 +106,7 @@ export function normalisedNumber(column: unknown) {
  * definition for the early-callback lookups (`lib/mpesa-stk.ts`) and the
  * indexes that serve them, as with `normalisedNumber`.
  */
-export function stkCheckoutId(column: unknown) {
+export function stkCheckoutId(column: unknown): SQL {
   return sql`(${column} #>> '{Body,stkCallback,CheckoutRequestID}')`;
 }
 
@@ -112,7 +115,7 @@ export function stkCheckoutId(column: unknown) {
  * value. An empty array passes `<@`, so "at least one" is a separate CHECK
  * where it matters.
  */
-export function allOf(name: string, column: unknown, values: readonly string[]) {
+export function allOf(name: string, column: unknown, values: readonly string[]): CheckBuilder {
   assertDdlSafe(name, values);
   const list = values.map(v => `'${v}'`).join(", ");
   return check(name, sql`${column} <@ ARRAY[${sql.raw(list)}]::text[]`);

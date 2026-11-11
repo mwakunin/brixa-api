@@ -28,6 +28,15 @@ export interface StartupGateOptions {
   refuse?: (request: Request) => Response | Promise<Response>;
 }
 
+/** A gate made by `createStartupGate`. */
+export interface StartupGate {
+  /** The first attempt, awaited so a healthy boot serves at once. */
+  start: () => Promise<void>;
+  isReady: () => boolean;
+  /** `fetch`, answering 503 for all but `/health` until the check passes. */
+  wrap: (fetch: Fetch) => Fetch;
+}
+
 /** Paths answered while the gate is shut. */
 const ALWAYS_OPEN = new Set(["/health"]);
 
@@ -43,7 +52,7 @@ function plainRefusal(): Response {
   );
 }
 
-export function createStartupGate(options: StartupGateOptions) {
+export function createStartupGate(options: StartupGateOptions): StartupGate {
   const retryMs = options.retryMs ?? 2000;
   const refuse = options.refuse ?? plainRefusal;
   let ready = false;
@@ -64,7 +73,6 @@ export function createStartupGate(options: StartupGateOptions) {
   }
 
   return {
-    /** The first attempt, awaited so a healthy boot serves at once. */
     start: () => attempt(),
     isReady: () => ready,
     wrap(fetch: Fetch): Fetch {

@@ -28,7 +28,7 @@ const REFUSALS: Record<InvitationErrorCode, { status: 403 | 404 | 409 | 410 | 42
  * Handlers return it `as never`: its status is one of several the route
  * declares, which the OpenAPI handler type cannot see through a shared helper.
  */
-export function invitationRefusal(c: Context, err: unknown) {
+export function invitationRefusal(c: Context, err: unknown): Response | null {
   let code: InvitationErrorCode | null = null;
   if (err instanceof InvitationError)
     code = err.code;

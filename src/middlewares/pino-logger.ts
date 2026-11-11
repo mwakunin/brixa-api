@@ -1,4 +1,5 @@
-import type { Context } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
+import type { PinoLogger } from "hono-pino";
 import type { Logger } from "pino";
 
 import { pinoLogger as requestLogger } from "hono-pino";
@@ -34,7 +35,7 @@ export function loggedPath(path: string): string {
  * One line per request, through the process's shared, redacting logger.
  * `target` is a parameter so a test can read what would be written.
  */
-export function pinoLogger(target: Logger = logger) {
+export function pinoLogger(target: Logger = logger): MiddlewareHandler<{ Variables: { logger: PinoLogger } }> {
   return requestLogger({
     pino: target,
     http: {
