@@ -478,7 +478,8 @@ export async function viewWorklist(tx: AppDb, facilityId: string, actor: Patient
     .leftJoin(patientNumbers, and(eq(patientNumbers.patientId, patients.id), eq(patientNumbers.kind, "outpatient")))
     .innerJoin(labTests, eq(labTests.id, orderItems.labTestId))
     .where(eq(orderItems.status, "ordered"))
-    .orderBy(asc(sql`CASE ${orders.urgency} WHEN 'urgent' THEN 0 ELSE 1 END`), asc(orders.orderedAt), asc(orders.id))
+    // An order's specimen types in a fixed order, so its groups do not shuffle between views.
+    .orderBy(asc(sql`CASE ${orders.urgency} WHEN 'urgent' THEN 0 ELSE 1 END`), asc(orders.orderedAt), asc(orders.id), asc(labTests.specimenType))
     .limit(WORKLIST_LIMIT * 5);
   const tests = await testsOf(tx, due.map(d => d.orderItemId));
 
