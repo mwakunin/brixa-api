@@ -20,6 +20,7 @@ describe("the drug catalogue file", () => {
   it("is read as CSV: quoted fields, doubled quotes, CRLF or LF, a byte-order mark", () => {
     expect(parseCsv("﻿a,\"b, c\",\"say \"\"hi\"\"\"\r\nd,e,f\n\n")).toEqual([["a", "b, c", "say \"hi\""], ["d", "e", "f"]]);
     expect(() => parseCsv("a,\"b")).toThrow(DrugFileError);
+    expect(() => parseCsv("PCM,\"500\"0 mg,Tablet")).toThrow(/after a closing quote/);
   });
 
   it("is refused whole for a wrong header, a bad row, or a code twice", () => {
@@ -58,5 +59,14 @@ describe("the drug catalogue file", () => {
     const many = [HEADER, ...Array.from({ length: 30 }, (_, i) => `D${i},Drug ${i},1 mg,Tablet,tablet,oral,`)].join("\n");
     await loadDrugCatalogue(many);
     await expect(loadDrugCatalogue(sample)).rejects.toThrow(/would retire 30 of 30/);
+  });
+
+  it("loads one file at a time, so overlapping loads leave one file's drugs in use", async () => {
+    const file = (prefix: string) => [HEADER, ...Array.from({ length: 5 }, (_, i) => `${prefix}${i},Drug ${prefix}${i},1 mg,Tablet,tablet,oral,`)].join("\n");
+
+    await Promise.all([loadDrugCatalogue(file("A")), loadDrugCatalogue(file("B"))]);
+
+    const { rows } = await pool.query("SELECT left(code, 1) AS file, count(*)::int AS n FROM drug_catalogue WHERE retired_at IS NULL GROUP BY 1");
+    expect(rows).toHaveLength(1);
   });
 });

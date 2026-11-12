@@ -103,6 +103,14 @@ describe("a specimen", () => {
     expect((await worklist()).inLab.map((s: { id: string }) => s.id)).toEqual([taken.id]);
   });
 
+  it("keeps the specimen type the test was ordered with, whatever the catalogue says since", async () => {
+    const { orderId } = await orderedVisit("opd", [tests.mrdt]);
+    await call("PATCH", `/lab-tests/${tests.mrdt}`, h.facility.id, h.admin, { specimenType: "urine" });
+
+    expect((await worklist()).toCollect.map((d: { specimenType: string }) => d.specimenType)).toEqual(["blood"]);
+    expect((await collect(orderId, { specimenType: "blood" })).status).toBe(201);
+  });
+
   it("is refused for a test not waiting, of another type, or on another order", async () => {
     const { orderId, item } = await orderedVisit();
     const other = await orderedVisit();
@@ -140,14 +148,15 @@ describe("the lab's worklist", () => {
   it("puts urgent work first, then the oldest, and is for the lab alone, audited", async () => {
     const routine = await orderedVisit("opd", [tests.mrdt]);
     const urgent = await orderedVisit("opd", [tests.fbc], "urgent");
+    const laterRoutine = await orderedVisit("opd", [tests.urine]);
 
     const list = await worklist();
 
-    expect(list.toCollect.map((d: { orderId: string }) => d.orderId)).toEqual([urgent.orderId, routine.orderId]);
+    expect(list.toCollect.map((d: { orderId: string }) => d.orderId)).toEqual([urgent.orderId, routine.orderId, laterRoutine.orderId]);
     expect(list.toCollect[0]).toMatchObject({ urgency: "urgent", patient: { name: "Test Patient", sex: "male", opNumber: expect.any(String) } });
     expect((await call("GET", "/lab/worklist", h.facility.id, nurse)).status).toBe(403);
     const viewed = await db.select().from(auditLog).where(eq(auditLog.action, "lab.worklist_viewed"));
-    expect(viewed).toEqual([expect.objectContaining({ actorId: labTech.id, summary: "Viewed the lab worklist (2 to collect, 0 to receive, 0 in the lab, 0 to verify)" })]);
+    expect(viewed).toEqual([expect.objectContaining({ actorId: labTech.id, summary: "Viewed the lab worklist (3 to collect, 0 to receive, 0 in the lab, 0 to verify)" })]);
   });
 
   it("warns of a test not yet paid for at an outpatient visit, never at an emergency, and never blocks", async () => {

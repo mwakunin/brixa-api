@@ -177,6 +177,18 @@ describe("a result", () => {
     expect((await clinicianSees(t.encounterId)).results).toEqual([expect.objectContaining({ version: 2, values: [expect.objectContaining({ value: 12.1 })] })]);
   });
 
+  it("is entered against the test as it stood when the specimen was taken", async () => {
+    const t = await tested([tests.hb]);
+    // Since collection: a new number added, and the comment retired.
+    await call("POST", `/lab-tests/${tests.hb}/analytes`, h.facility.id, h.admin, { code: "MCV", name: "Mean cell volume", resultType: "numeric", unit: "fL" });
+    await call("PATCH", `/lab-analytes/${analytes.comment}`, h.facility.id, h.admin, { isActive: false });
+
+    const res = await enter(t.specimenId, { orderItemId: t.item("HB"), values: [{ analyteId: analytes.hgb, value: 14 }, { analyteId: analytes.comment, value: "Normal film" }] });
+
+    expect(res.status).toBe(201);
+    expect((await res.json()).values.map((v: { code: string }) => v.code)).toEqual(["HGB", "COMMENT"]);
+  });
+
   it("keeps its specimen from being rejected", async () => {
     const t = await tested([tests.hb]);
     await enter(t.specimenId, hb(t, 14.2));
@@ -230,6 +242,19 @@ describe("the lab report", () => {
 });
 
 describe("the lab's worklist with results", () => {
+  it("lists urgent results to verify first", async () => {
+    const routine = await tested([tests.hb]);
+    const urgentPatient = await h.patient();
+    const encounterId = (await (await call("POST", "/encounters", h.facility.id, h.nurse, { patientId: urgentPatient, kind: "opd", queueAt: null })).json()).id;
+    const order = await (await call("POST", `/encounters/${encounterId}/orders`, h.facility.id, doctor, { urgency: "urgent", items: [{ labTestId: tests.hb }] })).json();
+    const specimen = await (await call("POST", `/orders/${order.id}/specimens`, h.facility.id, labTech, { specimenType: "blood" })).json();
+    await enter(routine.specimenId, hb(routine, 14));
+    await enter(specimen.id, { orderItemId: order.items[0].id, values: [{ analyteId: analytes.hgb, value: 9 }] });
+
+    const { toVerify } = await (await call("GET", "/lab/worklist", h.facility.id, labTech)).json();
+    expect(toVerify.map((r: { orderId: string }) => r.orderId)).toEqual([order.id, routine.orderId]);
+  });
+
   it("keeps a specimen in the lab until each of its tests is resulted, and lists results to verify", async () => {
     const t = await tested();
     const list = async () => (await call("GET", "/lab/worklist", h.facility.id, labTech)).json();
@@ -256,5 +281,11 @@ describe("the database's result guards", () => {
     expect(await refusal("UPDATE lab_results SET status = 'verified', verified_at = now(), verified_by = entered_by WHERE id = $1")).toMatch(/lab_results_verified_by_another/);
     expect(await refusal("UPDATE lab_results SET entered_at = now() - interval '1 day' WHERE id = $1")).toMatch(/never change/);
     expect(await refusal("DELETE FROM lab_results WHERE id = $1")).toMatch(/never deleted/);
+    // Verified, it takes no value added afterwards.
+    await act(result.id, "verify");
+    expect(await refusal(
+      "INSERT INTO lab_result_values (facility_id, result_id, analyte_id, analyte_code, analyte_name, result_type, value_text) SELECT facility_id, id, $2, 'COMMENT', 'Comment', 'text', 'Added later' FROM lab_results WHERE id = $1",
+      [result.id, analytes.comment],
+    )).toMatch(/entered/);
   });
 });

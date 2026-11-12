@@ -60,6 +60,8 @@ export function parseCsv(text: string): string[][] {
   let record: string[] = [];
   let field = "";
   let quoted = false;
+  /** Just past a closing quote, where only a comma or the record's end may come. */
+  let closed = false;
   const source = text.startsWith("﻿") ? text.slice(1) : text;
 
   for (let i = 0; i < source.length; i += 1) {
@@ -71,12 +73,16 @@ export function parseCsv(text: string): string[][] {
       }
       else if (c === "\"") {
         quoted = false;
+        closed = true;
       }
       else {
         field += c;
       }
       continue;
     }
+    if (closed && c !== "," && c !== "\n" && c !== "\r")
+      throw new DrugFileError(`record ${records.length + 1} has ${JSON.stringify(c)} after a closing quote`);
+    closed = false;
     if (c === "\"" && field === "") {
       quoted = true;
     }
@@ -152,6 +158,9 @@ export async function loadDrugCatalogue(text: string, now = new Date()): Promise
   const codes = rows.map(r => r.code);
 
   return db.transaction(async (tx) => {
+    // One load at a time: the next reads what this one committed, so two
+    // overlapping loads cannot both leave their drugs in use.
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${"drug_catalogue_load"}, 0))`);
     const current = await tx.select({ code: drugCatalogue.code }).from(drugCatalogue).where(isNull(drugCatalogue.retiredAt));
     const leaving = current.filter(c => !codes.includes(c.code)).length;
     if (leaving > RETIRE_AT_MOST(current.length))

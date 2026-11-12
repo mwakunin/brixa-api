@@ -70,7 +70,8 @@ export async function searchDrugs(tx: AppDb, q: string): Promise<DrugMatch[]> {
       or(
         // Letters and digits only reach the pattern, so nothing typed is regex syntax.
         and(...words.map(w => sql`${drugCatalogue.genericName} ~* ${`\\m${w}`}`)),
-        codeLike ? like(drugCatalogue.code, `${codeLike}%`) : undefined,
+        // `_` is a wildcard to LIKE; a code's underscore must match itself.
+        codeLike ? like(drugCatalogue.code, `${codeLike.replaceAll("_", "\\_")}%`) : undefined,
       ),
     ))
     .orderBy(asc(drugCatalogue.genericName), asc(drugCatalogue.strength), asc(drugCatalogue.code))

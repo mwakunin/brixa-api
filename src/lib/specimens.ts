@@ -1,6 +1,6 @@
 import type { SQL } from "drizzle-orm";
 
-import { and, asc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 import type { MembershipRole } from "@/db/schema";
@@ -151,12 +151,11 @@ export async function collectSpecimen(
 ): Promise<SpecimenRow> {
   const encounterId = await lockEncounterOf(tx, orderId);
   const items = await tx
-    .select({ id: orderItems.id, status: orderItems.status, specimenType: labTests.specimenType })
+    .select({ id: orderItems.id, status: orderItems.status, specimenType: orderItems.specimenType })
     .from(orderItems)
-    .innerJoin(labTests, eq(labTests.id, orderItems.labTestId))
-    .where(eq(orderItems.orderId, orderId))
+    .where(and(eq(orderItems.orderId, orderId), isNotNull(orderItems.labTestId)))
     .orderBy(asc(orderItems.id))
-    .for("update", { of: orderItems });
+    .for("update");
   const waiting = items.filter(i => i.status === "ordered" && i.specimenType === input.specimenType).map(i => i.id);
 
   const itemIds = input.orderItemIds ?? waiting;
@@ -477,7 +476,7 @@ export async function viewWorklist(tx: AppDb, facilityId: string, actor: Patient
       encounterId: orders.encounterId,
       urgency: orders.urgency,
       orderedAt: orders.orderedAt,
-      specimenType: labTests.specimenType,
+      specimenType: orderItems.specimenType,
       ...patientColumns,
     })
     .from(orderItems)
@@ -485,10 +484,9 @@ export async function viewWorklist(tx: AppDb, facilityId: string, actor: Patient
     .innerJoin(encounters, and(eq(encounters.id, orders.encounterId), eq(encounters.status, "open")))
     .innerJoin(patients, eq(patients.id, encounters.patientId))
     .leftJoin(patientNumbers, and(eq(patientNumbers.patientId, patients.id), eq(patientNumbers.kind, "outpatient")))
-    .innerJoin(labTests, eq(labTests.id, orderItems.labTestId))
-    .where(eq(orderItems.status, "ordered"))
+    .where(and(eq(orderItems.status, "ordered"), isNotNull(orderItems.labTestId)))
     // An order's specimen types in a fixed order, so its groups do not shuffle between views.
-    .orderBy(asc(sql`CASE ${orders.urgency} WHEN 'urgent' THEN 0 ELSE 1 END`), asc(orders.orderedAt), asc(orders.id), asc(labTests.specimenType))
+    .orderBy(asc(sql`CASE ${orders.urgency} WHEN 'urgent' THEN 0 ELSE 1 END`), asc(orders.orderedAt), asc(orders.id), asc(orderItems.specimenType))
     .limit(WORKLIST_LIMIT * 5);
   const tests = await testsOf(tx, due.map(d => d.orderItemId));
 
@@ -501,7 +499,8 @@ export async function viewWorklist(tx: AppDb, facilityId: string, actor: Patient
       urgency: d.urgency,
       orderedAt: d.orderedAt,
       patient: patientOf(d, today),
-      specimenType: d.specimenType,
+      // A lab item always has one (`order_items_specimen_type_of_a_test`).
+      specimenType: d.specimenType!,
       tests: [],
     };
     group.tests.push(tests.get(d.orderItemId)!);

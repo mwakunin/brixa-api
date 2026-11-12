@@ -144,6 +144,19 @@ describe("a prescription", () => {
     expect((await (await prescribe(other.encounterId, { items: [{ drugCode: "IBU-400-TAB", doseAmount: "1", frequency: "prn", quantity: "6" }] })).json()).code).toBe("drug_allergy");
   });
 
+  it("says so when the allergy list is too long to print in full", async () => {
+    const { encounterId, patientId } = await visit();
+    for (let i = 1; i <= 12; i += 1)
+      await call("POST", `/patients/${patientId}/allergies`, h.facility.id, doctor, { category: "food", allergen: `Food allergen number ${i} with a long name`, reaction: "Hives and swelling" });
+
+    const order = await (await prescribe(encounterId, { items: [paracetamol] })).json();
+
+    const doc = await printed(order.prescription.documentId);
+    const allergies = doc.content.fields.find(f => f.label === "Allergies")!.value;
+    expect(allergies.length).toBeLessThanOrEqual(500);
+    expect(allergies).toMatch(/and \d+ more: check the patient's allergy record$/);
+  });
+
   it("for a child under 12 needs a weight taken today, and prints it", async () => {
     const { encounterId } = await visit(addDays(businessDate(), -4 * 365));
     const syrup = { drugCode: "PCM-120-SUSP", doseAmount: "7.5", frequency: "qid", durationDays: 3 };
@@ -204,6 +217,8 @@ describe("the drug catalogue", () => {
     expect(await search("clav")).toEqual(["AMC-625-TAB"]);
     expect(await search("pcm-1")).toEqual(["PCM-120-SUSP"]);
     expect(await search("oral rehydration")).toEqual(["ORS-SACH"]);
+    // An underscore typed is an underscore, not any one character.
+    expect(await search("PCM_")).toEqual([]);
     expect((await call("GET", "/drugs?q=amox", h.facility.id, h.cashier)).status).toBe(403);
 
     const reloaded = (await readFile(SAMPLE, "utf8")).split("\n").filter(l => !l.startsWith("IBU-")).join("\n");

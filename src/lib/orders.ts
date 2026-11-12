@@ -28,6 +28,7 @@ import { refreshReport } from "./lab-results";
  */
 
 type OrderRow = typeof orders.$inferSelect;
+type SpecimenType = NonNullable<(typeof orderItems.$inferSelect)["specimenType"]>;
 type ItemRow = typeof orderItems.$inferSelect;
 export type Urgency = OrderRow["urgency"];
 export type ItemStatus = ItemRow["status"];
@@ -102,6 +103,8 @@ async function lockEncounter(tx: AppDb, id: string) {
 
 interface Resolved {
   input: ItemInput;
+  /** A lab test's specimen type, as the catalogue has it now. */
+  specimenType: SpecimenType | null;
   /** What it is charged as: the test's item, or the service's. */
   billableItemId: string;
   code: string;
@@ -117,7 +120,7 @@ async function resolveItems(tx: AppDb, items: ItemInput[]): Promise<Resolved[]> 
   for (const input of items) {
     if ("labTestId" in input) {
       const [test] = await tx
-        .select({ isActive: labTests.isActive, itemActive: billableItems.isActive, billableItemId: billableItems.id, code: billableItems.code })
+        .select({ isActive: labTests.isActive, itemActive: billableItems.isActive, billableItemId: billableItems.id, code: billableItems.code, specimenType: labTests.specimenType })
         .from(labTests)
         .innerJoin(billableItems, eq(billableItems.id, labTests.billableItemId))
         .where(eq(labTests.id, input.labTestId))
@@ -126,13 +129,13 @@ async function resolveItems(tx: AppDb, items: ItemInput[]): Promise<Resolved[]> 
         throw new OrderError("test_not_found");
       if (!test.isActive || !test.itemActive)
         throw new OrderError("test_inactive");
-      resolved.push({ input, billableItemId: test.billableItemId, code: test.code });
+      resolved.push({ input, billableItemId: test.billableItemId, code: test.code, specimenType: test.specimenType });
       continue;
     }
     const [item] = await tx.select().from(billableItems).where(eq(billableItems.id, input.billableItemId)).limit(1);
     if (!item || !SERVICE_CATEGORIES.includes(item.category) || !item.isActive)
       throw new OrderError("not_a_service");
-    resolved.push({ input, billableItemId: item.id, code: item.code });
+    resolved.push({ input, billableItemId: item.id, code: item.code, specimenType: null });
   }
   return resolved;
 }
@@ -168,6 +171,7 @@ async function place(
       facilityId,
       orderId: order.id,
       labTestId: "labTestId" in item.input ? item.input.labTestId : null,
+      specimenType: item.specimenType,
       billableItemId: "billableItemId" in item.input ? item.input.billableItemId : null,
       status: "ordered",
     }).returning({ id: orderItems.id });

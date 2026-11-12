@@ -188,6 +188,26 @@ async function weightOn(tx: AppDb, patientId: string, today: string): Promise<st
   return taken?.value ?? null;
 }
 
+/** The most a printed field holds (`document-content.ts`). */
+const FIELD_LENGTH = 500;
+
+/**
+ * Every allergy, or as many as fit with a note saying how many more there are
+ * and to check the record: a prescription never drops one silently.
+ */
+function printedAllergies(told: string[]): string {
+  const all = told.join("; ");
+  if (all.length <= FIELD_LENGTH)
+    return all;
+  const more = (n: number) => `; and ${n} more: check the patient's allergy record`;
+  let shown = told.length - 1;
+  while (shown > 0 && `${told.slice(0, shown).join("; ")}${more(told.length - shown)}`.length > FIELD_LENGTH)
+    shown -= 1;
+  return shown === 0
+    ? `${told.length} allergies recorded: check the patient's allergy record`
+    : `${told.slice(0, shown).join("; ")}${more(told.length - shown)}`;
+}
+
 interface Line {
   drug: Drug;
   input: MedicineInput;
@@ -221,7 +241,7 @@ async function printedPrescription(
     .where(and(eq(patientAllergies.patientId, patientId), isNull(patientAllergies.removedAt)));
 
   const told = allergies.filter(a => a.category !== "none_known").map(a => (a.reaction ? `${a.allergen} (${a.reaction})` : a.allergen!));
-  const allergyLine = told.length > 0 ? told.join("; ") : allergies.length > 0 ? "No known allergies" : "Not recorded";
+  const allergyLine = told.length > 0 ? printedAllergies(told) : allergies.length > 0 ? "No known allergies" : "Not recorded";
   const name = [patient.givenName, patient.middleNames, patient.familyName].filter(Boolean).join(" ");
   const sex = patient.sex ? `${patient.sex[0].toUpperCase()}${patient.sex.slice(1)}, ` : "";
   const council = prescriber.profession ? PROFESSIONS[prescriber.profession].council : "";
@@ -233,7 +253,7 @@ async function printedPrescription(
       { label: "Patient number", value: op?.number ?? "" },
       { label: "Sex and age", value: `${sex}${printedAge(patient.dateOfBirth, input.today)}` },
       ...(input.weight ? [{ label: "Weight", value: `${printedQuantity(input.weight)} kg, taken ${printedDate(input.today)}` }] : []),
-      { label: "Allergies", value: allergyLine.slice(0, 500) },
+      { label: "Allergies", value: allergyLine },
       ...(input.indication ? [{ label: "For", value: input.indication }] : []),
       { label: "Prescriber", value: `${prescriber.name}, ${council} licence ${prescriber.licence ?? ""}`.trim() },
       { label: "Date", value: printedDate(input.today) },

@@ -25,14 +25,25 @@ import { withMoneyDue } from "./cashier";
  * of the day.
  */
 
-/** Of the open outpatient visits (or those named), the ones finished but for money. */
-async function settledOtherwise(tx: AppDb, encounterIds?: string[]): Promise<string[]> {
-  const named = encounterIds
-    ? sql`AND e.id IN (${sql.join(encounterIds.map(id => sql`${id}::uuid`), sql`, `)})`
+interface Candidate {
+  id: string;
+  startedAt: Date;
+}
+
+/**
+ * Of the open outpatient visits (or those named), the ones finished but for
+ * money, oldest first: a page of `limit`, after `after` if given.
+ */
+async function settledOtherwise(tx: AppDb, options: { ids?: string[]; after?: Candidate; limit: number }): Promise<Candidate[]> {
+  const named = options.ids
+    ? sql`AND e.id IN (${sql.join(options.ids.map(id => sql`${id}::uuid`), sql`, `)})`
     : sql``;
-  const { rows } = await tx.execute<{ id: string }>(sql`
-    SELECT e.id FROM ${encounters} e
-    WHERE e.status = 'open' AND e.kind = 'opd' ${named}
+  const after = options.after
+    ? sql`AND (e.started_at, e.id) > (${options.after.startedAt}, ${options.after.id}::uuid)`
+    : sql``;
+  const { rows } = await tx.execute<{ id: string; started_at: Date | string }>(sql`
+    SELECT e.id, e.started_at FROM ${encounters} e
+    WHERE e.status = 'open' AND e.kind = 'opd' ${named} ${after}
       AND NOT EXISTS (SELECT 1 FROM queue_entries q WHERE q.encounter_id = e.id AND q.status IN ('waiting', 'serving'))
       AND NOT EXISTS (
         SELECT 1 FROM order_items i JOIN orders o ON o.id = i.order_id
@@ -46,16 +57,31 @@ async function settledOtherwise(tx: AppDb, encounterIds?: string[]): Promise<str
         OR EXISTS (SELECT 1 FROM order_items i JOIN orders o ON o.id = i.order_id WHERE o.encounter_id = e.id AND i.status = 'done')
       )
     ORDER BY e.started_at, e.id
-    LIMIT 500
+    LIMIT ${options.limit}
   `);
-  return rows.map(r => r.id);
+  return rows.map(r => ({ id: r.id, startedAt: new Date(r.started_at) }));
 }
 
-/** The open outpatient visits with nothing pending, oldest first; at most 500 a run. */
-export async function finishedVisits(tx: AppDb): Promise<string[]> {
-  const candidates = await settledOtherwise(tx);
-  const owing = await withMoneyDue(tx, candidates);
-  return candidates.filter(id => !owing.has(id));
+/**
+ * The open outpatient visits with nothing pending, oldest first, at most
+ * `limit` a run. Candidates are read a page at a time and those owing money
+ * dropped from each page, so however many older visits still owe, a
+ * finished one behind them is found.
+ */
+export async function finishedVisits(tx: AppDb, limit = 500): Promise<string[]> {
+  const finished: string[] = [];
+  let after: Candidate | undefined;
+  while (finished.length < limit) {
+    const page = await settledOtherwise(tx, { after, limit });
+    if (page.length === 0)
+      break;
+    const owing = await withMoneyDue(tx, page.map(c => c.id));
+    finished.push(...page.filter(c => !owing.has(c.id)).map(c => c.id));
+    after = page.at(-1);
+    if (page.length < limit)
+      break;
+  }
+  return finished.slice(0, limit);
 }
 
 /**
@@ -65,7 +91,7 @@ export async function finishedVisits(tx: AppDb): Promise<string[]> {
  */
 export async function closeFinishedVisit(tx: AppDb, facilityId: string, id: string): Promise<boolean> {
   await tx.select({ id: encounters.id }).from(encounters).where(eq(encounters.id, id)).for("update");
-  const [finished] = await settledOtherwise(tx, [id]);
+  const [finished] = await settledOtherwise(tx, { ids: [id], limit: 1 });
   if (!finished || (await withMoneyDue(tx, [id])).has(id))
     return false;
 

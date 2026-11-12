@@ -152,11 +152,14 @@ export async function enterResult(
   if (!onIt)
     throw new LabResultError("not_on_specimen");
 
-  const analytes = await tx.select().from(labAnalytes).where(and(eq(labAnalytes.labTestId, onIt.labTestId!), eq(labAnalytes.isActive, true)));
+  // The test as it stood when the specimen was taken: an analyte retired since
+  // may still be given, and one added since may be but need not be.
+  const analytes = (await tx.select().from(labAnalytes).where(eq(labAnalytes.labTestId, onIt.labTestId!)))
+    .filter(a => a.isActive || a.createdAt <= specimen.collectedAt);
   const given = new Map(input.values.map(v => [v.analyteId, v.value]));
   if (given.size !== input.values.length || [...given.keys()].some(id => !analytes.some(a => a.id === id)))
     throw new LabResultError("analyte_not_on_test");
-  const missing = analytes.find(a => a.resultType !== "text" && !given.has(a.id));
+  const missing = analytes.find(a => a.resultType !== "text" && a.isActive && a.createdAt <= specimen.collectedAt && !given.has(a.id));
   if (missing)
     throw new LabResultError("value_missing", missing.code);
 
@@ -348,7 +351,7 @@ export interface ShownResult {
   values: ShownValue[];
 }
 
-/** Current results matching `where`, by test code, each with its values in report order. */
+/** Current results matching `where`, urgent first, then by entry, each with its values in report order. */
 export async function resultsWhere(tx: AppDb, where: SQL | undefined): Promise<ShownResult[]> {
   const enterer = alias(user, "enterer");
   const verifier = alias(user, "verifier");
@@ -366,6 +369,7 @@ export async function resultsWhere(tx: AppDb, where: SQL | undefined): Promise<S
     })
     .from(labResults)
     .innerJoin(specimens, eq(specimens.id, labResults.specimenId))
+    .innerJoin(orders, eq(orders.id, specimens.orderId))
     .innerJoin(orderItems, eq(orderItems.id, labResults.orderItemId))
     .innerJoin(labTests, eq(labTests.id, orderItems.labTestId))
     .innerJoin(billableItems, eq(billableItems.id, labTests.billableItemId))
@@ -374,7 +378,8 @@ export async function resultsWhere(tx: AppDb, where: SQL | undefined): Promise<S
     .leftJoin(verifyingMembership, eq(verifyingMembership.id, labResults.verifiedBy))
     .leftJoin(verifier, eq(verifier.id, verifyingMembership.userId))
     .where(and(ne(labResults.status, "superseded"), where))
-    .orderBy(asc(labResults.enteredAt), asc(billableItems.code))
+    // Urgent first, before the limit, so a late urgent result is never cut off.
+    .orderBy(asc(sql`CASE ${orders.urgency} WHEN 'urgent' THEN 0 ELSE 1 END`), asc(labResults.enteredAt), asc(billableItems.code))
     .limit(500);
   if (rows.length === 0)
     return [];

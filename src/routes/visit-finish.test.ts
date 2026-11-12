@@ -8,8 +8,10 @@ import type { Hospital, StaffMember } from "@/test/hospital";
 import app from "@/app";
 import db from "@/db";
 import { auditLog, encounters } from "@/db/schema";
+import { runAsFacility } from "@/db/tenant-transaction";
 import { closeFinishedVisits } from "@/jobs/visits";
 import { loadDrugCatalogue } from "@/lib/drug-catalogue-load";
+import { finishedVisits } from "@/lib/visit-finish";
 import { addMembership, resetDb, signedInUser } from "@/test/helpers";
 import { call, hospital, TODAY } from "@/test/hospital";
 
@@ -99,6 +101,17 @@ describe("a visit with nothing pending", () => {
 
     expect(await closeFinishedVisits()).toMatchObject({ closed: 1 });
     expect((await status(encounterId)).status).toBe("closed");
+  });
+
+  it("finds a finished visit behind any number of older ones that still owe", async () => {
+    const owing = await visit();
+    await call("POST", `/encounters/${owing.encounterId}/charges`, h.facility.id, h.clerk, { billableItemId: h.items.consultation, quantity: "1", reason: "Before P3" });
+    const finished = await visit();
+
+    // One candidate at a time, so the owing visit fills the first page.
+    const ids = await runAsFacility(h.facility.id, async tx => finishedVisits(tx, 1));
+
+    expect(ids).toEqual([finished.encounterId]);
   });
 
   it("is checked by Cloud Scheduler alone", async () => {

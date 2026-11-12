@@ -1793,6 +1793,8 @@ export const orderItems = pgTable("order_items", {
   facilityId: uuid().notNull().references(() => facilities.id),
   orderId: uuid().notNull(),
   labTestId: uuid(),
+  /** A lab test's specimen type as ordered, frozen with it: the catalogue may change since. */
+  specimenType: text().$type<"blood" | "urine" | "stool" | "sputum" | "swab" | "csf" | "body_fluid" | "other">(),
   /** A service's item: a procedure, imaging or other service. */
   billableItemId: uuid(),
   /** A medicine (P3 slice 4b), charged when dispensed (P4), not when prescribed. */
@@ -1833,6 +1835,8 @@ export const orderItems = pgTable("order_items", {
   uniqueIndex("order_items_service_once").on(t.orderId, t.billableItemId).where(sql`${t.billableItemId} IS NOT NULL`),
   uniqueIndex("order_items_drug_once").on(t.orderId, t.drugCode).where(sql`${t.drugCode} IS NOT NULL`),
   oneOf("order_items_status_known", t.status, ["ordered", "done", "cancelled"]),
+  oneOf("order_items_specimen_type_known", t.specimenType, ["blood", "urine", "stool", "sputum", "swab", "csf", "body_fluid", "other"]),
+  check("order_items_specimen_type_of_a_test", sql`(${t.labTestId} IS NULL) = (${t.specimenType} IS NULL)`),
   oneOf("order_items_route_known", t.route, ["oral", "sublingual", "iv", "im", "sc", "intradermal", "topical", "rectal", "vaginal", "inhaled", "nasal", "ophthalmic", "otic"]),
   oneOf("order_items_frequency_known", t.frequency, ["od", "bd", "tds", "qid", "nocte", "prn", "stat"]),
   check("order_items_one_kind", sql`num_nonnulls(${t.labTestId}, ${t.billableItemId}, ${t.drugCode}) = 1`),
