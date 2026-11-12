@@ -9,8 +9,8 @@ import { DRUG_ROUTES } from "./drug-catalogue";
 
 /**
  * Loads the shared drug catalogue (SCHEMA.md §8, P3 slice 4b) from a CSV
- * file in this system's own format, decided 2026-11-11 while the national
- * list to fill it is still open (SPEC.md §2):
+ * file in this system's own format (decided 2026-11-11), into which PPB's
+ * Generic Products list (decided 2026-11-12, SPEC.md §2) is to be converted:
  *
  *   code,generic_name,strength,form,dose_unit,route,controlled_schedule
  *   PCM-500-TAB,Paracetamol,500 mg,Tablet,tablet,oral,

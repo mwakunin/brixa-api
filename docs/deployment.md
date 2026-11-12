@@ -66,7 +66,7 @@ Every external call is an outbox row, drained by `POST /internal/outbox/drain` (
 
 Until it has run, diagnoses cannot be recorded: the code search finds nothing. ICD-11 is © WHO 2019, licensed under CC BY-ND 3.0 IGO.
 
-**The drug catalogue**, which prescriptions are written from, is loaded once per environment and again whenever the list changes (`SCHEMA.md` §8, slice 4b). Which national list fills it is still open (`SPEC.md` §2), so the file is in this system's own CSV format, described in `src/lib/drug-catalogue-load.ts`:
+**The drug catalogue**, which prescriptions are written from, is loaded once per environment and again whenever the list changes (`SCHEMA.md` §8, slice 4b). The list to fill it is PPB's Generic Products list (`SPEC.md` §2), still to be obtained and converted, so the file is in this system's own CSV format, described in `src/lib/drug-catalogue-load.ts`:
 
 ```csv
 code,generic_name,strength,form,dose_unit,route,controlled_schedule

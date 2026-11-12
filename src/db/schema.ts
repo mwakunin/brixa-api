@@ -1368,8 +1368,8 @@ export const observations = pgTable("observations", {
  * The medicines a prescription may name, at generic level (P3 slice 4b): a
  * shared reference table (CLAUDE.md rule 1), with no facility_id, read-only
  * to the app role and loaded by `pnpm drugs:load` from a file in this
- * system's own format (`lib/drug-catalogue-load.ts`). Which national list
- * fills it is still open (SPEC.md §2); a code a later load lacks is retired,
+ * system's own format (`lib/drug-catalogue-load.ts`), to be filled from
+ * PPB's Generic Products list (SPEC.md §2); a code a later load lacks is retired,
  * never deleted, since past prescriptions name it.
  */
 export const drugCatalogue = pgTable("drug_catalogue", {
