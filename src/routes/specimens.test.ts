@@ -117,7 +117,9 @@ describe("a specimen", () => {
   it("is not taken for a test with no analyte in use", async () => {
     const { orderId } = await orderedVisit("opd", [tests.fbc]);
     const [test] = (await (await call("GET", "/lab-tests", h.facility.id, labTech)).json()).tests.filter((x: { id: string }) => x.id === tests.fbc);
-    await call("PATCH", `/lab-analytes/${test.analytes[0].id}`, h.facility.id, h.admin, { isActive: false });
+    // Ordered before the test was retired and its last analyte with it.
+    await call("PATCH", `/lab-tests/${tests.fbc}`, h.facility.id, h.admin, { isActive: false });
+    expect((await call("PATCH", `/lab-analytes/${test.analytes[0].id}`, h.facility.id, h.admin, { isActive: false })).status).toBe(200);
 
     const res = await collect(orderId, { specimenType: "blood" });
     expect([res.status, (await res.json()).code]).toEqual([409, "test_has_no_analytes"]);
@@ -144,6 +146,8 @@ describe("a specimen", () => {
     expect((await act(first.id, "reject", nurse, { reason: "clotted" })).status).toBe(403);
     expect(await (await act(first.id, "reject", labTech, { reason: "haemolysed" })).json()).toMatchObject({ status: "rejected", rejectionReason: "haemolysed" });
     expect((await (await act(first.id, "reject", labTech, { reason: "clotted" })).json()).code).toBe("already_rejected");
+    // Listed for anyone in the lab to take again, until it is.
+    expect((await worklist()).toRecollect).toEqual([expect.objectContaining({ id: first.id, rejectionReason: "haemolysed", patient: expect.objectContaining({ name: "Test Patient" }) })]);
 
     const again = await act(first.id, "recollect", nurse);
     expect(again.status).toBe(201);
@@ -151,6 +155,7 @@ describe("a specimen", () => {
     expect(second).toMatchObject({ accessionNumber: `L-${day()}-002`, status: "collected", recollectionOf: first.id, tests: [{ code: "FBC" }, { code: "MRDT" }] });
     expect((await (await act(first.id, "recollect")).json()).code).toBe("already_recollected");
     expect((await (await act(second.id, "recollect")).json()).code).toBe("not_rejected");
+    expect((await worklist()).toRecollect).toEqual([]);
     const { rows } = await pool.query("SELECT accession_number, status FROM specimens ORDER BY accession_number");
     expect(rows).toEqual([{ accession_number: `L-${day()}-001`, status: "rejected" }, { accession_number: `L-${day()}-002`, status: "collected" }]);
   });
@@ -168,7 +173,7 @@ describe("the lab's worklist", () => {
     expect(list.toCollect[0]).toMatchObject({ urgency: "urgent", patient: { name: "Test Patient", sex: "male", opNumber: expect.any(String) } });
     expect((await call("GET", "/lab/worklist", h.facility.id, nurse)).status).toBe(403);
     const viewed = await db.select().from(auditLog).where(eq(auditLog.action, "lab.worklist_viewed"));
-    expect(viewed).toEqual([expect.objectContaining({ actorId: labTech.id, summary: "Viewed the lab worklist (3 to collect, 0 to receive, 0 in the lab, 0 to verify)" })]);
+    expect(viewed).toEqual([expect.objectContaining({ actorId: labTech.id, summary: "Viewed the lab worklist (3 to collect, 0 to recollect, 0 to receive, 0 in the lab, 0 to verify)" })]);
   });
 
   it("keeps a test not collected for a week after its visit closes, after the patients still here", async () => {

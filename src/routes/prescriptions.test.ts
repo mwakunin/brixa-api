@@ -123,6 +123,8 @@ describe("a prescription", () => {
     expect(await issue([{ ...paracetamol, route: "iv" }])).toEqual([422, ["items", 0, "route"]]);
     expect(await status({ drugCode: "MOR-10-INJ", doseAmount: "0.5", frequency: "stat", route: "iv" })).toBe(201);
     expect(await status({ ...paracetamol, route: "rectal" })).toBe(201);
+    // More than a prescription holds, worked out from the dose and days.
+    expect(await issue([{ ...paracetamol, doseAmount: "100000", frequency: "qid", durationDays: 365 }])).toEqual([422, ["items", 0, "quantity"]]);
     // A misspelt field is refused, not left off the paper.
     expect((await prescribe(encounterId, { items: [paracetamol], indicaton: "Fever" })).status).toBe(422);
   });

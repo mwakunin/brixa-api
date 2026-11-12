@@ -18,7 +18,7 @@ function actorOf(c: Context<TenantBindings>): OrderActor {
 }
 
 /** Refusals about one medicine's field: a validation failure on it, not a conflict. */
-const ABOUT_A_MEDICINE: Partial<Record<rx.PrescriptionErrorCode, string>> = { drug_not_found: "drugCode", not_injectable: "route" };
+const ABOUT_A_MEDICINE: Partial<Record<rx.PrescriptionErrorCode, string>> = { drug_not_found: "drugCode", not_injectable: "route", quantity_too_large: "quantity" };
 
 function refusal(c: Context, err: unknown) {
   if (!(err instanceof rx.PrescriptionError))

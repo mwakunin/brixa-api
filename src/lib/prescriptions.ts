@@ -47,6 +47,9 @@ export const FREQUENCIES = ["od", "bd", "tds", "qid", "nocte", "prn", "stat"] as
 /** Doses a day at a regular frequency, from which a quantity is worked out. */
 const DOSES_A_DAY: Partial<Record<Frequency, number>> = { od: 1, bd: 2, tds: 3, qid: 4, nocte: 1 };
 
+/** The most `order_items.quantity` (numeric(11,3)) holds. */
+const QUANTITY_LIMIT = 99_999_999.999;
+
 const FREQUENCY_LABELS: Record<Frequency, string> = {
   od: "Once daily (OD)",
   bd: "Twice daily (BD)",
@@ -102,6 +105,7 @@ export type PrescriptionErrorCode
     | "not_open"
     | "drug_not_found"
     | "not_injectable"
+    | "quantity_too_large"
     | "duplicate_drug"
     | "quantity_needed"
     | "drug_allergy"
@@ -116,6 +120,7 @@ const MESSAGES: Record<Exclude<PrescriptionErrorCode, "drug_allergy">, string> =
   not_open: "A prescription is written on an open encounter",
   drug_not_found: "No such drug in the catalogue",
   not_injectable: "This product is not made for injection; choose another route, or the product made for injection",
+  quantity_too_large: "That works out to more than a prescription holds (99,999,999 dose units); check the dose and the days",
   duplicate_drug: "The same drug is on this prescription twice",
   quantity_needed: "Give the quantity for a drug taken when needed",
   weight_needed: `A child under ${CHILD_UNDER_YEARS} needs a weight taken today before anything is prescribed; record it with the vital signs`,
@@ -406,6 +411,9 @@ async function screened(tx: AppDb, patientId: string, items: MedicineInput[], dr
     quantity: quantityOf(item),
     overridden: matches.get(item.drugCode) ?? [],
   }));
+  const tooMuch = lines.findIndex(l => Number(l.quantity) > QUANTITY_LIMIT);
+  if (tooMuch >= 0)
+    throw new PrescriptionError("quantity_too_large", [], tooMuch);
   return { lines, weight };
 }
 

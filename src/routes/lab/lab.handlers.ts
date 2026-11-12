@@ -97,6 +97,7 @@ export const viewWorklist: TenantRouteHandler<ViewWorklistRoute> = async (c) => 
   const list = await lab.viewWorklist(c.var.db, c.var.facility.id, actorOf(c));
   return c.json({
     toCollect: list.toCollect.map(d => ({ ...d, orderedAt: d.orderedAt.toISOString(), visitEndedAt: d.visitEndedAt?.toISOString() ?? null })),
+    toRecollect: list.toRecollect.map(specimenJson),
     toReceive: list.toReceive.map(specimenJson),
     inLab: list.inLab.map(specimenJson),
     toVerify: list.toVerify.map(resultJson),

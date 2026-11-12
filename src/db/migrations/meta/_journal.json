@@ -470,6 +470,13 @@
       "when": 1794511856922,
       "tag": "0066_specimen_taken_in",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1794516682645,
+      "tag": "0067_verified_release_frozen",
+      "breakpoints": true
     }
   ]
 }
