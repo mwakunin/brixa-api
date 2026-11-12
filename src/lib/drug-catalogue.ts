@@ -31,6 +31,9 @@ export const DRUG_ROUTES = [
   "otic",
 ] as const satisfies readonly DrugRoute[];
 
+/** A drug's code: A–Z, 0–9, `.` `_` `/` `-`, at most 32 characters. */
+export const DRUG_CODE_SHAPE = /^[A-Z0-9][A-Z0-9._/-]{0,31}$/;
+
 /** The routes that inject: only a product made for injection is given by them. */
 export const INJECTED_ROUTES: readonly DrugRoute[] = ["iv", "im", "sc", "intradermal"];
 

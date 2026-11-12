@@ -272,6 +272,8 @@ describe("the drug catalogue", () => {
     expect((await record({ category: "food", allergen: "Peanuts", drugCode: "AMX-500-CAP" })).status).toBe(422);
     const unknown = await record({ category: "drug", allergen: "X", drugCode: "NOPE" });
     expect([unknown.status, (await unknown.json()).error.issues[0].path]).toEqual([422, ["drugCode"]]);
+    // A misspelt code is refused, not dropped from an allergy prescribing then cannot check.
+    expect((await record({ category: "drug", allergen: "Amoxil", drugCod: "AMX-500-CAP" })).status).toBe(422);
     expect(await (await record({ category: "drug", allergen: "Amoxicillin", drugCode: "amx-500-cap" })).json()).toMatchObject({ drugCode: "AMX-500-CAP" });
     const { rows } = await pool.query("SELECT drug_code FROM patient_allergies WHERE patient_id = $1", [patientId]);
     expect(rows).toEqual([{ drug_code: "AMX-500-CAP" }]);

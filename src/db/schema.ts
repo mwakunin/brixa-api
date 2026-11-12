@@ -3,6 +3,7 @@ import type { CheckBuilder, PgTimestampBuilderInitial } from "drizzle-orm/pg-cor
 
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   boolean,
   check,
   date,
@@ -1897,6 +1898,11 @@ export const specimens = pgTable("specimens", {
   rejectionNote: text(),
   /** The rejected specimen this one was taken again for. */
   recollectionOf: uuid(),
+  /**
+   * The transaction that took it, set by the database and never changed:
+   * only that transaction links tests to it (0066).
+   */
+  takenInXact: bigint({ mode: "number" }).notNull().default(sql`txid_current()`),
 }, t => [
   unique("specimens_facility_id_id_key").on(t.facilityId, t.id),
   unique("specimens_facility_id_accession_number_key").on(t.facilityId, t.accessionNumber),

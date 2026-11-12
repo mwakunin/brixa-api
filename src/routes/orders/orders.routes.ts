@@ -6,7 +6,7 @@ import { createErrorSchema } from "stoker/openapi/schemas";
 import { ORDERING_STAFF, PERFORMING_STAFF, WALK_IN_STAFF } from "@/lib/orders";
 import { CLINICAL_ROLES } from "@/lib/professions";
 import { requireClinicalRole, requireMembershipRole } from "@/middlewares/auth";
-import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
+import { clinicalResponses, facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
 import { OrderSchema } from "./order-schemas";
 
@@ -84,7 +84,7 @@ export const placeOrder = createRoute({
     [HttpStatusCodes.CREATED]: jsonContent(OrderSchema, "Ordered"),
     ...refusals,
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(OrderBodySchema), "Invalid order"),
-    ...tenantResponses,
+    ...clinicalResponses,
   },
 });
 
@@ -156,7 +156,7 @@ export const markServiceDone = createRoute({
     [HttpStatusCodes.OK]: jsonContent(OrderSchema, "Done; the order as it now stands"),
     ...refusals,
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(IdParamsSchema), "Not an item id"),
-    ...tenantResponses,
+    ...clinicalResponses,
   },
 });
 

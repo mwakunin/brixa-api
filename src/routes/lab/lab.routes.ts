@@ -6,7 +6,7 @@ import { createErrorSchema } from "stoker/openapi/schemas";
 import { CLINICAL_ROLES } from "@/lib/professions";
 import { COLLECTING_STAFF, LAB_STAFF } from "@/lib/specimens";
 import { requireClinicalRole, requireMembershipRole } from "@/middlewares/auth";
-import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
+import { clinicalResponses, facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 import { LabNumberSchema } from "@/routes/lab-tests/lab-tests.routes";
 
 /**
@@ -174,7 +174,7 @@ export const viewWorklist = createRoute({
       inLab: z.array(SpecimenSchema),
       toVerify: z.array(ResultSchema),
     }), "The worklist"),
-    ...tenantResponses,
+    ...clinicalResponses,
   },
 });
 
@@ -193,7 +193,7 @@ export const collectSpecimen = createRoute({
     [HttpStatusCodes.CREATED]: jsonContent(SpecimenSchema, "Taken"),
     ...refusals,
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(CollectBodySchema), "Invalid request"),
-    ...tenantResponses,
+    ...clinicalResponses,
   },
 });
 
@@ -208,7 +208,7 @@ export const receiveSpecimen = createRoute({
     [HttpStatusCodes.OK]: jsonContent(SpecimenSchema, "Received"),
     ...refusals,
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(IdParamsSchema), "Not a specimen id"),
-    ...tenantResponses,
+    ...clinicalResponses,
   },
 });
 
@@ -224,7 +224,7 @@ export const rejectSpecimen = createRoute({
     [HttpStatusCodes.OK]: jsonContent(SpecimenSchema, "Rejected"),
     ...refusals,
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(RejectBodySchema), "No such reason, or no note for other"),
-    ...tenantResponses,
+    ...clinicalResponses,
   },
 });
 
@@ -240,7 +240,7 @@ export const recollectSpecimen = createRoute({
     [HttpStatusCodes.CREATED]: jsonContent(SpecimenSchema, "Taken again"),
     ...refusals,
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(IdParamsSchema), "Not a specimen id"),
-    ...tenantResponses,
+    ...clinicalResponses,
   },
 });
 
@@ -261,7 +261,7 @@ export const enterResult = createRoute({
     [HttpStatusCodes.CREATED]: jsonContent(ResultSchema, "Entered"),
     ...refusals,
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(EnterBodySchema), "Invalid values"),
-    ...tenantResponses,
+    ...clinicalResponses,
   },
 });
 
@@ -279,7 +279,7 @@ export const releaseResult = createRoute({
     [HttpStatusCodes.OK]: jsonContent(ResultSchema, "Released"),
     ...refusals,
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(ReleaseBodySchema), "No reason given"),
-    ...tenantResponses,
+    ...clinicalResponses,
   },
 });
 
@@ -295,7 +295,7 @@ export const verifyResult = createRoute({
     [HttpStatusCodes.OK]: jsonContent(ResultSchema, "Verified"),
     ...refusals,
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(VerifyBodySchema), "Invalid request"),
-    ...tenantResponses,
+    ...clinicalResponses,
   },
 });
 

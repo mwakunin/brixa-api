@@ -24,6 +24,7 @@ describe("converting PPB's Generic Products", () => {
       "Clindamycin 1 %w/w Topical Gel",
       "Budesonide 0.5 mg per 2ml Nebuliser Suspension",
       "Medroxyprogesterone 150 mg per 1ml Intramuscular Solution",
+      "Amoxicillin 250 mg / Sulbactam 250 mg per 5ml Oral Powder for Suspension",
     ));
 
     expect(rows.map(r => [r.genericName, r.strength, r.route, r.form, r.doseUnit])).toEqual([
@@ -35,6 +36,7 @@ describe("converting PPB's Generic Products", () => {
       ["Clindamycin", "1 %w/w", "topical", "Gel", "application"],
       ["Budesonide", "0.5 mg per 2ml", "inhaled", "Suspension", "mL"],
       ["Medroxyprogesterone", "150 mg per 1ml", "im", "Solution", "mL"],
+      ["Amoxicillin/Sulbactam", "250 mg/250 mg per 5ml", "oral", "Powder for Suspension", "mL"],
     ]);
     expect(rows.every(r => r.controlledSchedule === null)).toBe(true);
     expect(review).toEqual([]);
@@ -95,6 +97,13 @@ describe("converting PPB's Generic Products", () => {
       ["iv", "Aerosol Solution", "mL"],
     ]);
     expect(review.map(r => [r.code, r.issue.split(":")[0]])).toEqual([["GE10001", "A form not made for injection, with an injected route"]]);
+  });
+
+  it("leaves out a code the catalogue cannot take", () => {
+    const { rows, review } = convertGenericProducts({ ...codeSystem("Paracetamol 500 mg Oral Tablet"), concept: [{ code: "bad code", display: "Paracetamol 500 mg Oral Tablet" }] });
+
+    expect(rows).toEqual([]);
+    expect(review).toEqual([expect.objectContaining({ code: "bad code", included: false, issue: expect.stringMatching(/^A code the catalogue cannot take/) })]);
   });
 
   it("keeps a name that looks like a formula from running in a spreadsheet", () => {

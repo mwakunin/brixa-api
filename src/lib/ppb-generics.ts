@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { DrugRoute } from "./drug-catalogue";
 import type { DrugRow } from "./drug-catalogue-load";
 
-import { INJECTED_ROUTES } from "./drug-catalogue";
+import { DRUG_CODE_SHAPE, INJECTED_ROUTES } from "./drug-catalogue";
 
 /**
  * Converts PPB's Generic Products list, as DHA's ePrescription guide
@@ -96,7 +96,7 @@ function nameAndStrength(part: string): { name: string; strength: string } | nul
 
 /** "Amoxicillin 125 mg/Sulbactam 125 mg per 5ml" → names and strengths, or null if a part does not read. */
 function namesAndStrengths(text: string): { genericName: string; strength: string } | null {
-  const parts = text.split(/\/(?=[A-Z])/).map(nameAndStrength);
+  const parts = text.split(/\s*\/\s*(?=[A-Z])/).map(nameAndStrength);
   if (parts.some(p => !p))
     return null;
   return {
@@ -130,6 +130,8 @@ function routeAt(tokens: string[]): number {
 
 /** One product read out of its name, with what a reviewer should check; or a reason it cannot be read. */
 function read(code: string, display: string): { row: DrugRow; issues: string[] } | { reason: string } {
+  if (!DRUG_CODE_SHAPE.test(code))
+    return { reason: "A code the catalogue cannot take (A-Z, 0-9, . _ / -, at most 32)" };
   const tokens = display.split(/\s+/);
   const at = routeAt(tokens);
   if (at < 0 || at === tokens.length - 1)

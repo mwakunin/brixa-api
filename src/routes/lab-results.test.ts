@@ -406,6 +406,11 @@ describe("the database's result guards", () => {
       "INSERT INTO lab_results SELECT * FROM jsonb_populate_record(NULL::lab_results, (SELECT to_jsonb(r) || jsonb_build_object('id', gen_random_uuid(), 'order_item_id', $2::uuid) FROM lab_results r WHERE id = $1))",
       [result.id, other.item("HB")],
     )).toMatch(/lab_results_specimen_test_fk/);
+    // Nor a value for another test's analyte, printed under this one.
+    expect(await refusal(
+      "INSERT INTO lab_result_values (facility_id, result_id, analyte_id, analyte_code, analyte_name, result_type, value_text) SELECT facility_id, id, $2, 'MPS', 'Malaria parasites', 'choice', 'Positive' FROM lab_results WHERE id = $1",
+      [result.id, analytes.mps],
+    )).toMatch(/of its own test/);
     // Verified, it takes no value added afterwards.
     await act(result.id, "verify");
     expect(await refusal(

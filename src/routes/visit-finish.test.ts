@@ -82,7 +82,8 @@ describe("a visit with nothing pending", () => {
   it("waits for its lab test to be resulted and paid for, but not for a medicine to be dispensed", async () => {
     const { patientId, encounterId } = await visit();
     const order = await (await call("POST", `/encounters/${encounterId}/orders`, h.facility.id, doctor, { items: [{ labTestId: mrdt.id }] })).json();
-    await call("POST", `/encounters/${encounterId}/prescriptions`, h.facility.id, doctor, { items: [{ drugCode: "PCM-500-TAB", doseAmount: "1", frequency: "tds", durationDays: 3 }] });
+    const prescribed = await call("POST", `/encounters/${encounterId}/prescriptions`, h.facility.id, doctor, { items: [{ drugCode: "PCM-500-TAB", doseAmount: "1", frequency: "tds", durationDays: 3 }] });
+    expect(prescribed.status).toBe(201);
 
     expect(await closeFinishedVisits()).toMatchObject({ closed: 0 });
     const specimen = await (await call("POST", `/orders/${order.id}/specimens`, h.facility.id, labTech, { specimenType: "blood" })).json();

@@ -5,7 +5,7 @@ import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { CLINICAL_ROLES } from "@/lib/professions";
 import { requireClinicalRole, requireMembershipRole } from "@/middlewares/auth";
-import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
+import { clinicalResponses, facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
 /**
  * Clinical notes. Writing one is a clinical act under a current licence
@@ -88,7 +88,7 @@ export const startNote = createRoute({
     [HttpStatusCodes.CREATED]: jsonContent(NoteSchema, "Drafted"),
     ...refusals,
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(StartBodySchema), "Empty, or the wrong content for the kind"),
-    ...tenantResponses,
+    ...clinicalResponses,
   },
 });
 
@@ -104,7 +104,7 @@ export const editDraft = createRoute({
     [HttpStatusCodes.OK]: jsonContent(NoteSchema, "Saved"),
     ...refusals,
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(ContentSchema), "Empty, or the wrong content for the kind"),
-    ...tenantResponses,
+    ...clinicalResponses,
   },
 });
 
@@ -120,7 +120,7 @@ export const signNote = createRoute({
     [HttpStatusCodes.OK]: jsonContent(NoteSchema, "Signed"),
     ...refusals,
     ...notAnId,
-    ...tenantResponses,
+    ...clinicalResponses,
   },
 });
 
@@ -155,7 +155,7 @@ export const addAddendum = createRoute({
     [HttpStatusCodes.CREATED]: jsonContent(NoteSchema, "The note, with its addenda"),
     ...refusals,
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(AddendumBodySchema), "No text, or not an id"),
-    ...tenantResponses,
+    ...clinicalResponses,
   },
 });
 
@@ -175,7 +175,7 @@ export const markEnteredInError = createRoute({
     [HttpStatusCodes.OK]: jsonContent(NoteSchema, "Marked"),
     ...refusals,
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(ReasonBodySchema), "No reason, or not an id"),
-    ...tenantResponses,
+    ...clinicalResponses,
   },
 });
 

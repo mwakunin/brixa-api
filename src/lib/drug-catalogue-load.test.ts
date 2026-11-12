@@ -42,6 +42,8 @@ describe("the drug catalogue file", () => {
     expect(refusal(file("MOR-10-INJ,Morphine,10 mg/mL,Injection,mL,im,V"))).toMatch(/not a controlled schedule/);
     expect(refusal(file("pcm 500,Paracetamol,500 mg,Tablet,tablet,oral,"))).toMatch(/not a code/);
     expect(refusal(file("PCM-500-TAB,Paracetamol,,Tablet,tablet,oral,"))).toMatch(/empty/);
+    // Longer than a prescription prints.
+    expect(refusal(file(`PCM-500-TAB,Paracetamol,500 mg,${"Tablet ".repeat(20)},tablet,oral,`))).toMatch(/form is longer than 100/);
     expect(refusal(file("A,Paracetamol,500 mg,Tablet,tablet,oral,", "A,Ibuprofen,400 mg,Tablet,tablet,oral,"))).toMatch(/twice/);
     expect(parseDrugFile(file("MOR-10-INJ,Morphine,10 mg/mL,Injection,mL,im,II"))).toEqual([
       { code: "MOR-10-INJ", genericName: "Morphine", strength: "10 mg/mL", form: "Injection", doseUnit: "mL", route: "im", controlledSchedule: "II" },

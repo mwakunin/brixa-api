@@ -5,7 +5,7 @@ import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { CLINICAL_ROLES } from "@/lib/professions";
 import { requireClinicalRole, requireMembershipRole } from "@/middlewares/auth";
-import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
+import { clinicalResponses, facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
 /**
  * Diagnoses, coded in ICD-11, and the code search they are picked from.
@@ -103,7 +103,7 @@ export const recordDiagnosis = createRoute({
     [HttpStatusCodes.CREATED]: jsonContent(DiagnosisSchema, "Recorded"),
     ...refusals,
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(RecordBodySchema), "Not a code that can be recorded"),
-    ...tenantResponses,
+    ...clinicalResponses,
   },
 });
 
@@ -135,7 +135,7 @@ function changeRoute<P extends string>(path: P, summary: string, description: st
       [HttpStatusCodes.OK]: jsonContent(DiagnosisSchema, "Done"),
       ...refusals,
       [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(IdParamsSchema), "Not a diagnosis id"),
-      ...tenantResponses,
+      ...clinicalResponses,
     },
   });
 }
@@ -164,7 +164,7 @@ export const endDiagnosis = createRoute({
     [HttpStatusCodes.OK]: jsonContent(DiagnosisSchema, "Ended"),
     ...refusals,
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(EndBodySchema), "No such reason, or not an id"),
-    ...tenantResponses,
+    ...clinicalResponses,
   },
 });
 

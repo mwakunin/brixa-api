@@ -262,6 +262,12 @@ describe("the database's specimen guards", () => {
       await client.query("UPDATE specimens SET status = 'received', received_at = now(), received_by = collected_by WHERE id = $1", [byNurse.id]);
       expect(await link(byNurse.id, item("FBC"))).toMatch(/as it is taken/);
       await client.query("ROLLBACK");
+      // Nor after an update that changes nothing, nor by restamping it.
+      await client.query("BEGIN");
+      await client.query("UPDATE specimens SET status = status WHERE id = $1", [byLab.id]);
+      expect(await link(byLab.id, item("MRDT"))).toMatch(/as it is taken/);
+      await client.query("ROLLBACK");
+      expect(await client.query("UPDATE specimens SET taken_in_xact = txid_current() WHERE id = $1", [byLab.id]).then(() => "accepted", (err: { message: string }) => err.message)).toMatch(/never change/);
       // As it is taken, a test of its type only.
       await client.query("BEGIN");
       const { rows: [taken] } = await client.query(
@@ -271,8 +277,9 @@ describe("the database's specimen guards", () => {
       expect(await link(taken.id, item("URINE"))).toMatch(/ordered on its specimen type/);
       await client.query("ROLLBACK");
       await client.query("BEGIN");
+      // Whatever stamp the insert gives, the database stamps the taking transaction.
       const { rows: [again] } = await client.query(
-        "INSERT INTO specimens (facility_id, order_id, accession_number, specimen_type, status, collected_at, collected_by) VALUES ($1, $2, 'L-TEST-002', 'urine', 'collected', now(), $3) RETURNING id",
+        "INSERT INTO specimens (facility_id, order_id, accession_number, specimen_type, status, collected_at, collected_by, taken_in_xact) VALUES ($1, $2, 'L-TEST-002', 'urine', 'collected', now(), $3, 0) RETURNING id",
         [h.facility.id, orderId, nurse.actor.membershipId],
       );
       expect(await link(again.id, item("URINE"))).toBe("accepted");

@@ -118,7 +118,7 @@ MOR-10-INJ,Morphine,10 mg/mL,Injection,mL,im,II
 | Column | Rule |
 |---|---|
 | `code` | A–Z, 0–9, `.` `_` `/` `-`, at most 32 characters, unique in the file |
-| `generic_name`, `strength`, `form`, `dose_unit` | Not empty. Combinations are joined with `/`; the allergy check matches each part |
+| `generic_name`, `strength`, `form`, `dose_unit` | Not empty, and at most 200, 100, 100 and 30 characters, so every drug fits its line on a prescription. Combinations are joined with `/`; the allergy check matches each part |
 | `route` | The usual route, one of: oral, sublingual, iv, im, sc, intradermal, topical, rectal, vaginal, inhaled, nasal, ophthalmic, otic. A product whose usual route is not injected (iv, im, sc, intradermal) is never prescribed by one |
 | `controlled_schedule` | I, II, III, IV, or empty for a drug that is not controlled |
 

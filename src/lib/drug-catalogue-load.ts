@@ -5,7 +5,7 @@ import { drugCatalogue } from "@/db/schema";
 
 import type { ControlledSchedule, DrugRoute } from "./drug-catalogue";
 
-import { DRUG_ROUTES } from "./drug-catalogue";
+import { DRUG_CODE_SHAPE, DRUG_ROUTES } from "./drug-catalogue";
 
 /**
  * Loads the shared drug catalogue (SCHEMA.md §8, P3 slice 4b) from a CSV
@@ -44,7 +44,8 @@ export interface DrugRow {
 }
 
 const HEADER = ["code", "generic_name", "strength", "form", "dose_unit", "route", "controlled_schedule"];
-const CODE_SHAPE = /^[A-Z0-9][A-Z0-9._/-]{0,31}$/;
+/** The longest of each printed field, so every drug fits its prescription's cell. */
+const MAX_LENGTHS = { generic_name: 200, strength: 100, form: 100, dose_unit: 30 } as const;
 const SCHEDULES: readonly string[] = ["I", "II", "III", "IV"];
 const BATCH = 500;
 /**
@@ -118,10 +119,14 @@ function rowOf(fields: string[], line: number): DrugRow {
   if (fields.length !== HEADER.length)
     throw new DrugFileError(`row ${line} has ${fields.length} fields, not ${HEADER.length}`);
   const [code, genericName, strength, form, doseUnit, route, schedule] = fields.map(f => f.trim());
-  if (!CODE_SHAPE.test(code))
+  if (!DRUG_CODE_SHAPE.test(code))
     throw new DrugFileError(`row ${line}: ${JSON.stringify(code)} is not a code (A–Z, 0–9, . _ / -, at most 32)`);
   if (![genericName, strength, form, doseUnit].every(Boolean))
     throw new DrugFileError(`row ${line} (${code}) leaves a name, strength, form or dose unit empty`);
+  const tooLong = Object.entries({ generic_name: genericName, strength, form, dose_unit: doseUnit })
+    .find(([column, value]) => value.length > MAX_LENGTHS[column as keyof typeof MAX_LENGTHS]);
+  if (tooLong)
+    throw new DrugFileError(`row ${line} (${code}): ${tooLong[0]} is longer than ${MAX_LENGTHS[tooLong[0] as keyof typeof MAX_LENGTHS]} characters`);
   if (!(DRUG_ROUTES as readonly string[]).includes(route))
     throw new DrugFileError(`row ${line} (${code}): ${JSON.stringify(route)} is not a route (${DRUG_ROUTES.join(", ")})`);
   if (schedule !== "" && !SCHEDULES.includes(schedule))

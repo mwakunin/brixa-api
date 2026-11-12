@@ -12,7 +12,7 @@ import type { PatientActor } from "./patients";
 
 import { recordAudit } from "./audit";
 import { addDays, ageInYears, businessDate, printedAge, printedDate, startOfBusinessDay } from "./dates";
-import { packNotes } from "./document-content";
+import { FIELD_LENGTH, packNotes } from "./document-content";
 import { issueDocument, voidDocument } from "./documents";
 import { currentDrug, describeDrug, ingredientsOf, INJECTED_ROUTES } from "./drug-catalogue";
 import { printedQuantity } from "./money";
@@ -205,9 +205,6 @@ async function weightOn(tx: AppDb, patientId: string, today: string): Promise<st
   return taken?.value ?? null;
 }
 
-/** The most a printed field holds (`document-content.ts`). */
-const FIELD_LENGTH = 500;
-
 /**
  * Every allergy, or as many as fit with a note saying how many more there are
  * and to check the record: a prescription never drops one silently.
@@ -247,13 +244,8 @@ function overrideNotes(lines: Line[]): string[] {
   return notes;
 }
 
-async function printedPrescription(
-  tx: AppDb,
-  patientId: string,
-  lines: Line[],
-  input: { indication: string | null; weight: string | null; today: string },
-  actor: PatientActor,
-): Promise<PrintedContent> {
+/** Who the prescription is for and by, and the patient's allergies, as printed. */
+async function printedParties(tx: AppDb, patientId: string, actor: PatientActor): Promise<{ patient: typeof patients.$inferSelect; opNumber: string; prescriber: string; allergyLine: string }> {
   const [patient] = await tx.select().from(patients).where(eq(patients.id, patientId)).limit(1);
   const [op] = await tx
     .select({ number: patientNumbers.number })
@@ -272,43 +264,63 @@ async function printedPrescription(
     .where(and(eq(patientAllergies.patientId, patientId), isNull(patientAllergies.removedAt)));
 
   const told = allergies.filter(a => a.category !== "none_known").map(a => (a.reaction ? `${a.allergen} (${a.reaction})` : a.allergen!));
-  const allergyLine = told.length > 0 ? printedAllergies(told) : allergies.length > 0 ? "No known allergies" : "Not recorded";
+  const council = prescriber.profession ? PROFESSIONS[prescriber.profession].council : "";
+  return {
+    patient,
+    opNumber: op?.number ?? "",
+    prescriber: `${prescriber.name}, ${council} licence ${prescriber.licence ?? ""}`.trim(),
+    allergyLine: told.length > 0 ? printedAllergies(told) : allergies.length > 0 ? "No known allergies" : "Not recorded",
+  };
+}
+
+/** The medicines' table: one row a medicine. */
+function medicineTable(lines: Line[]): NonNullable<PrintedContent["table"]> {
+  return {
+    columns: [
+      { label: "Medicine" },
+      { label: "Dose" },
+      { label: "Route" },
+      { label: "How often" },
+      { label: "Days", align: "right" },
+      { label: "Quantity", align: "right" },
+      { label: "Instructions" },
+    ],
+    rows: lines.map(l => [
+      `${describeDrug(l.drug)}${l.drug.controlledSchedule ? ` (controlled, Schedule ${l.drug.controlledSchedule})` : ""}`,
+      `${printedQuantity(Number(l.input.doseAmount).toFixed(3))} ${l.drug.doseUnit}`,
+      ROUTE_LABELS[l.route],
+      FREQUENCY_LABELS[l.input.frequency],
+      l.input.durationDays ? String(l.input.durationDays) : "",
+      `${printedQuantity(l.quantity)} ${l.drug.doseUnit}`,
+      l.input.instructions ?? "",
+    ]),
+  };
+}
+
+async function printedPrescription(
+  tx: AppDb,
+  patientId: string,
+  lines: Line[],
+  input: { indication: string | null; weight: string | null; today: string },
+  actor: PatientActor,
+): Promise<PrintedContent> {
+  const { patient, opNumber, prescriber, allergyLine } = await printedParties(tx, patientId, actor);
   const name = [patient.givenName, patient.middleNames, patient.familyName].filter(Boolean).join(" ");
   const sex = patient.sex ? `${patient.sex[0].toUpperCase()}${patient.sex.slice(1)}, ` : "";
-  const council = prescriber.profession ? PROFESSIONS[prescriber.profession].council : "";
 
   return {
     title: "Prescription",
     fields: [
       { label: "Patient", value: name },
-      { label: "Patient number", value: op?.number ?? "" },
+      { label: "Patient number", value: opNumber },
       { label: "Sex and age", value: `${sex}${printedAge(patient.dateOfBirth, input.today)}` },
       ...(input.weight ? [{ label: "Weight", value: `${printedQuantity(input.weight)} kg, taken ${printedDate(input.today)}` }] : []),
       { label: "Allergies", value: allergyLine },
       ...(input.indication ? [{ label: "For", value: input.indication }] : []),
-      { label: "Prescriber", value: `${prescriber.name}, ${council} licence ${prescriber.licence ?? ""}`.trim() },
+      { label: "Prescriber", value: prescriber },
       { label: "Date", value: printedDate(input.today) },
     ],
-    table: {
-      columns: [
-        { label: "Medicine" },
-        { label: "Dose" },
-        { label: "Route" },
-        { label: "How often" },
-        { label: "Days", align: "right" },
-        { label: "Quantity", align: "right" },
-        { label: "Instructions" },
-      ],
-      rows: lines.map(l => [
-        `${describeDrug(l.drug)}${l.drug.controlledSchedule ? ` (controlled, Schedule ${l.drug.controlledSchedule})` : ""}`,
-        `${printedQuantity(Number(l.input.doseAmount).toFixed(3))} ${l.drug.doseUnit}`,
-        ROUTE_LABELS[l.route],
-        FREQUENCY_LABELS[l.input.frequency],
-        l.input.durationDays ? String(l.input.durationDays) : "",
-        `${printedQuantity(l.quantity)} ${l.drug.doseUnit}`,
-        l.input.instructions ?? "",
-      ]),
-    },
+    table: medicineTable(lines),
     notes: overrideNotes(lines),
   };
 }
@@ -337,11 +349,29 @@ export async function prescribe(
     throw new PrescriptionError("encounter_not_found");
   if (encounter.status !== "open")
     throw new PrescriptionError("not_open");
-  if (new Set(input.items.map(i => i.drugCode)).size !== input.items.length)
-    throw new PrescriptionError("duplicate_drug");
 
+  const drugs = await catalogueDrugs(tx, input.items, actor);
+  const today = businessDate(at);
+  const { lines, weight } = await screened(tx, encounter.patientId, input.items, drugs, today);
+  const indication = input.indication ?? null;
+  const document = await issueDocument(tx, {
+    facilityId,
+    kind: "prescription",
+    content: await printedPrescription(tx, encounter.patientId, lines, { indication, weight, today }, actor),
+    issuedBy: actor,
+    at,
+  });
+  const order = await writeMedicines(tx, { facilityId, encounterId, indication, documentId: document.id }, lines, actor, at);
+  await auditIssued(tx, { facilityId, encounterId, orderId: order.id, number: document.number }, lines, actor);
+  return order;
+}
+
+/** Each medicine's catalogue drug, refusing one not in it, an injected route for a product not made for injection, or a controlled drug from a nurse. */
+async function catalogueDrugs(tx: AppDb, items: MedicineInput[], actor: OrderActor): Promise<Drug[]> {
+  if (new Set(items.map(i => i.drugCode)).size !== items.length)
+    throw new PrescriptionError("duplicate_drug");
   const drugs: Drug[] = [];
-  for (const [i, item] of input.items.entries()) {
+  for (const [i, item] of items.entries()) {
     const drug = await currentDrug(tx, item.drugCode);
     if (!drug)
       throw new PrescriptionError("drug_not_found", [], i);
@@ -352,49 +382,51 @@ export async function prescribe(
   }
   if (drugs.some(d => d.controlledSchedule) && !actor.roles.some(r => CONTROLLED_PRESCRIBERS.includes(r)))
     throw new PrescriptionError("controlled_prescriber");
+  return drugs;
+}
 
+/** The lines to print, once a child's weight and the patient's allergies allow them. */
+async function screened(tx: AppDb, patientId: string, items: MedicineInput[], drugs: Drug[], today: string): Promise<{ lines: Line[]; weight: string | null }> {
   // Shared, so an allergy recorded meanwhile waits for this prescription (allergies lock the patient).
-  const [patient] = await tx.select({ dateOfBirth: patients.dateOfBirth }).from(patients).where(eq(patients.id, encounter.patientId)).for("share").limit(1);
-  const today = businessDate(at);
+  const [patient] = await tx.select({ dateOfBirth: patients.dateOfBirth }).from(patients).where(eq(patients.id, patientId)).for("share").limit(1);
   const child = ageInYears(patient.dateOfBirth, today) < CHILD_UNDER_YEARS;
-  const weight = child ? await weightOn(tx, encounter.patientId, today) : null;
+  const weight = child ? await weightOn(tx, patientId, today) : null;
   if (child && !weight)
     throw new PrescriptionError("weight_needed");
 
-  const matches = await allergyMatches(tx, encounter.patientId, drugs);
-  const unexplained = input.items.flatMap(i => (i.allergyOverride ? [] : matches.get(i.drugCode) ?? []));
+  const matches = await allergyMatches(tx, patientId, drugs);
+  const unexplained = items.flatMap(i => (i.allergyOverride ? [] : matches.get(i.drugCode) ?? []));
   if (unexplained.length > 0)
     throw new PrescriptionError("drug_allergy", unexplained);
 
-  const lines: Line[] = input.items.map((item, i) => ({
+  const lines = items.map((item, i) => ({
     drug: drugs[i],
     input: item,
     route: item.route ?? drugs[i].route,
     quantity: quantityOf(item),
     overridden: matches.get(item.drugCode) ?? [],
   }));
-  const indication = input.indication ?? null;
-  const document = await issueDocument(tx, {
-    facilityId,
-    kind: "prescription",
-    content: await printedPrescription(tx, encounter.patientId, lines, { indication, weight, today }, actor),
-    issuedBy: actor,
-    at,
-  });
+  return { lines, weight };
+}
 
-  const [order] = await tx.insert(orders).values({
-    facilityId,
-    encounterId,
+/** The order and its medicines, as printed on its paper. */
+async function writeMedicines(
+  tx: AppDb,
+  order: { facilityId: string; encounterId: string; indication: string | null; documentId: string },
+  lines: Line[],
+  actor: OrderActor,
+  at: Date,
+): Promise<OrderRow> {
+  const [written] = await tx.insert(orders).values({
+    ...order,
     urgency: "routine",
-    indication,
     orderedBy: actor.membershipId,
     enteredBy: actor.membershipId,
     orderedAt: at,
-    documentId: document.id,
   }).returning();
   await tx.insert(orderItems).values(lines.map(l => ({
-    facilityId,
-    orderId: order.id,
+    facilityId: order.facilityId,
+    orderId: written.id,
     drugCode: l.drug.code,
     drugDescription: describeDrug(l.drug),
     doseAmount: l.input.doseAmount,
@@ -407,7 +439,17 @@ export async function prescribe(
     allergyOverrideReason: l.overridden.length > 0 ? l.input.allergyOverride! : null,
     status: "ordered" as const,
   })));
+  return written;
+}
 
+/** The issue, and each allergy overridden, in the audit log. */
+async function auditIssued(
+  tx: AppDb,
+  issued: { facilityId: string; encounterId: string; orderId: string; number: string },
+  lines: Line[],
+  actor: OrderActor,
+): Promise<void> {
+  const { facilityId, encounterId, orderId, number } = issued;
   const codes = lines.map(l => l.drug.code);
   await recordAudit(tx, {
     facilityId,
@@ -415,8 +457,8 @@ export async function prescribe(
     action: "prescription.issued",
     entityType: "encounter",
     entityId: encounterId,
-    summary: `Prescribed ${codes.join(", ")} (${document.number})`,
-    detail: { orderId: order.id, number: document.number, drugs: codes, controlled: lines.filter(l => l.drug.controlledSchedule).map(l => l.drug.code) },
+    summary: `Prescribed ${codes.join(", ")} (${number})`,
+    detail: { orderId, number, drugs: codes, controlled: lines.filter(l => l.drug.controlledSchedule).map(l => l.drug.code) },
   });
   for (const line of lines.filter(l => l.overridden.length > 0)) {
     await recordAudit(tx, {
@@ -426,10 +468,9 @@ export async function prescribe(
       entityType: "encounter",
       entityId: encounterId,
       summary: `Prescribed ${line.drug.code} despite a recorded allergy`,
-      detail: { orderId: order.id, drugCode: line.drug.code, allergens: line.overridden.map(o => o.allergen), reason: line.input.allergyOverride },
+      detail: { orderId, drugCode: line.drug.code, allergens: line.overridden.map(o => o.allergen), reason: line.input.allergyOverride },
     });
   }
-  return order;
 }
 
 /**
