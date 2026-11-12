@@ -34,11 +34,12 @@ export const FISCAL_SERIES = [
 
 /**
  * The clinical document series every facility gets at onboarding, yearly and
- * six digits wide like the fiscal ones (`RX-2026-000123`). Migration 0055
- * backfills the prescription series.
+ * six digits wide like the fiscal ones (`RX-2026-000123`). Migrations 0055
+ * and 0059 backfill the prescription and lab report series.
  */
 export const CLINICAL_SERIES = [
   ["prescription", "RX-"],
+  ["lab_report", "LR-"],
 ] as const satisfies readonly (readonly [SeriesKind, string])[];
 
 /**

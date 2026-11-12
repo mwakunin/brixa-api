@@ -13,5 +13,9 @@ router.openapi(routes.collectSpecimen, handlers.collectSpecimen);
 router.openapi(routes.receiveSpecimen, handlers.receiveSpecimen);
 router.openapi(routes.rejectSpecimen, handlers.rejectSpecimen);
 router.openapi(routes.recollectSpecimen, handlers.recollectSpecimen);
+router.openapi(routes.enterResult, handlers.enterResult);
+router.openapi(routes.releaseResult, handlers.releaseResult);
+router.openapi(routes.verifyResult, handlers.verifyResult);
+router.openapi(routes.listResults, handlers.listResults);
 
 export default router;

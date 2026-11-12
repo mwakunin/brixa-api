@@ -12,6 +12,7 @@ import {
   encounters,
   invoiceLines,
   invoices,
+  labResults,
   labTests,
   memberships,
   orderItems,
@@ -23,6 +24,7 @@ import {
   user,
 } from "@/db/schema";
 
+import type { ShownResult } from "./lab-results";
 import type { OrderActor } from "./orders";
 import type { PatientActor } from "./patients";
 
@@ -30,6 +32,7 @@ import { recordAudit } from "./audit";
 import { ageInYears } from "./dates";
 import { isUniqueViolation } from "./db-errors";
 import { balanceCents } from "./invoice-balance";
+import { hasResults, pendingResults } from "./lab-results";
 import { issueNumber } from "./number-series";
 
 /**
@@ -67,6 +70,7 @@ export type SpecimenErrorCode
     | "not_found"
     | "already_received"
     | "already_rejected"
+    | "has_results"
     | "not_rejected"
     | "already_recollected";
 
@@ -79,6 +83,7 @@ export class SpecimenError extends Error {
       not_found: "No such specimen",
       already_received: "This specimen has already been received",
       already_rejected: "This specimen was rejected; recollect it instead",
+      has_results: "This specimen has results; correct them rather than rejecting it",
       not_rejected: "Only a rejected specimen is recollected",
       already_recollected: "This specimen has already been recollected; recollect the new one if that was rejected too",
     }[code]);
@@ -219,6 +224,8 @@ export async function rejectSpecimen(
   const current = await lockSpecimen(tx, id);
   if (current.status === "rejected")
     throw new SpecimenError("already_rejected");
+  if (await hasResults(tx, id))
+    throw new SpecimenError("has_results");
 
   const [rejected] = await tx.update(specimens)
     .set({ status: "rejected", rejectedAt: at, rejectedBy: actor.membershipId, rejectionReason: input.reason, rejectionNote: input.note ?? null })
@@ -354,8 +361,10 @@ export interface Worklist {
   toCollect: CollectionDue[];
   /** Taken by a nurse, not yet in the lab. */
   toReceive: ShownSpecimen[];
-  /** In the lab, waiting for results (5b). */
+  /** In the lab, with a test still to be resulted. */
   inLab: ShownSpecimen[];
+  /** Results entered or released unverified, for another lab member to verify. */
+  toVerify: ShownResult[];
 }
 
 const patientColumns = {
@@ -503,7 +512,12 @@ export async function viewWorklist(tx: AppDb, facilityId: string, actor: Patient
     group.tests.sort((a, b) => a.code.localeCompare(b.code));
 
   const toReceive = await specimensWhere(tx, eq(specimens.status, "collected"), today);
-  const inLab = await specimensWhere(tx, eq(specimens.status, "received"), today);
+  const inLab = await specimensWhere(tx, and(eq(specimens.status, "received"), sql`EXISTS (
+    SELECT 1 FROM ${specimenTests} st WHERE st.specimen_id = ${specimens.id}
+      AND NOT EXISTS (SELECT 1 FROM ${labResults} r
+        WHERE r.specimen_id = st.specimen_id AND r.order_item_id = st.order_item_id AND r.status <> 'superseded')
+  )`), today);
+  const toVerify = await pendingResults(tx);
 
   await recordAudit(tx, {
     facilityId,
@@ -511,7 +525,7 @@ export async function viewWorklist(tx: AppDb, facilityId: string, actor: Patient
     action: "lab.worklist_viewed",
     entityType: "facility",
     entityId: facilityId,
-    summary: `Viewed the lab worklist (${toCollect.length} to collect, ${toReceive.length} to receive, ${inLab.length} in the lab)`,
+    summary: `Viewed the lab worklist (${toCollect.length} to collect, ${toReceive.length} to receive, ${inLab.length} in the lab, ${toVerify.length} to verify)`,
   });
-  return { toCollect, toReceive, inLab };
+  return { toCollect, toReceive, inLab, toVerify };
 }

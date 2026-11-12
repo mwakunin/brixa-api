@@ -147,7 +147,7 @@ describe("the lab's worklist", () => {
     expect(list.toCollect[0]).toMatchObject({ urgency: "urgent", patient: { name: "Test Patient", sex: "male", opNumber: expect.any(String) } });
     expect((await call("GET", "/lab/worklist", h.facility.id, nurse)).status).toBe(403);
     const viewed = await db.select().from(auditLog).where(eq(auditLog.action, "lab.worklist_viewed"));
-    expect(viewed).toEqual([expect.objectContaining({ actorId: labTech.id, summary: "Viewed the lab worklist (2 to collect, 0 to receive, 0 in the lab)" })]);
+    expect(viewed).toEqual([expect.objectContaining({ actorId: labTech.id, summary: "Viewed the lab worklist (2 to collect, 0 to receive, 0 in the lab, 0 to verify)" })]);
   });
 
   it("warns of a test not yet paid for at an outpatient visit, never at an emergency, and never blocks", async () => {

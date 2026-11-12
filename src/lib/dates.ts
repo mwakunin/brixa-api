@@ -103,6 +103,20 @@ export function printedDate(date: string): string {
   return `${value("day")} ${value("month")} ${value("year")}`;
 }
 
+/** An age as printed on a document: "34 years", "8 months", "12 days". */
+export function printedAge(dateOfBirth: string, today: string): string {
+  const plural = (n: number, unit: string) => `${n} ${unit}${n === 1 ? "" : "s"}`;
+  const years = ageInYears(dateOfBirth, today);
+  if (years >= 1)
+    return plural(years, "year");
+  const [by, bm, bd] = dateOfBirth.split("-").map(Number);
+  const [ty, tm, td] = today.split("-").map(Number);
+  const months = (ty - by) * 12 + (tm - bm) - (td < bd ? 1 : 0);
+  if (months >= 1)
+    return plural(months, "month");
+  return plural(Math.round((Date.UTC(ty, tm - 1, td) - Date.UTC(by, bm - 1, bd)) / 86_400_000), "day");
+}
+
 /**
  * `at` as printed on a document, in Kenyan time: `4 Nov 2026, 14:05`.
  * Assembled from parts for the same reason as `businessDate`: the layout must

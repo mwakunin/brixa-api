@@ -10,6 +10,7 @@ import type { PatientActor } from "./patients";
 
 import { recordAudit } from "./audit";
 import { cancelOrderItemCharge, captureOrderItemCharge, ChargeError } from "./charges";
+import { refreshReport } from "./lab-results";
 
 /**
  * Orders (SCHEMA.md §8, P3 slice 4a): lab tests and services asked for on an
@@ -282,6 +283,9 @@ export async function cancelOrderItem(tx: AppDb, facilityId: string, itemId: str
     .where(eq(orderItems.id, itemId))
     .returning();
   const chargeCancelled = await cancelOrderItemCharge(tx, facilityId, itemId, reason, actor);
+  // The rest of its order may now be resulted: its report is due.
+  if (item.labTestId)
+    await refreshReport(tx, facilityId, item.orderId, actor, at);
 
   const code = await chargedCode(tx, item);
   await recordAudit(tx, {

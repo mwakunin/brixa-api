@@ -188,6 +188,7 @@ The same counter issues every human-facing sequential number:
 | `admission` | `ADM-2026-0153` | yearly | yes |
 | `invoice`, `receipt`, `credit_note`, `refund` | `INV-2026-004211` | yearly | **yes: fiscal documents** |
 | `lab_accession` | `L-20261103-017` | daily | no (a rejected specimen keeps its number) |
+| `prescription`, `lab_report` | `RX-2026-000123`, `LR-2026-000045` | yearly | yes (a voided one keeps its number) |
 | `grn`, `transfer` | `GRN-2026-0091` | yearly | yes |
 
 - **As built (P1), the configuration and the count are separate tables.** `number_series` holds one row per `(facility_id, kind)` with `prefix`, `padding` and `reset_period` (`never` \| `yearly` \| `daily`). `number_series_counters` holds one row per `(series_id, period_key)` with its `next_value`, where `period_key` is `'all'`, `'2026'` or `'2026-11-03'`, computed in Africa/Nairobi (rule 26). So a prefix change applies going forward without touching a count, and a new period needs no configuration copied. The counter for a new period is created on first use with `INSERT … ON CONFLICT DO NOTHING`, then locked as above (`src/lib/number-series.ts`). The §5 sketch keeps the single-table form for readability.
@@ -677,13 +678,40 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 - **Rejecting** (`/specimens/{id}/reject`, lab members) and **recollecting** (`/specimens/{id}/recollect`, collectors): a new specimen, with a new number, for the same tests.
 - **The worklist** (`GET /lab/worklist`, lab members, audited as `lab.worklist_viewed`) lists tests waiting to be collected on open encounters, grouped by order and specimen type, then specimens to receive, then specimens in the lab. Each list is urgent first, then oldest, and names the patient with their number, sex and age.
 - **The unpaid warning:** a test is `unpaid` at an outpatient visit unless its charge is assigned in full to finalised bills that owe nothing (`paidCharges`, derived, rule 4). Emergencies and admissions never show it, and it never blocks taking a specimen.
-- **Not yet:** results, verification and the lab report (5b), when a specimen leaves the worklist with its results.
+- **Not yet:** results, verification and the lab report (5b, below).
+
+**As built (P3, slice 5b): results, the lab report, and the visit closing itself.** Decided 2026-11-11 (`ROADMAP.md` P3):
+
+- **`lab_results`:** one test's result on one specimen, in `version`s (`lab_results_version_key`), with one current version (`lab_results_one_current`, not superseded).
+  - `status`: `entered` (in the lab only), `released` (unverified, with who, when and why), `verified` (by another lab member: `lab_results_verified_by_another`), or `superseded`.
+  - `has_critical` is set at entry. A critical result is not released or verified until who was told, how and when is recorded (`lab_results_told`).
+  - A correction is a new version with a `correction_reason`. It supersedes the one before at once, so a wrong value is withdrawn at once and the right one reaches the clinician once released or verified.
+  - The trigger `lab_results_lifecycle` writes a result entered, moves it only forward, records release, verification and who was told once each, freezes a superseded result, and never changes what it is for, who entered it or when; nothing is deleted.
+- **`lab_result_values`:** one per analyte, frozen as judged (rule 7). Each copies the analyte's code, name and unit, the reference range and critical limits applied, and the flag:
+  - `critical_low` and `critical_high` beyond the critical limits;
+  - `low` and `high` outside the range;
+  - `abnormal` for an abnormal choice.
+  - The range is chosen for the patient's sex and age in days on the collection date. A patient who is intersex, or whose sex is not recorded, is judged against `any` ranges only. A later change to the catalogue leaves past values as they were judged.
+  - Written once (`lab_result_values_written_once`).
+- **Entering** (`POST /specimens/{id}/results`, lab members) needs a received specimen and every number and choice of the test; text is optional. A specimen with results cannot be rejected (`has_results`). **Releasing** (`/lab-results/{id}/release`, with a reason) and **verifying** (`/lab-results/{id}/verify`) are lab acts under a current licence.
+- **The lab report** (`lab_reports`, document kind `lab_report`, from the yearly `LR-` series registered at onboarding and backfilled by migration 0059):
+  - It is issued once every lab test on the order is resulted (released or verified) or cancelled, and is issued again, the old one voided, whenever a result on it is released, verified or corrected, or a test on the order is cancelled. A transaction-scoped advisory lock on the order serializes this, since an order row takes no row lock.
+  - It prints the patient, who requested the tests (the clinician, an outside requester or "Self-requested"), the specimens, each value with its unit, range and flag, a cancelled test as not done, and notes on what was released unverified, who verified, who was told of a critical value, and what was corrected.
+  - Opened by clinicians and the lab (`DOCUMENT_READERS`), audited.
+- **Reading:** `GET /encounters/{id}/lab-results` (clinical roles, audited) shows released and verified results and each order's current report. The lab's worklist adds the results to verify, and keeps a specimen "in the lab" until each of its tests has a result.
+- **A visit closes itself** (`src/lib/visit-finish.ts`; `POST /internal/jobs/finish-visits`, Cloud Scheduler every 15 minutes) once all of these hold:
+  - the open outpatient visit's patient is in no queue;
+  - every lab test is resulted or cancelled, and every service done or cancelled. A medicine is not waited for until dispensing exists (P4);
+  - no money is due, as the cashier's list counts it (the same SQL, `lib/cashier.ts`);
+  - the patient was seen or tested.
+  - It is closed by nobody, re-checked under the encounter's lock. Failures are recorded as `visit_finish` by the runner the nightly close shares (`src/jobs/visits.ts`).
+- **Not yet:** the results-to-review list for the ordering clinician (still proposed); analyser interfaces (out of v1).
 
 **Clinical record.** `observations` (vitals and charted values, with `entered_in_error` instead of deletion), `diagnoses` (ICD code, provisional \| final \| secondary), `clinical_notes` (`signed_at`, `addendum_of`: a signed note is corrected only by an addendum), `orders` and `order_items` (lab, imaging, procedure, medication, service; medication items carry dose, route, frequency and duration). Every clinical act records the acting membership, whose licence details live on `memberships` (rule 25).
 
 **Inpatient.** `admissions` is 1:1 with an ipd encounter and carries the admission number. `bed_stays` holds a `tstzrange` with two `EXCLUDE` constraints: no bed holds two patients at once, and no admission is in two beds at once. A transfer ends one stay and starts the next. `medication_administrations` records each dose against its order item (given \| held \| refused \| missed). `discharge_summaries` are immutable once signed.
 
-**Lab.** `lab_tests` is the facility's catalogue (specimen type, reference ranges by sex and age, billable item). `specimens` carry the accession number (§6.1), collection and receipt times, and a rejection reason. `lab_results` are versioned with `supersedes_id`. `verified_by` must differ from the person who entered the result, and a result reaches the clinician only once verified.
+**Lab.** `lab_tests` is the facility's catalogue (specimen type, reference ranges by sex and age, billable item). `specimens` carry the accession number (§6.1), collection and receipt times, and a rejection reason. `lab_results` are versioned. `verified_by` must differ from the person who entered the result, and a result reaches the clinician once verified, or released unverified by the one lab member on night duty (decided 2026-11-11; as built in slice 5b, above).
 
 **Pharmacy and stores.** `inventory_items` reference the shared `drug_catalogue` (or describe a non-drug consumable) and a billable item. `stores` covers the main store, the pharmacy, wards and other sub-stores. `stock_batches` hold batch number, expiry and cost. `stock_movements` are append-only signed quantities (opening balance, receipt, dispense, transfer out/in, adjustment, write-off, return) with typed source FKs. An opening balance loads counted stock at go-live; it is its own kind so it never reads as a purchase. Each item has a reorder level per store, which drives the low-stock alert. **On hand per store and batch = Σ movements, never stored, never negative** (checked under a batch lock). `dispenses` take stock first-expiry-first-out and raise the charge. `controlled_drug_register` is append-only with a running balance per item and store. `goods_received` records the supplier as text in v1, since supplier payables come later. Units of sale are still open (`SPEC.md` §4).
 

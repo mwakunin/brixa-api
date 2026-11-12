@@ -124,7 +124,6 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
   - Sensitive billable items print under a neutral name.
   - Sensitivity comes from ICD codes, lab tests and clinics.
   - Break-glass alerts go to an in-app list for the attending clinician and the facility admin.
-- **One lab member on night duty:** a result released unverified, with a reason, and verified by the next person on duty. This changes `SCHEMA.md` §8 ("a result reaches the clinician only once verified").
 
 **Decided 2026-11-10:** diagnoses are coded in ICD-11 (`SPEC.md` §4, question 8).
 
@@ -149,6 +148,14 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
 - **Rejection** is for a reason from a fixed list (haemolysed, clotted, insufficient, wrong container, mislabelled, leaked, too old, other with a note). Recollecting takes a new specimen with a new number; the rejected one keeps its number.
 - **Paid**, for the lab's warning, means the test's charge is on finalised bills that owe nothing. The warning shows at outpatient visits only: never at an emergency, nor for an admission, which runs its own bill.
 - **The worklist** shows tests to collect, specimens to receive and specimens in the lab, urgent first, then oldest. It is the lab's alone, and each view is audited.
+
+**Decided 2026-11-11** (product owner, for 5b; recommendations accepted):
+- **A result** is one test's values on one specimen, entered together and verified together by another lab member. A correction is a new version; the one it corrects stays on record.
+- **One lab member on night duty** may release a result unverified, with a reason; it reaches the clinician marked unverified until the next lab member verifies it. (Proposed earlier; it changes "a result reaches the clinician only once verified".)
+- **A critical value** is not released or verified until who was told, how (in person or by phone) and when is recorded.
+- **The lab report** is one per order, from a yearly `LR-` series, issued once every test on it is resulted or cancelled; a change to a result voids it and a new one is issued.
+- **A visit closes itself** through a check every 15 minutes, once its patient is in no queue, every test is resulted or cancelled and every service done, nothing is owed, and the patient was seen or tested. Medicines are not waited for until dispensing exists (P4).
+- **Flags** come from the range for the patient's sex and age in days at collection; a patient who is intersex, or whose sex is not recorded, is judged against `any` ranges only. The results-to-review list stays proposed.
 
 **Still open:** whether the MOH 705 report's grouping of ICD-11 codes into MOH's condition list needs WHO's written agreement, since WHO's licence puts mappings between classifications outside it (`SCHEMA.md` §8, slice 3a); the pilot's MOH 705 and 717 forms, so P3 captures what P6 reports need (§9, question 10); whether SMS reminders need the patient's consent; drug-interaction and dose data (none in v1 without a licensed source).
 

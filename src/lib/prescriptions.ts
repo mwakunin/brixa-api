@@ -11,7 +11,7 @@ import type { OrderActor } from "./orders";
 import type { PatientActor } from "./patients";
 
 import { recordAudit } from "./audit";
-import { addDays, ageInYears, businessDate, printedDate, startOfBusinessDay } from "./dates";
+import { addDays, ageInYears, businessDate, printedAge, printedDate, startOfBusinessDay } from "./dates";
 import { issueDocument, voidDocument } from "./documents";
 import { currentDrug, describeDrug, ingredientsOf } from "./drug-catalogue";
 import { printedQuantity } from "./money";
@@ -186,20 +186,6 @@ async function weightOn(tx: AppDb, patientId: string, today: string): Promise<st
     .orderBy(desc(observations.observedAt))
     .limit(1);
   return taken?.value ?? null;
-}
-
-/** "34 years", "8 months", "12 days". */
-function printedAge(dateOfBirth: string, today: string): string {
-  const plural = (n: number, unit: string) => `${n} ${unit}${n === 1 ? "" : "s"}`;
-  const years = ageInYears(dateOfBirth, today);
-  if (years >= 1)
-    return plural(years, "year");
-  const [by, bm, bd] = dateOfBirth.split("-").map(Number);
-  const [ty, tm, td] = today.split("-").map(Number);
-  const months = (ty - by) * 12 + (tm - bm) - (td < bd ? 1 : 0);
-  if (months >= 1)
-    return plural(months, "month");
-  return plural(Math.round((Date.UTC(ty, tm - 1, td) - Date.UTC(by, bm - 1, bd)) / 86_400_000), "day");
 }
 
 interface Line {

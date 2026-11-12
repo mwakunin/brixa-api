@@ -395,6 +395,10 @@ export const auditLog = pgTable("audit_log", {
     | "specimen.received"
     | "specimen.rejected"
     | "lab.worklist_viewed"
+    | "lab_result.entered"
+    | "lab_result.released"
+    | "lab_result.verified"
+    | "lab_report.issued"
   >().notNull(),
   /** What it happened to. Not a foreign key: the log outlives what it names. */
   entityType: text().notNull(),
@@ -515,6 +519,10 @@ export const auditLog = pgTable("audit_log", {
     "specimen.received",
     "specimen.rejected",
     "lab.worklist_viewed",
+    "lab_result.entered",
+    "lab_result.released",
+    "lab_result.verified",
+    "lab_report.issued",
   ]),
 ]);
 
@@ -535,7 +543,7 @@ export const auditLog = pgTable("audit_log", {
 export const numberSeries = pgTable("number_series", {
   id: uuid().primaryKey().defaultRandom(),
   facilityId: uuid().notNull().references(() => facilities.id),
-  kind: text().$type<"outpatient" | "inpatient" | "admission" | "receipt" | "invoice" | "credit_note" | "refund" | "prescription" | "lab_accession">().notNull(),
+  kind: text().$type<"outpatient" | "inpatient" | "admission" | "receipt" | "invoice" | "credit_note" | "refund" | "prescription" | "lab_accession" | "lab_report">().notNull(),
   /** Facility-chosen, e.g. `OP`. Applies to numbers issued from now on. */
   prefix: text().notNull(),
   /** Zero-padded width: 4 gives OP0001. A number grows past it, never truncates. */
@@ -546,7 +554,7 @@ export const numberSeries = pgTable("number_series", {
 }, t => [
   unique("number_series_facility_id_kind_key").on(t.facilityId, t.kind),
   unique("number_series_facility_id_id_key").on(t.facilityId, t.id),
-  oneOf("number_series_kind_known", t.kind, ["outpatient", "inpatient", "admission", "receipt", "invoice", "credit_note", "refund", "prescription", "lab_accession"]),
+  oneOf("number_series_kind_known", t.kind, ["outpatient", "inpatient", "admission", "receipt", "invoice", "credit_note", "refund", "prescription", "lab_accession", "lab_report"]),
   oneOf("number_series_reset_period_known", t.resetPeriod, ["never", "yearly", "daily"]),
   check("number_series_prefix_shape", sql`${t.prefix} ~ '^[A-Za-z0-9/-]{1,12}$'`),
   check("number_series_padding_range", sql`${t.padding} BETWEEN 1 AND 12`),
@@ -724,7 +732,7 @@ export const invitations = pgTable("invitations", {
 export const documents = pgTable("documents", {
   id: uuid().primaryKey().defaultRandom(),
   facilityId: uuid().notNull().references(() => facilities.id),
-  kind: text().$type<"receipt" | "invoice" | "credit_note" | "refund" | "prescription">().notNull(),
+  kind: text().$type<"receipt" | "invoice" | "credit_note" | "refund" | "prescription" | "lab_report">().notNull(),
   /** From this facility's number series of the same kind. */
   number: text().notNull(),
   /**
@@ -750,7 +758,7 @@ export const documents = pgTable("documents", {
     columns: [t.facilityId, t.issuedBy],
     foreignColumns: [memberships.facilityId, memberships.id],
   }),
-  oneOf("documents_kind_known", t.kind, ["receipt", "invoice", "credit_note", "refund", "prescription"]),
+  oneOf("documents_kind_known", t.kind, ["receipt", "invoice", "credit_note", "refund", "prescription", "lab_report"]),
   // 20 bytes of base64url: a shorter code typed in by hand would be guessable.
   check("documents_verification_code_shape", sql`${t.verificationCode} ~ '^[A-Za-z0-9_-]{27}$'`),
   // Voided means at some time, for a stated reason; otherwise neither. The
@@ -1942,6 +1950,138 @@ export const specimenTests = pgTable("specimen_tests", {
   index("specimen_tests_order_item_index").on(t.facilityId, t.orderItemId),
 ]);
 
+/**
+ * One test's result on one specimen (P3 slice 5b): its analytes' values,
+ * entered together and verified together by another lab member (decided
+ * 2026-11-10). Entered results stay in the lab; a released or verified one
+ * reaches the clinician. One lab member on night duty may release it
+ * unverified, with a reason, for the next to verify (decided 2026-11-11). A
+ * critical value needs who was told, how and when before it is released or
+ * verified. A correction is a new version: the one it corrects is superseded
+ * at once and stays on record.
+ */
+export const labResults = pgTable("lab_results", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  specimenId: uuid().notNull(),
+  orderItemId: uuid().notNull(),
+  /** 1, then one more for each correction. */
+  version: integer().notNull(),
+  /** Why a later version corrects the one before. */
+  correctionReason: text(),
+  status: text().$type<"entered" | "released" | "verified" | "superseded">().notNull(),
+  enteredAt: timestamp({ withTimezone: true }).notNull(),
+  enteredBy: uuid().notNull(),
+  /** Any value outside its critical limits: someone must be told. */
+  hasCritical: boolean().notNull(),
+  releasedAt: timestamp({ withTimezone: true }),
+  releasedBy: uuid(),
+  releaseReason: text(),
+  verifiedAt: timestamp({ withTimezone: true }),
+  verifiedBy: uuid(),
+  /** Who was told of a critical value, how and when, and who recorded it. */
+  toldName: text(),
+  toldHow: text().$type<"in_person" | "phone">(),
+  toldAt: timestamp({ withTimezone: true }),
+  toldRecordedBy: uuid(),
+  supersededAt: timestamp({ withTimezone: true }),
+}, t => [
+  unique("lab_results_facility_id_id_key").on(t.facilityId, t.id),
+  unique("lab_results_version_key").on(t.specimenId, t.orderItemId, t.version),
+  foreignKey({ name: "lab_results_specimen_fk", columns: [t.facilityId, t.specimenId], foreignColumns: [specimens.facilityId, specimens.id] }),
+  foreignKey({ name: "lab_results_order_item_fk", columns: [t.facilityId, t.orderItemId], foreignColumns: [orderItems.facilityId, orderItems.id] }),
+  foreignKey({ name: "lab_results_entered_by_fk", columns: [t.facilityId, t.enteredBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "lab_results_released_by_fk", columns: [t.facilityId, t.releasedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "lab_results_verified_by_fk", columns: [t.facilityId, t.verifiedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "lab_results_told_recorded_by_fk", columns: [t.facilityId, t.toldRecordedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  // One current version of a test's result on a specimen.
+  uniqueIndex("lab_results_one_current").on(t.specimenId, t.orderItemId).where(sql`${t.status} <> 'superseded'`),
+  index("lab_results_order_item_index").on(t.facilityId, t.orderItemId),
+  oneOf("lab_results_status_known", t.status, ["entered", "released", "verified", "superseded"]),
+  oneOf("lab_results_told_how_known", t.toldHow, ["in_person", "phone"]),
+  check("lab_results_version_positive", sql`${t.version} >= 1`),
+  check(
+    "lab_results_correction_reason",
+    sql`(${t.version} = 1) = (${t.correctionReason} IS NULL)
+      AND (${t.correctionReason} IS NULL OR length(btrim(${t.correctionReason})) > 0)`,
+  ),
+  check(
+    "lab_results_lifecycle",
+    sql`num_nonnulls(${t.releasedAt}, ${t.releasedBy}, ${t.releaseReason}) IN (0, 3)
+      AND num_nonnulls(${t.verifiedAt}, ${t.verifiedBy}) IN (0, 2)
+      AND (${t.releaseReason} IS NULL OR length(btrim(${t.releaseReason})) > 0)
+      AND CASE ${t.status}
+            WHEN 'entered' THEN num_nonnulls(${t.releasedAt}, ${t.verifiedAt}, ${t.supersededAt}) = 0
+            WHEN 'released' THEN ${t.releasedAt} IS NOT NULL AND num_nonnulls(${t.verifiedAt}, ${t.supersededAt}) = 0
+            WHEN 'verified' THEN ${t.verifiedAt} IS NOT NULL AND ${t.supersededAt} IS NULL
+            ELSE ${t.supersededAt} IS NOT NULL
+          END`,
+  ),
+  // Another lab member verifies (decided 2026-11-10), as rule 24 has it for money.
+  check("lab_results_verified_by_another", sql`${t.verifiedBy} IS NULL OR ${t.verifiedBy} <> ${t.enteredBy}`),
+  check(
+    "lab_results_told",
+    sql`num_nonnulls(${t.toldName}, ${t.toldHow}, ${t.toldAt}, ${t.toldRecordedBy}) IN (0, 4)
+      AND (${t.toldName} IS NULL OR length(btrim(${t.toldName})) > 0)
+      AND (NOT ${t.hasCritical} OR ${t.releasedAt} IS NULL AND ${t.verifiedAt} IS NULL OR ${t.toldName} IS NOT NULL)`,
+  ),
+]);
+
+/**
+ * One analyte's value in a result, frozen as judged: the analyte's code,
+ * name and unit, the reference range and critical limits applied for the
+ * patient's sex and age at collection, and the flag (rule 7). Written with
+ * its result and never changed.
+ */
+export const labResultValues = pgTable("lab_result_values", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  resultId: uuid().notNull(),
+  analyteId: uuid().notNull(),
+  analyteCode: text().notNull(),
+  analyteName: text().notNull(),
+  resultType: text().$type<"numeric" | "choice" | "text">().notNull(),
+  unit: text(),
+  valueNumeric: numeric({ mode: "number" }),
+  /** A choice's answer, or free text. */
+  valueText: text(),
+  rangeLow: numeric({ mode: "number" }),
+  rangeHigh: numeric({ mode: "number" }),
+  criticalLow: numeric({ mode: "number" }),
+  criticalHigh: numeric({ mode: "number" }),
+  flag: text().$type<"low" | "high" | "critical_low" | "critical_high" | "abnormal">(),
+}, t => [
+  unique("lab_result_values_result_analyte_key").on(t.resultId, t.analyteId),
+  foreignKey({ name: "lab_result_values_result_fk", columns: [t.facilityId, t.resultId], foreignColumns: [labResults.facilityId, labResults.id] }),
+  foreignKey({ name: "lab_result_values_analyte_fk", columns: [t.facilityId, t.analyteId], foreignColumns: [labAnalytes.facilityId, labAnalytes.id] }),
+  oneOf("lab_result_values_result_type_known", t.resultType, ["numeric", "choice", "text"]),
+  oneOf("lab_result_values_flag_known", t.flag, ["low", "high", "critical_low", "critical_high", "abnormal"]),
+  check(
+    "lab_result_values_shape",
+    sql`(${t.resultType} = 'numeric' AND ${t.valueNumeric} IS NOT NULL AND ${t.valueText} IS NULL)
+      OR (${t.resultType} <> 'numeric' AND ${t.valueText} IS NOT NULL AND length(btrim(${t.valueText})) > 0
+          AND num_nonnulls(${t.valueNumeric}, ${t.unit}, ${t.rangeLow}, ${t.rangeHigh}, ${t.criticalLow}, ${t.criticalHigh}) = 0
+          AND (${t.flag} IS NULL OR ${t.flag} = 'abnormal'))`,
+  ),
+]);
+
+/**
+ * The printed lab report of an order (P3 slice 5b), from the yearly `LR-`
+ * series: issued once every lab test on it is resulted or cancelled, and
+ * issued again (the old one voided) whenever a result on it changes.
+ */
+export const labReports = pgTable("lab_reports", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  orderId: uuid().notNull(),
+  documentId: uuid().notNull(),
+}, t => [
+  unique("lab_reports_document_key").on(t.documentId),
+  foreignKey({ name: "lab_reports_order_fk", columns: [t.facilityId, t.orderId], foreignColumns: [orders.facilityId, orders.id] }),
+  foreignKey({ name: "lab_reports_document_fk", columns: [t.facilityId, t.documentId], foreignColumns: [documents.facilityId, documents.id] }),
+  index("lab_reports_order_index").on(t.facilityId, t.orderId),
+]);
+
 // ---------------------------------------------------------------------------
 // Charges (SCHEMA.md §7.2)
 // ---------------------------------------------------------------------------
@@ -2027,7 +2167,7 @@ export const charges = pgTable("charges", {
 export const jobFailures = pgTable("job_failures", {
   id: uuid().primaryKey().defaultRandom(),
   facilityId: uuid().notNull().references(() => facilities.id),
-  job: text().$type<"bed_day_accrual" | "reconciliation" | "visit_close">().notNull(),
+  job: text().$type<"bed_day_accrual" | "reconciliation" | "visit_close" | "visit_finish">().notNull(),
   /** What it was working on, e.g. the encounter. Not a foreign key: the log outlives it. */
   subjectId: uuid(),
   /** What is wrong, for whoever fixes it. Ids and codes only (rule 10). */
@@ -2039,7 +2179,7 @@ export const jobFailures = pgTable("job_failures", {
   uniqueIndex("job_failures_open_once")
     .on(t.facilityId, t.job, sql`coalesce(${t.subjectId}, '00000000-0000-0000-0000-000000000000'::uuid)`, t.error)
     .where(sql`${t.resolvedAt} IS NULL`),
-  oneOf("job_failures_job_known", t.job, ["bed_day_accrual", "reconciliation", "visit_close"]),
+  oneOf("job_failures_job_known", t.job, ["bed_day_accrual", "reconciliation", "visit_close", "visit_finish"]),
 ]);
 
 // ---------------------------------------------------------------------------
@@ -2705,6 +2845,9 @@ export const TENANT_TABLES = [
   "order_items",
   "specimens",
   "specimen_tests",
+  "lab_results",
+  "lab_result_values",
+  "lab_reports",
   "billable_items",
   "price_lists",
   "price_changes",
