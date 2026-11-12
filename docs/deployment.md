@@ -73,6 +73,14 @@ code,generic_name,strength,form,dose_unit,route,controlled_schedule
 PCM-500-TAB,Paracetamol,500 mg,Tablet,tablet,oral,
 ```
 
+PPB's list comes as a FHIR CodeSystem (`generic-products-cs.json`), naming each product in one string, e.g. `GE10002` "Metformin 500 mg Oral Tablet". `pnpm drugs:convert` (`src/lib/ppb-generics.ts`) turns it into this format and writes a review list beside it, touching no database:
+
+```sh
+pnpm drugs:convert generic-products-cs.json drugs.csv drugs-review.csv
+```
+
+The review list names what was left out (a route this system does not have, e.g. buccal or intravitreal, or a name it cannot read) and what was kept but needs a pharmacist's eye: an injection with no route (given IV), a vitamin dosed in mg, an inhaler given by mouth, a product listed twice. The guide's copy of 2026-08 converts to 3,004 drugs, 15 left out and 253 to check. Controlled schedules are not in PPB's list; fill them in from the Pharmacy and Poisons Act before loading. Then load the file:
+
 ```sh
 docker run --rm --env-file .env.production -v "$PWD:/data:ro" <image> \
   node ./dist/src/cli/load-drug-catalogue.js /data/drugs.csv
