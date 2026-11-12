@@ -66,7 +66,7 @@ Every external call is an outbox row, drained by `POST /internal/outbox/drain` (
 
 Until it has run, diagnoses cannot be recorded: the code search finds nothing. ICD-11 is © WHO 2019, licensed under CC BY-ND 3.0 IGO.
 
-**The drug catalogue**, which prescriptions are written from, is loaded once per environment and again whenever the list changes (`SCHEMA.md` §8, slice 4b). The list to fill it is PPB's Generic Products list (`SPEC.md` §2), still to be obtained and converted, so the file is in this system's own CSV format, described in `src/lib/drug-catalogue-load.ts`:
+**The drug catalogue**, which prescriptions are written from, is loaded once per environment and again whenever the list changes (`SCHEMA.md` §8, slice 4b). The full procedure, with the review a pharmacist does before production, is in [`docs/drug-catalogue.md`](drug-catalogue.md). The list to fill it is PPB's Generic Products list (`SPEC.md` §2), still to be obtained and converted, so the file is in this system's own CSV format, described in `src/lib/drug-catalogue-load.ts`:
 
 ```csv
 code,generic_name,strength,form,dose_unit,route,controlled_schedule
@@ -79,7 +79,7 @@ PPB's list comes as a FHIR CodeSystem (`generic-products-cs.json`), naming each 
 pnpm drugs:convert generic-products-cs.json drugs.csv drugs-review.csv
 ```
 
-The review list names what was left out (a route this system does not have, e.g. buccal or intravitreal, or a name it cannot read) and what was kept but needs a pharmacist's eye: an injection with no route (given IV), a vitamin dosed in mg, an inhaler given by mouth, a product listed twice. The guide's copy of 2026-08 converts to 3,004 drugs, 15 left out and 253 to check. Controlled schedules are not in PPB's list; fill them in from the Pharmacy and Poisons Act before loading. Then load the file:
+The review list names what was left out (a route this system does not have, e.g. buccal or intravitreal, or a name it cannot read) and what was kept but needs a pharmacist's eye: an injection with no route (given IV), a vitamin dosed in mg, an inhaler given by mouth, a product listed twice. The guide's copy of 2026-08 converts to 3,004 drugs, 15 left out and 286 to check. Controlled schedules are not in PPB's list; fill them in from the Pharmacy and Poisons Act before loading. Then load the file:
 
 ```sh
 docker run --rm --env-file .env.production -v "$PWD:/data:ro" <image> \
