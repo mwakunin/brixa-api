@@ -34,7 +34,7 @@ The converter refuses any other code system: the file's `url` must be `https://f
 pnpm drugs:convert generic-products-cs.json drugs.csv drugs-review.csv
 ```
 
-The command needs three different paths; it refuses to overwrite the list or one output with the other. It writes two files:
+The command needs three different paths, and never overwrites a file: both outputs must not exist yet, so neither can be the list itself under another name or a link. To convert again, remove the old outputs first. It writes two files:
 
 - **`drugs.csv`**, the catalogue in the format the loader reads (below);
 - **`drugs-review.csv`**, the products a pharmacist should look at before loading.
@@ -47,7 +47,7 @@ The converter reads each product's name into a generic name, strength, route and
 | Artemether 20 mg/Lumefantrine 120 mg Oral Tablet | Artemether/Lumefantrine | 20 mg/120 mg | oral | Tablet | tablet |
 | Cefixime 100 mg per 5ml Oral Syrup | Cefixime | 100 mg per 5ml | oral | Syrup | mL |
 
-The copy of 2026-08 converts to 3,004 drugs. It leaves 15 out and lists 286 to check.
+The copy of 2026-08 converts to 3,004 drugs. It leaves 15 out and lists 289 to check.
 
 ### 3. Review it
 
@@ -61,6 +61,7 @@ Open `drugs-review.csv` in a spreadsheet. A name that would read as a formula is
 | A vitamin dosed in mg | Yes | Check the strength. It is usually IU or mcg ("Colecalciferol 800 mg" is almost certainly 800 IU) |
 | An inhaler given by mouth | Yes | Set `route` to `inhaled` |
 | A powder counted in vials with a strength per mL | Yes | Check `dose_unit`: `vial` or `mL` |
+| A form not made for injection, with an injected route | Yes | A PPB error, such as a cream or a suppository listed as an injection. Correct the route or the form. Until then it prints as an injection unless the prescriber chooses another route |
 | The same product as GE… | Yes | Delete one of the two rows |
 
 Beyond the review list:
@@ -118,7 +119,7 @@ MOR-10-INJ,Morphine,10 mg/mL,Injection,mL,im,II
 |---|---|
 | `code` | A–Z, 0–9, `.` `_` `/` `-`, at most 32 characters, unique in the file |
 | `generic_name`, `strength`, `form`, `dose_unit` | Not empty. Combinations are joined with `/`; the allergy check matches each part |
-| `route` | One of: oral, sublingual, iv, im, sc, intradermal, topical, rectal, vaginal, inhaled, nasal, ophthalmic, otic |
+| `route` | The usual route, one of: oral, sublingual, iv, im, sc, intradermal, topical, rectal, vaginal, inhaled, nasal, ophthalmic, otic. A product whose usual route is not injected (iv, im, sc, intradermal) is never prescribed by one |
 | `controlled_schedule` | I, II, III, IV, or empty for a drug that is not controlled |
 
 A field holding a comma or a quote is quoted, with `""` for a quote inside it. Anything after a closing quote, or a quote inside an unquoted field, refuses the file. `src/test/fixtures/drug-catalogue-sample.csv` is a ten-drug sample for development and tests. It is not a list to prescribe from.

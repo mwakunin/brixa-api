@@ -1,4 +1,4 @@
-import { and, eq, isNull, lt, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, lt, sql } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 
@@ -50,15 +50,18 @@ export async function closeStaleVisits(now = new Date()): Promise<VisitCloseTall
   );
 }
 
+/** How many finished visits one 15-minute check closes; the next check takes the rest. */
+const FINISH_BATCH = 500;
+
 /**
  * The check every 15 minutes (`POST /internal/jobs/finish-visits`): every
  * open outpatient visit with nothing pending closes itself
  * (`lib/visit-finish.ts`), each in its own transaction and re-checked once
  * locked, with failures recorded as `visit_finish` exactly as the nightly
- * close records its own.
+ * close records its own. At most `limit` a run.
  */
-export async function closeFinishedVisits(): Promise<VisitCloseTally> {
-  return perVisit("visit_finish", finishedVisits, closeFinishedVisit);
+export async function closeFinishedVisits(limit = FINISH_BATCH): Promise<VisitCloseTally> {
+  return perVisit("visit_finish", tx => finishedVisits(tx, limit), closeFinishedVisit, limit);
 }
 
 /**
@@ -66,12 +69,15 @@ export async function closeFinishedVisits(): Promise<VisitCloseTally> {
  * tenant transaction. A visit that fails, or a facility whose visits cannot
  * be listed, is recorded in `job_failures` (the visit as its subject) and
  * logged; the run carries on. A facility's run with no failure resolves the
- * failures recorded before it began, but not one met since.
+ * failures recorded before it began, but not one met since. A list cut
+ * short at `limit` vouches only for the visits on it: their failures are
+ * resolved, the rest wait for a run that lists them all.
  */
 async function perVisit(
   job: "visit_close" | "visit_finish",
   list: (tx: AppDb) => Promise<string[]>,
   close: (tx: AppDb, facilityId: string, id: string) => Promise<boolean>,
+  limit = Infinity,
 ): Promise<VisitCloseTally> {
   const tally: VisitCloseTally = { facilities: 0, closed: 0, failed: 0 };
   // From the clock that stamps job_failures.failed_at, so the two compare like for like.
@@ -122,10 +128,11 @@ async function perVisit(
       tally.failed += 1;
       continue;
     }
+    const onlyListed = ids.length < limit ? undefined : inArray(jobFailures.subjectId, ids);
     try {
       await runAsFacility(facility.id, tx => tx.update(jobFailures)
         .set({ resolvedAt: new Date() })
-        .where(and(eq(jobFailures.job, job), isNull(jobFailures.resolvedAt), lt(jobFailures.failedAt, runStartedAt))));
+        .where(and(eq(jobFailures.job, job), isNull(jobFailures.resolvedAt), lt(jobFailures.failedAt, runStartedAt), onlyListed)));
     }
     catch (err) {
       tally.failed += 1;

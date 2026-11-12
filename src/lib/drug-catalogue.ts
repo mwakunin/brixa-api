@@ -31,6 +31,9 @@ export const DRUG_ROUTES = [
   "otic",
 ] as const satisfies readonly DrugRoute[];
 
+/** The routes that inject: only a product made for injection is given by them. */
+export const INJECTED_ROUTES: readonly DrugRoute[] = ["iv", "im", "sc", "intradermal"];
+
 const SEARCH_LIMIT = 20;
 
 export interface DrugMatch {

@@ -85,7 +85,7 @@ export const recordAllergy = createRoute({
   responses: {
     [HttpStatusCodes.CREATED]: jsonContent(AllergySchema, "Recorded"),
     [HttpStatusCodes.CONFLICT]: jsonContent(RefusalSchema, "\"No known allergies\" while an allergy stands"),
-    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(RecordBodySchema), "Invalid allergy"),
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(RecordBodySchema), "Invalid allergy, or a `drugCode` not in the catalogue"),
     ...tenantResponses,
   },
 });

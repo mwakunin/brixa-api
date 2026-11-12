@@ -7,6 +7,7 @@ import { CLINICAL_ROLES } from "@/lib/professions";
 import { COLLECTING_STAFF, LAB_STAFF } from "@/lib/specimens";
 import { requireClinicalRole, requireMembershipRole } from "@/middlewares/auth";
 import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
+import { LabNumberSchema } from "@/routes/lab-tests/lab-tests.routes";
 
 /**
  * The lab's specimens: the worklist, taking a specimen (the lab, or a nurse),
@@ -73,13 +74,15 @@ const CollectionDueSchema = z.object({
   tests: z.array(TestSchema),
 });
 
-const CollectBodySchema = z.object({
+// Request bodies are strict: a misspelt field is refused, never dropped. A
+// misspelt `orderItemIds` would otherwise collect every waiting test.
+const CollectBodySchema = z.strictObject({
   specimenType: z.enum(SPECIMEN_TYPES),
   /** The tests it is for; every ordered test of this type on the order if left out. */
   orderItemIds: z.array(z.uuid()).min(1).max(30).optional(),
 });
 
-const RejectBodySchema = z.object({
+const RejectBodySchema = z.strictObject({
   reason: z.enum(REJECTION_REASONS),
   /** Required for `other`. */
   note: z.string().trim().min(1).max(200).regex(/^\P{C}+$/u, "One line").optional(),
@@ -122,7 +125,7 @@ const ResultSchema = z.object({
   values: z.array(ValueSchema),
 });
 
-const ToldSchema = z.object({
+const ToldSchema = z.strictObject({
   /** Who was told: the clinician, or the ward. */
   name: z.string().trim().min(1).max(120).regex(/^\P{C}+$/u, "One line"),
   how: z.enum(["in_person", "phone"]),
@@ -130,20 +133,20 @@ const ToldSchema = z.object({
   at: z.iso.datetime({ offset: true }).optional(),
 });
 
-const EnterBodySchema = z.object({
+const EnterBodySchema = z.strictObject({
   orderItemId: z.uuid(),
-  values: z.array(z.object({ analyteId: z.uuid(), value: z.union([z.number().finite(), z.string().trim().min(1).max(2000)]) })).min(1).max(60),
+  values: z.array(z.strictObject({ analyteId: z.uuid(), value: z.union([LabNumberSchema, z.string().trim().min(1).max(2000)]) })).min(1).max(60),
   /** Why, when the test already has a result: this one corrects it. */
   correctionReason: z.string().trim().min(1).max(200).regex(/^\P{C}+$/u, "One line").optional(),
 });
 
-const ReleaseBodySchema = z.object({
+const ReleaseBodySchema = z.strictObject({
   /** Why it goes out unverified, e.g. "Only lab member on night duty". */
   reason: z.string().trim().min(1).max(200).regex(/^\P{C}+$/u, "One line"),
   told: ToldSchema.optional(),
 });
 
-const VerifyBodySchema = z.object({ told: ToldSchema.optional() });
+const VerifyBodySchema = z.strictObject({ told: ToldSchema.optional() });
 
 const refusals = {
   [HttpStatusCodes.CONFLICT]: jsonContent(RefusalSchema, "Not possible in the specimen's or order's state"),
@@ -155,11 +158,13 @@ export const viewWorklist = createRoute({
   path: "/lab/worklist",
   summary: "The lab's worklist",
   description:
-    "Tests waiting to be collected on open encounters (by order and specimen "
-    + "type), specimens a nurse took that the lab has not received, "
-    + "specimens in the lab with a test still to result, and results to "
-    + "verify. Urgent first, then oldest. A test not yet paid "
-    + "for at an outpatient visit is marked `unpaid`. Audited.",
+    "Tests waiting to be collected (by order and specimen type), specimens "
+    + "a nurse took that the lab has not received, specimens in the lab with "
+    + "a test still to result, and results to verify. Urgent first, then "
+    + "oldest. Tests to collect come from open encounters first, then from "
+    + "visits that ended in the last 7 days (`visitEndedAt`), since the "
+    + "patient may come back for the sample. A test not yet paid for at an "
+    + "outpatient visit is marked `unpaid`. Audited.",
   middleware: [labOnly] as const,
   request: { headers: facilityHeaders },
   responses: {

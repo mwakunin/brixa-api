@@ -218,6 +218,16 @@ describe("the lab's worklist", () => {
     // Unpaid or not, the lab takes the specimen.
     const other = await orderedVisit("opd", [tests.urine]);
     expect((await collect(other.orderId, { specimenType: "urine" })).status).toBe(201);
+    // A free test has nothing to pay.
+    const free = await orderedVisit("opd", [await labTest("HIV", "blood", 0)]);
+    expect((await unpaid())[free.orderId]).toBe(false);
+  });
+
+  it("refuses a misspelt field rather than collect every waiting test", async () => {
+    const { orderId, item } = await orderedVisit();
+
+    expect((await collect(orderId, { specimenType: "blood", orderItemId: item("MRDT") })).status).toBe(422);
+    expect((await worklist()).toCollect.flatMap((d: { tests: { code: string }[] }) => d.tests.map(t => t.code))).toEqual(["FBC", "MRDT", "URINE"]);
   });
 });
 
@@ -233,5 +243,43 @@ describe("the database's specimen guards", () => {
     expect(await refusal("DELETE FROM specimens WHERE id = $1")).toMatch(/never deleted/);
     await pool.query("UPDATE specimens SET status = 'rejected', rejected_at = now(), rejected_by = received_by, rejection_reason = 'leaked' WHERE id = $1", [specimen.id]);
     expect(await refusal("UPDATE specimens SET rejection_note = 'late note' WHERE id = $1")).toMatch(/cannot change/);
+  });
+
+  it("link a test to a specimen only as it is taken, and only a test ordered on its type", async () => {
+    const { orderId, item } = await orderedVisit();
+    const byLab = await (await collect(orderId, { specimenType: "blood", orderItemIds: [item("FBC")] })).json();
+    const byNurse = await (await collect(orderId, { specimenType: "blood", orderItemIds: [item("MRDT")] }, nurse)).json();
+    const client = await pool.connect();
+    const link = (specimenId: string, orderItemId: string) => client.query(
+      "INSERT INTO specimen_tests (facility_id, specimen_id, order_item_id, analyte_ids) VALUES ($1, $2, $3, '{}')",
+      [h.facility.id, specimenId, orderItemId],
+    ).then(() => "accepted", (err: { message: string }) => err.message);
+    try {
+      // Afterwards, not even a test of its type on its order.
+      expect(await link(byLab.id, item("MRDT"))).toMatch(/as it is taken/);
+      // Nor while it is received.
+      await client.query("BEGIN");
+      await client.query("UPDATE specimens SET status = 'received', received_at = now(), received_by = collected_by WHERE id = $1", [byNurse.id]);
+      expect(await link(byNurse.id, item("FBC"))).toMatch(/as it is taken/);
+      await client.query("ROLLBACK");
+      // As it is taken, a test of its type only.
+      await client.query("BEGIN");
+      const { rows: [taken] } = await client.query(
+        "INSERT INTO specimens (facility_id, order_id, accession_number, specimen_type, status, collected_at, collected_by) VALUES ($1, $2, 'L-TEST-001', 'blood', 'collected', now(), $3) RETURNING id",
+        [h.facility.id, orderId, nurse.actor.membershipId],
+      );
+      expect(await link(taken.id, item("URINE"))).toMatch(/ordered on its specimen type/);
+      await client.query("ROLLBACK");
+      await client.query("BEGIN");
+      const { rows: [again] } = await client.query(
+        "INSERT INTO specimens (facility_id, order_id, accession_number, specimen_type, status, collected_at, collected_by) VALUES ($1, $2, 'L-TEST-002', 'urine', 'collected', now(), $3) RETURNING id",
+        [h.facility.id, orderId, nurse.actor.membershipId],
+      );
+      expect(await link(again.id, item("URINE"))).toBe("accepted");
+    }
+    finally {
+      await client.query("ROLLBACK").catch(() => {});
+      client.release();
+    }
   });
 });

@@ -17,11 +17,21 @@ function actorOf(c: Context<TenantBindings>): OrderActor {
   return { userId: c.var.user!.id, membershipId: c.var.membership.id, roles: c.var.membership.roles };
 }
 
+/** Refusals about one medicine's field: a validation failure on it, not a conflict. */
+const ABOUT_A_MEDICINE: Partial<Record<rx.PrescriptionErrorCode, string>> = { drug_not_found: "drugCode", not_injectable: "route" };
+
 function refusal(c: Context, err: unknown) {
   if (!(err instanceof rx.PrescriptionError))
     return null;
   if (err.code === "encounter_not_found" || err.code === "not_found")
     return c.json({ message: HttpStatusPhrases.NOT_FOUND }, HttpStatusCodes.NOT_FOUND);
+  const field = ABOUT_A_MEDICINE[err.code];
+  if (field && err.item !== undefined) {
+    return c.json({
+      success: false as const,
+      error: { name: "ValidationError", issues: [{ code: "custom" as const, path: ["items", err.item, field], message: err.message }] },
+    }, HttpStatusCodes.UNPROCESSABLE_ENTITY);
+  }
   if (err.code === "controlled_prescriber")
     return c.json({ message: err.message, code: err.code }, HttpStatusCodes.FORBIDDEN);
   if (err.code === "drug_allergy")

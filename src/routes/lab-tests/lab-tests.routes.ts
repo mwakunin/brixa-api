@@ -21,7 +21,12 @@ const SPECIMEN_TYPES = ["blood", "urine", "stool", "sputum", "swab", "csf", "bod
 const oneLine = (max: number) => z.string().trim().min(1).max(max).regex(/^\P{C}+$/u, "One line");
 
 const AnalyteCodeSchema = z.string().trim().toUpperCase().regex(/^[A-Z0-9][A-Z0-9._%#-]{0,15}$/, "Letters, digits and . _ % # - only, at most 16");
-const LimitSchema = z.number().finite();
+/**
+ * A number a lab result, range or limit gives: at most 6 decimal places and
+ * below 10^15, so the report prints exactly the value entered.
+ */
+export const LabNumberSchema = z.number().finite().refine(n => Math.abs(n) < 1e15, "Less than 10^15").refine(n => Number(n.toFixed(6)) === n, "At most 6 decimal places");
+const LimitSchema = LabNumberSchema;
 
 /** Ages in days: from (inclusive) and to (exclusive); none for every age after. */
 // Strict, so a field put on the wrong level (a critical limit on a range) is refused, not dropped.
@@ -102,7 +107,7 @@ const UpdateAnalyteBodySchema = z.strictObject({
   isActive: z.boolean().optional(),
 }).refine(b => Object.values(b).some(v => v !== undefined), "Nothing to change");
 
-const RangesBodySchema = z.object({ ranges: RangesSchema });
+const RangesBodySchema = z.strictObject({ ranges: RangesSchema });
 
 const ShownRangeSchema = z.object({
   sex: z.enum(["any", "male", "female"]),

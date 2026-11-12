@@ -341,6 +341,7 @@ export async function listLabTests(tx: AppDb, filter: { id?: string } = {}): Pro
         .where(and(inArray(labReferenceRanges.analyteId, analytes.map(a => a.id)), isNull(labReferenceRanges.retiredAt)))
         .orderBy(asc(labReferenceRanges.sex), asc(labReferenceRanges.ageFromDays));
 
+  const analytesOf = Map.groupBy(analytes, a => a.labTestId);
   const rangesOf = Map.groupBy(ranges, r => r.analyteId);
   return tests.map(({ test, code, name }) => ({
     id: test.id,
@@ -349,7 +350,7 @@ export async function listLabTests(tx: AppDb, filter: { id?: string } = {}): Pro
     name,
     specimenType: test.specimenType,
     isActive: test.isActive,
-    analytes: analytes.filter(a => a.labTestId === test.id).map(a => ({
+    analytes: (analytesOf.get(test.id) ?? []).map(a => ({
       id: a.id,
       code: a.code,
       name: a.name,

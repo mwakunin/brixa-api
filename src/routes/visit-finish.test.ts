@@ -128,6 +128,24 @@ describe("a visit with nothing pending", () => {
     expect(ids).toEqual([finished.encounterId]);
   }, 30_000);
 
+  it("resolves, after a run cut short at its limit, only the failures of the visits it listed", async () => {
+    const first = await visit();
+    const second = await visit();
+    await pool.query(
+      `INSERT INTO job_failures (facility_id, job, subject_id, error, failed_at) VALUES
+         ($1, 'visit_finish', $2, 'first failed', now() - interval '1 hour'),
+         ($1, 'visit_finish', $3, 'second failed', now() - interval '1 hour'),
+         ($1, 'visit_finish', NULL, 'listing failed', now() - interval '1 hour')`,
+      [h.facility.id, first.encounterId, second.encounterId],
+    );
+    const open = async () => (await pool.query<{ error: string }>("SELECT error FROM job_failures WHERE resolved_at IS NULL ORDER BY error")).rows.map(r => r.error);
+
+    expect(await closeFinishedVisits(1)).toMatchObject({ closed: 1, failed: 0 });
+    expect(await open()).toEqual(["listing failed", "second failed"]);
+    expect(await closeFinishedVisits()).toMatchObject({ closed: 1, failed: 0 });
+    expect(await open()).toEqual([]);
+  });
+
   it("waits for a paid-for test until its result is out", async () => {
     const { patientId, encounterId } = await visit();
     const order = await (await call("POST", `/encounters/${encounterId}/orders`, h.facility.id, doctor, { items: [{ labTestId: mrdt.id }] })).json();

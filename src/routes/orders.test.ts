@@ -282,6 +282,8 @@ describe("a walk-in lab client's tests", () => {
 
     expect((await walkIn(encounterId, { labTestIds: [tests.mrdt] })).status).toBe(422);
     expect((await walkIn(encounterId, { requester, selfRequested: true, labTestIds: [tests.mrdt] })).status).toBe(422);
+    // A misspelt licence is refused, not left off the report.
+    expect((await walkIn(encounterId, { requester: { ...requester, licenceNo: "A1234" }, labTestIds: [tests.mrdt] })).status).toBe(422);
     expect((await walkIn(encounterId, { requester, labTestIds: [tests.mrdt] }, doctor)).status).toBe(403);
     const emergency = await visit("emergency");
     expect((await (await walkIn(emergency, { requester, labTestIds: [tests.mrdt] })).json()).code).toBe("not_outpatient");

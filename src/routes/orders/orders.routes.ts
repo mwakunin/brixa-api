@@ -50,7 +50,7 @@ const OrderBodySchema = z.strictObject({
 const WalkInBodySchema = z.strictObject({
   ...common,
   /** The outside requester, as their form names them. */
-  requester: z.object({
+  requester: z.strictObject({
     name: oneLine(120),
     facility: oneLine(120),
     licenceNumber: oneLine(40).optional(),
@@ -63,7 +63,7 @@ const WalkInBodySchema = z.strictObject({
   path: ["requester"],
 });
 
-const CancelBodySchema = z.object({ reason: oneLine(200) });
+const CancelBodySchema = z.strictObject({ reason: oneLine(200) });
 
 const refusals = {
   [HttpStatusCodes.CONFLICT]: jsonContent(RefusalSchema, "Not possible in the encounter's, item's or catalogue's state"),

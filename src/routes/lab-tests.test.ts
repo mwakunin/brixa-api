@@ -95,6 +95,9 @@ describe("the lab catalogue", () => {
     // A critical limit belongs on the analyte; put on a range, it is refused, not dropped.
     expect((await analyte({ code: "HGB", name: "Hb", resultType: "numeric", ranges: [{ low: 12, high: 16, criticalHigh: 20 }] })).status).toBe(422);
     expect((await create({ billableItemId: fbcItem, specimenType: "blood", analytes: [FBC.analytes[1], FBC.analytes[1]] })).status).toBe(422);
+    // A limit prints exactly as entered: at most 6 decimal places.
+    expect((await analyte({ code: "HGB", name: "Hb", resultType: "numeric", ranges: [{ low: 0.0000004 }] })).status).toBe(422);
+    expect((await analyte({ code: "HGB", name: "Hb", resultType: "numeric", criticalLow: 1e16 })).status).toBe(422);
 
     const res = await analyte({ ...choice, abnormalChoices: ["Positive"] });
     expect(res.status).toBe(201);
@@ -109,6 +112,8 @@ describe("the lab catalogue", () => {
     const overlap = await setRanges(hgb.id, [{ sex: "any", low: 12, high: 17 }, { sex: "male", ageFromDays: 6570, low: 13.5, high: 17.5 }]);
     expect([overlap.status, (await overlap.json()).code]).toEqual([409, "ranges_overlap"]);
     expect((await (await setRanges(comment.id, [{ low: 1 }])).json()).code).toBe("not_numeric");
+    // A field beside the ranges is refused, not dropped.
+    expect((await call("PUT", `/lab-analytes/${hgb.id}/ranges`, h.facility.id, supervisor, { ranges: [], criticalHigh: 20 })).status).toBe(422);
 
     const res = await setRanges(hgb.id, [
       { sex: "any", ageFromDays: 0, ageToDays: 28, low: 14, high: 24 },

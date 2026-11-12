@@ -414,7 +414,7 @@ async function testsOf(tx: AppDb, itemIds: string[]): Promise<Map<string, Workli
   if (itemIds.length === 0)
     return new Map();
   const rows = await tx
-    .select({ orderItemId: orderItems.id, code: billableItems.code, name: billableItems.name, chargeId: charges.id, kind: encounters.kind })
+    .select({ orderItemId: orderItems.id, code: billableItems.code, name: billableItems.name, chargeId: charges.id, chargeCents: charges.amountCents, kind: encounters.kind })
     .from(orderItems)
     .innerJoin(orders, eq(orders.id, orderItems.orderId))
     .innerJoin(encounters, eq(encounters.id, orders.encounterId))
@@ -427,8 +427,9 @@ async function testsOf(tx: AppDb, itemIds: string[]): Promise<Map<string, Workli
     orderItemId: r.orderItemId,
     code: r.code,
     name: r.name,
-    // An emergency or an admission is never held up over money (decided 2026-11-10/11).
-    unpaid: r.kind === "opd" && !(r.chargeId && paid.has(r.chargeId)),
+    // An emergency or an admission is never held up over money (decided
+    // 2026-11-10/11); nor a free test, which no bill ever carries.
+    unpaid: r.kind === "opd" && !(r.chargeId && (r.chargeCents === 0 || paid.has(r.chargeId))),
   }]));
 }
 

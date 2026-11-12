@@ -30,7 +30,7 @@ import type { PatientActor } from "./patients";
 
 import { recordAudit } from "./audit";
 import { businessDate, printedAge, printedDateTime } from "./dates";
-import { NOTE_LENGTH, packNotes } from "./document-content";
+import { FIELD_LENGTH, NOTE_LENGTH, packNotes } from "./document-content";
 import { issueDocument, voidDocument } from "./documents";
 
 /**
@@ -532,8 +532,9 @@ function labelled(label: string, entries: string[]): string[] {
   return packed.map((note, i) => `${i === 0 ? `${label}: ` : prefix}${note}.`);
 }
 
+/** A number as entered: entry allows at most 6 decimal places, so it never prints in exponent form. */
 function printedNumber(n: number): string {
-  return String(Number(n.toFixed(6)));
+  return String(n);
 }
 
 function printedRange(range: ShownValue["range"]): string {
@@ -578,7 +579,12 @@ async function printedReport(tx: AppDb, orderId: string, results: ShownResult[],
   const today = businessDate();
   const sex = order.sex ? `${order.sex[0].toUpperCase()}${order.sex.slice(1)}, ` : "";
 
+  // Every specimen whole: in its field when they fit, else in the notes.
+  const specimenEntries = taken.map(t => `${t.accessionNumber} (${t.specimenType.replaceAll("_", " ")}, ${printedDateTime(t.collectedAt)})`);
+  const specimenLine = specimenEntries.join("; ");
+  const specimensFit = specimenLine.length <= FIELD_LENGTH;
   const notes = [
+    ...(specimensFit ? [] : labelled("Specimens", specimenEntries)),
     ...labelled("Released unverified, to be verified", results.filter(r => r.status === "released").map(r => `${r.code} (${r.releaseReason})`)),
     ...labelled("Verified", results.filter(r => r.verifiedBy).map(r => `${r.code} by ${r.verifiedBy!.name}`)),
     ...labelled("Critical values reported", results.filter(r => r.told).map(r => `${r.code} to ${r.told!.name} (${r.told!.how === "phone" ? "by phone" : "in person"}, ${printedDateTime(r.told!.at)})`)),
@@ -593,7 +599,7 @@ async function printedReport(tx: AppDb, orderId: string, results: ShownResult[],
       { label: "Sex and age", value: `${sex}${printedAge(order.dateOfBirth, today)}` },
       { label: "Requested by", value: requestedBy.slice(0, 500) },
       { label: "Requested", value: printedDateTime(o.orderedAt) },
-      { label: "Specimens", value: taken.map(t => `${t.accessionNumber} (${t.specimenType.replaceAll("_", " ")}, ${printedDateTime(t.collectedAt)})`).join("; ").slice(0, 500) },
+      { label: "Specimens", value: specimensFit ? specimenLine : `${taken.length}, listed in the notes` },
     ],
     table: {
       columns: [

@@ -1957,6 +1957,8 @@ export const specimenTests = pgTable("specimen_tests", {
   analyteIds: uuid().array().notNull(),
 }, t => [
   unique("specimen_tests_specimen_item_key").on(t.specimenId, t.orderItemId),
+  // The target of a result's link to its test on the specimen (lab_results_specimen_test_fk).
+  unique("specimen_tests_facility_specimen_item_key").on(t.facilityId, t.specimenId, t.orderItemId),
   foreignKey({ name: "specimen_tests_specimen_fk", columns: [t.facilityId, t.specimenId], foreignColumns: [specimens.facilityId, specimens.id] }),
   foreignKey({ name: "specimen_tests_order_item_fk", columns: [t.facilityId, t.orderItemId], foreignColumns: [orderItems.facilityId, orderItems.id] }),
   index("specimen_tests_order_item_index").on(t.facilityId, t.orderItemId),
@@ -2002,6 +2004,8 @@ export const labResults = pgTable("lab_results", {
   unique("lab_results_version_key").on(t.specimenId, t.orderItemId, t.version),
   foreignKey({ name: "lab_results_specimen_fk", columns: [t.facilityId, t.specimenId], foreignColumns: [specimens.facilityId, specimens.id] }),
   foreignKey({ name: "lab_results_order_item_fk", columns: [t.facilityId, t.orderItemId], foreignColumns: [orderItems.facilityId, orderItems.id] }),
+  // A result is for a test the specimen was taken for, never another order's or another type's.
+  foreignKey({ name: "lab_results_specimen_test_fk", columns: [t.facilityId, t.specimenId, t.orderItemId], foreignColumns: [specimenTests.facilityId, specimenTests.specimenId, specimenTests.orderItemId] }),
   foreignKey({ name: "lab_results_entered_by_fk", columns: [t.facilityId, t.enteredBy], foreignColumns: [memberships.facilityId, memberships.id] }),
   foreignKey({ name: "lab_results_released_by_fk", columns: [t.facilityId, t.releasedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
   foreignKey({ name: "lab_results_verified_by_fk", columns: [t.facilityId, t.verifiedBy], foreignColumns: [memberships.facilityId, memberships.id] }),

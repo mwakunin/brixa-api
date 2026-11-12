@@ -106,6 +106,19 @@ describe("a result", () => {
     expect((await clinicianSees(t.encounterId)).results).toEqual([]);
   });
 
+  it("takes a number of at most 6 decimal places, and prints it as entered", async () => {
+    const t = await tested([tests.hb]);
+
+    expect((await enter(t.specimenId, hb(t, 0.0000004))).status).toBe(422);
+    const result = await (await enter(t.specimenId, hb(t, 0.000004))).json();
+    // Critically low, so who was told goes with it.
+    expect((await act(result.id, "verify", { told: { name: "Dr Achieng", how: "phone" } })).status).toBe(200);
+
+    const [report] = (await clinicianSees(t.encounterId)).reports;
+    const [doc] = await db.select().from(documents).where(eq(documents.id, report.documentId));
+    expect(doc.content.table!.rows[0][2]).toBe("0.000004");
+  });
+
   it("takes every number and choice of its test, each of the right kind", async () => {
     const t = await tested();
     const code = async (body: Record<string, unknown>) => (await (await enter(t.specimenId, body)).json()).code;
@@ -246,6 +259,8 @@ describe("a result", () => {
     const res = await act(result.id, "verify", { told: { name: "Dr Achieng", how: "phone", at: tomorrow } });
 
     expect([res.status, (await res.json()).error?.issues?.[0]?.path]).toEqual([422, ["told", "at"]]);
+    // A misspelt time is refused, not replaced by now.
+    expect((await act(result.id, "verify", { told: { name: "Dr Achieng", how: "phone", time: "2026-11-12T08:00:00+03:00" } })).status).toBe(422);
   });
 
   it("keeps its specimen from being rejected", async () => {
@@ -324,6 +339,28 @@ describe("the lab's worklist with results", () => {
     expect(doc.content.table!.rows[1][2]).toBe(film);
   });
 
+  it("lists every specimen whole, in the notes when they do not fit their field", async () => {
+    const t = await tested([tests.hb]);
+    // Twelve more samples on the order, as for serial tests through a day.
+    await pool.query(
+      `INSERT INTO specimens (facility_id, order_id, accession_number, specimen_type, status, collected_at, collected_by)
+       SELECT facility_id, order_id, 'L-20260101-' || n, 'body_fluid', 'collected', collected_at, collected_by
+       FROM specimens, generate_series(101, 112) n WHERE id = $1`,
+      [t.specimenId],
+    );
+    const result = await (await enter(t.specimenId, hb(t, 14))).json();
+    await act(result.id, "verify");
+
+    const [report] = (await clinicianSees(t.encounterId)).reports;
+    const [doc] = await db.select().from(documents).where(eq(documents.id, report.documentId));
+    expect(doc.content.fields).toContainEqual({ label: "Specimens", value: "13, listed in the notes" });
+    const listed = doc.content.notes.filter(n => n.startsWith("Specimens")).join(" ");
+    const { rows } = await pool.query<{ accession_number: string }>("SELECT accession_number FROM specimens WHERE order_id = $1", [t.orderId]);
+    expect(rows).toHaveLength(13);
+    for (const { accession_number } of rows)
+      expect(listed).toMatch(new RegExp(`${accession_number} \\((blood|body fluid), [^)]+\\)`));
+  });
+
   it("lists urgent results to verify first", async () => {
     const routine = await tested([tests.hb]);
     const urgentPatient = await h.patient();
@@ -363,6 +400,12 @@ describe("the database's result guards", () => {
     expect(await refusal("UPDATE lab_results SET status = 'verified', verified_at = now(), verified_by = entered_by WHERE id = $1")).toMatch(/lab_results_verified_by_another/);
     expect(await refusal("UPDATE lab_results SET entered_at = now() - interval '1 day' WHERE id = $1")).toMatch(/never change/);
     expect(await refusal("DELETE FROM lab_results WHERE id = $1")).toMatch(/never deleted/);
+    // A result for a test its specimen was not taken for: here, another visit's.
+    const other = await tested([tests.hb]);
+    expect(await refusal(
+      "INSERT INTO lab_results SELECT * FROM jsonb_populate_record(NULL::lab_results, (SELECT to_jsonb(r) || jsonb_build_object('id', gen_random_uuid(), 'order_item_id', $2::uuid) FROM lab_results r WHERE id = $1))",
+      [result.id, other.item("HB")],
+    )).toMatch(/lab_results_specimen_test_fk/);
     // Verified, it takes no value added afterwards.
     await act(result.id, "verify");
     expect(await refusal(

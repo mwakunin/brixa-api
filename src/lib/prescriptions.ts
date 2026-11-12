@@ -14,7 +14,7 @@ import { recordAudit } from "./audit";
 import { addDays, ageInYears, businessDate, printedAge, printedDate, startOfBusinessDay } from "./dates";
 import { packNotes } from "./document-content";
 import { issueDocument, voidDocument } from "./documents";
-import { currentDrug, describeDrug, ingredientsOf } from "./drug-catalogue";
+import { currentDrug, describeDrug, ingredientsOf, INJECTED_ROUTES } from "./drug-catalogue";
 import { printedQuantity } from "./money";
 import { PROFESSIONS } from "./professions";
 
@@ -101,6 +101,7 @@ export type PrescriptionErrorCode
   = | "encounter_not_found"
     | "not_open"
     | "drug_not_found"
+    | "not_injectable"
     | "duplicate_drug"
     | "quantity_needed"
     | "drug_allergy"
@@ -114,6 +115,7 @@ const MESSAGES: Record<Exclude<PrescriptionErrorCode, "drug_allergy">, string> =
   encounter_not_found: "No such encounter",
   not_open: "A prescription is written on an open encounter",
   drug_not_found: "No such drug in the catalogue",
+  not_injectable: "This product is not made for injection; choose another route, or the product made for injection",
   duplicate_drug: "The same drug is on this prescription twice",
   quantity_needed: "Give the quantity for a drug taken when needed",
   weight_needed: `A child under ${CHILD_UNDER_YEARS} needs a weight taken today before anything is prescribed; record it with the vital signs`,
@@ -129,7 +131,8 @@ function allergyMessage(matches: AllergyMatch[]): string {
 }
 
 export class PrescriptionError extends Error {
-  constructor(readonly code: PrescriptionErrorCode, readonly allergies: AllergyMatch[] = []) {
+  /** `item`: the index of the medicine refused, for a refusal about one of them. */
+  constructor(readonly code: PrescriptionErrorCode, readonly allergies: AllergyMatch[] = [], readonly item?: number) {
     super(code === "drug_allergy" ? allergyMessage(allergies) : MESSAGES[code]);
     this.name = "PrescriptionError";
   }
@@ -338,10 +341,13 @@ export async function prescribe(
     throw new PrescriptionError("duplicate_drug");
 
   const drugs: Drug[] = [];
-  for (const item of input.items) {
+  for (const [i, item] of input.items.entries()) {
     const drug = await currentDrug(tx, item.drugCode);
     if (!drug)
-      throw new PrescriptionError("drug_not_found");
+      throw new PrescriptionError("drug_not_found", [], i);
+    // A tablet, a syrup or a cream is never injected: the paper would print it as written.
+    if (item.route && INJECTED_ROUTES.includes(item.route) && !INJECTED_ROUTES.includes(drug.route))
+      throw new PrescriptionError("not_injectable", [], i);
     drugs.push(drug);
   }
   if (drugs.some(d => d.controlledSchedule) && !actor.roles.some(r => CONTROLLED_PRESCRIBERS.includes(r)))

@@ -45,7 +45,7 @@ const MedicineBodySchema = z.strictObject({
   drugCode: z.string().trim().toUpperCase().min(1).max(32),
   /** Each dose, in the drug's dose unit. */
   doseAmount: DecimalSchema,
-  /** The drug's usual route unless given. */
+  /** The drug's usual route unless given. An injected route (iv, im, sc, intradermal) only for a product made for injection. */
   route: z.enum(DRUG_ROUTES).optional(),
   frequency: z.enum(FREQUENCIES),
   /** Required at a regular frequency, optional when needed (prn), none for a single dose (stat). */
@@ -61,13 +61,14 @@ const MedicineBodySchema = z.strictObject({
   .refine(m => ["stat", "prn"].includes(m.frequency) || m.durationDays !== undefined, { message: "For how many days?", path: ["durationDays"] })
   .refine(m => m.frequency !== "prn" || m.quantity !== undefined, { message: "Give the quantity for a drug taken when needed", path: ["quantity"] });
 
-const PrescribeBodySchema = z.object({
+// Strict, as each medicine is: a misspelt `indication` is refused, not left off the paper.
+const PrescribeBodySchema = z.strictObject({
   /** What it is for, printed on the prescription. */
   indication: oneLine(200).optional(),
   items: z.array(MedicineBodySchema).min(1).max(15),
 });
 
-const CancelBodySchema = z.object({ reason: oneLine(200) });
+const CancelBodySchema = z.strictObject({ reason: oneLine(200) });
 
 const SearchQuerySchema = z.object({
   /** Words from the generic name, or a code or its start. */
@@ -109,7 +110,9 @@ export const prescribe = createRoute({
     + "Refused for a drug the patient is recorded as allergic to unless "
     + "`allergyOverride` gives a reason (`drug_allergy`, listing the "
     + "allergies), for a child under 12 without a weight taken today "
-    + "(`weight_needed`), and for a controlled drug from a nurse.",
+    + "(`weight_needed`), and for a controlled drug from a nurse. A drug "
+    + "not in the catalogue, or an injected route for a product not made for "
+    + "injection, is refused as invalid (422) on that medicine's field.",
   middleware: [prescribers] as const,
   request: { headers: facilityHeaders, params: IdParamsSchema, body: jsonContentRequired(PrescribeBodySchema, "The prescription") },
   responses: {

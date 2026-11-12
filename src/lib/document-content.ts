@@ -14,7 +14,9 @@ import { z } from "zod";
  */
 
 const label = z.string().trim().min(1).max(60);
-const printed = z.string().max(500);
+/** How long a field's or a total's value may be. */
+export const FIELD_LENGTH = 500;
+const printed = z.string().max(FIELD_LENGTH);
 /** A table cell: a lab report prints a text result of up to 2,000 characters whole. */
 const cell = z.string().max(2000);
 

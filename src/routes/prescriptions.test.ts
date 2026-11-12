@@ -114,7 +114,17 @@ describe("a prescription", () => {
     expect(await status({ ...paracetamol, dose: "1" })).toBe(422);
     expect(await status({ drugCode: "MOR-10-INJ", doseAmount: "0.5", frequency: "stat" })).toBe(201);
     expect((await (await prescribe(encounterId, { items: [paracetamol, paracetamol] })).json()).code).toBe("duplicate_drug");
-    expect((await (await prescribe(encounterId, { items: [{ ...paracetamol, drugCode: "NOPE" }] })).json()).code).toBe("drug_not_found");
+    const issue = async (items: Record<string, unknown>[]) => {
+      const res = await prescribe(encounterId, { items });
+      return [res.status, (await res.json()).error?.issues[0].path];
+    };
+    expect(await issue([paracetamol, { ...paracetamol, drugCode: "NOPE" }])).toEqual([422, ["items", 1, "drugCode"]]);
+    // A tablet is never injected; an injection may be given by another injected route.
+    expect(await issue([{ ...paracetamol, route: "iv" }])).toEqual([422, ["items", 0, "route"]]);
+    expect(await status({ drugCode: "MOR-10-INJ", doseAmount: "0.5", frequency: "stat", route: "iv" })).toBe(201);
+    expect(await status({ ...paracetamol, route: "rectal" })).toBe(201);
+    // A misspelt field is refused, not left off the paper.
+    expect((await prescribe(encounterId, { items: [paracetamol], indicaton: "Fever" })).status).toBe(422);
   });
 
   it("is refused for a drug the patient is allergic to, by generic name or ingredient, unless a reason is given", async () => {
@@ -260,7 +270,8 @@ describe("the drug catalogue", () => {
     const record = (body: Record<string, unknown>) => call("POST", `/patients/${patientId}/allergies`, h.facility.id, doctor, body);
 
     expect((await record({ category: "food", allergen: "Peanuts", drugCode: "AMX-500-CAP" })).status).toBe(422);
-    expect((await (await record({ category: "drug", allergen: "X", drugCode: "NOPE" })).json()).code).toBe("drug_not_found");
+    const unknown = await record({ category: "drug", allergen: "X", drugCode: "NOPE" });
+    expect([unknown.status, (await unknown.json()).error.issues[0].path]).toEqual([422, ["drugCode"]]);
     expect(await (await record({ category: "drug", allergen: "Amoxicillin", drugCode: "amx-500-cap" })).json()).toMatchObject({ drugCode: "AMX-500-CAP" });
     const { rows } = await pool.query("SELECT drug_code FROM patient_allergies WHERE patient_id = $1", [patientId]);
     expect(rows).toEqual([{ drug_code: "AMX-500-CAP" }]);

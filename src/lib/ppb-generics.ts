@@ -3,6 +3,8 @@ import { z } from "zod";
 import type { DrugRoute } from "./drug-catalogue";
 import type { DrugRow } from "./drug-catalogue-load";
 
+import { INJECTED_ROUTES } from "./drug-catalogue";
+
 /**
  * Converts PPB's Generic Products list, as DHA's ePrescription guide
  * publishes it (a FHIR CodeSystem, `generic-products-cs`), into the drug
@@ -47,8 +49,6 @@ const ROUTES: Record<string, DrugRoute> = {
   Ophthalmic: "ophthalmic",
   Otic: "otic",
 };
-
-const PARENTERAL: readonly DrugRoute[] = ["iv", "im", "sc", "intradermal"];
 
 /** What a dose of each form is counted in. The first pattern that matches wins. */
 const DOSE_UNITS: [RegExp, string][] = [
@@ -105,9 +105,16 @@ function namesAndStrengths(text: string): { genericName: string; strength: strin
   };
 }
 
+/** Dose units of the forms made for injection: a powder by the vial, a liquid by the mL, an implant as itself. */
+const INJECTED_UNITS = ["vial", "mL", "implant"];
+
 function doseUnitOf(form: string, route: DrugRoute): string | null {
-  if (PARENTERAL.includes(route))
-    return /Powder for/i.test(form) || /^lyophilizates$/i.test(form) ? "vial" : "mL";
+  if (INJECTED_ROUTES.includes(route)) {
+    if (/Powder for/i.test(form) || /^lyophilizates$/i.test(form))
+      return "vial";
+    if (/(?:Solution|Suspension|Emulsion)$/i.test(form) || /^Injection$/i.test(form))
+      return "mL";
+  }
   return DOSE_UNITS.find(([pattern]) => pattern.test(form))?.[1] ?? null;
 }
 
@@ -146,6 +153,8 @@ function read(code: string, display: string): { row: DrugRow; issues: string[] }
     issues.push("A vitamin dosed in mg: usually IU or mcg; check the strength");
   if (route === "oral" && /^(?:Inhaler|Aerosol)/i.test(form))
     issues.push("An inhaler given by mouth: check the route");
+  if (INJECTED_ROUTES.includes(route) && !INJECTED_UNITS.includes(doseUnit))
+    issues.push("A form not made for injection, with an injected route: check the route and form");
   if (doseUnit === "vial" && /\bper\b/i.test(parsed.strength))
     issues.push("A powder counted in vials with a strength per mL: check the dose unit");
 

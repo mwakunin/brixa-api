@@ -82,6 +82,21 @@ describe("converting PPB's Generic Products", () => {
     expect(review.map(r => r.issue.split(":")[0])).toEqual(["A powder counted in vials with a strength per mL"]);
   });
 
+  it("counts an implant as itself, and flags a form not made for injection given an injected route", () => {
+    const { rows, review } = convertGenericProducts(codeSystem(
+      "Levonorgestrel 75 mg Subcutaneous Implant",
+      "Paliperidone Palmitate 819 mg Intramuscular Suppository",
+      "Leucovorin Calcium 15 mg per 2ml Intravenous Aerosol Solution",
+    ));
+
+    expect(rows.map(r => [r.route, r.form, r.doseUnit])).toEqual([
+      ["sc", "Implant", "implant"],
+      ["im", "Suppository", "suppository"],
+      ["iv", "Aerosol Solution", "mL"],
+    ]);
+    expect(review.map(r => [r.code, r.issue.split(":")[0]])).toEqual([["GE10001", "A form not made for injection, with an injected route"]]);
+  });
+
   it("keeps a name that looks like a formula from running in a spreadsheet", () => {
     const csv = reviewCsv([{ code: "GE19999", display: "=HYPERLINK(\"x\")", included: false, issue: "No route" }]);
     expect(csv.split("\n")[1]).toBe("GE19999,\"'=HYPERLINK(\"\"x\"\")\",no,No route");
