@@ -12,6 +12,7 @@ import type { PatientActor } from "./patients";
 
 import { recordAudit } from "./audit";
 import { addDays, ageInYears, businessDate, printedAge, printedDate, startOfBusinessDay } from "./dates";
+import { packNotes } from "./document-content";
 import { issueDocument, voidDocument } from "./documents";
 import { currentDrug, describeDrug, ingredientsOf } from "./drug-catalogue";
 import { printedQuantity } from "./money";
@@ -106,7 +107,8 @@ export type PrescriptionErrorCode
     | "weight_needed"
     | "controlled_prescriber"
     | "not_found"
-    | "already_cancelled";
+    | "already_cancelled"
+    | "too_much_to_print";
 
 const MESSAGES: Record<Exclude<PrescriptionErrorCode, "drug_allergy">, string> = {
   encounter_not_found: "No such encounter",
@@ -118,6 +120,7 @@ const MESSAGES: Record<Exclude<PrescriptionErrorCode, "drug_allergy">, string> =
   controlled_prescriber: "Only a doctor or a clinical officer prescribes a controlled drug",
   not_found: "No such prescription",
   already_cancelled: "Nothing on this prescription is left to cancel",
+  too_much_to_print: "The allergy overrides are too long to print on one prescription; split it into two",
 };
 
 function allergyMessage(matches: AllergyMatch[]): string {
@@ -151,6 +154,16 @@ function quantityOf(item: MedicineInput): string {
   return (dose * perDay * item.durationDays / 1000).toFixed(3);
 }
 
+/**
+ * Whether an allergy as told names the ingredient as a whole word or phrase:
+ * "Amoxicillin 500 mg caps" and "amoxicillin" both name amoxicillin;
+ * "Amoxil" (a brand) and "penicillins" (a class) do not, and are not caught.
+ */
+function mentions(told: string, ingredient: string): boolean {
+  const escaped = ingredient.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}(?:$|[^\\p{L}\\p{N}])`, "iu").test(told);
+}
+
 /** Standing drug allergies the drugs match, by generic name or ingredient, per drug code. */
 async function allergyMatches(tx: AppDb, patientId: string, drugs: Drug[]): Promise<Map<string, AllergyMatch[]>> {
   const recorded = await tx
@@ -163,7 +176,7 @@ async function allergyMatches(tx: AppDb, patientId: string, drugs: Drug[]): Prom
   for (const drug of drugs) {
     const ingredients = ingredientsOf(drug.genericName);
     const found = recorded
-      .filter(a => [...ingredientsOf(a.allergen!), ...(a.drugName ? ingredientsOf(a.drugName) : [])].some(n => ingredients.includes(n)))
+      .filter(a => ingredients.some(i => mentions(a.allergen!, i)) || (a.drugName !== null && ingredientsOf(a.drugName).some(n => ingredients.includes(n))))
       .map(a => ({ drugCode: drug.code, allergen: a.allergen!, reaction: a.reaction, severity: a.severity }));
     if (found.length > 0)
       matches.set(drug.code, found);
@@ -209,29 +222,26 @@ function printedAllergies(told: string[]): string {
     : `${told.slice(0, shown).join("; ")}${more(told.length - shown)}`;
 }
 
-/** The notes a printed document holds, and their length (`document-content.ts`). */
-const MAX_NOTES = 10;
-const NOTE_LENGTH = 1000;
-
-/** Lines packed into as few notes as hold them, so any number of overrides prints. */
-function packedNotes(lines: string[]): string[] {
-  const notes: string[] = [];
-  for (const line of lines.map(l => l.slice(0, NOTE_LENGTH))) {
-    const last = notes.at(-1);
-    if (last !== undefined && last.length + 2 + line.length <= NOTE_LENGTH)
-      notes[notes.length - 1] = `${last}; ${line}`;
-    else
-      notes.push(line);
-  }
-  return notes.slice(0, MAX_NOTES);
-}
-
 interface Line {
   drug: Drug;
   input: MedicineInput;
   route: DrugRoute;
   quantity: string;
   overridden: AllergyMatch[];
+}
+
+/**
+ * A note for each medicine prescribed despite an allergy, packed into the
+ * notes a document holds. All of them print, or the prescription is refused:
+ * a pharmacist must see every override.
+ */
+function overrideNotes(lines: Line[]): string[] {
+  const notes = packNotes(lines
+    .filter(l => l.overridden.length > 0)
+    .map(l => `${l.drug.genericName} prescribed despite a recorded allergy to ${[...new Set(l.overridden.map(o => o.allergen))].join(", ")}: ${l.input.allergyOverride}`));
+  if (!notes)
+    throw new PrescriptionError("too_much_to_print");
+  return notes;
 }
 
 async function printedPrescription(
@@ -296,9 +306,7 @@ async function printedPrescription(
         l.input.instructions ?? "",
       ]),
     },
-    notes: packedNotes(lines
-      .filter(l => l.overridden.length > 0)
-      .map(l => `${l.drug.genericName} prescribed despite a recorded allergy to ${[...new Set(l.overridden.map(o => o.allergen))].join(", ")}: ${l.input.allergyOverride}`)),
+    notes: overrideNotes(lines),
   };
 }
 

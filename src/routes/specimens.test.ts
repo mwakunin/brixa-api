@@ -113,6 +113,15 @@ describe("a specimen", () => {
     expect((await collect(orderId, { specimenType: "blood" })).status).toBe(201);
   });
 
+  it("is not taken for a test with no analyte in use", async () => {
+    const { orderId } = await orderedVisit("opd", [tests.fbc]);
+    const [test] = (await (await call("GET", "/lab-tests", h.facility.id, labTech)).json()).tests.filter((x: { id: string }) => x.id === tests.fbc);
+    await call("PATCH", `/lab-analytes/${test.analytes[0].id}`, h.facility.id, h.admin, { isActive: false });
+
+    const res = await collect(orderId, { specimenType: "blood" });
+    expect([res.status, (await res.json()).code]).toEqual([409, "test_has_no_analytes"]);
+  });
+
   it("is refused for a test not waiting, of another type, or on another order", async () => {
     const { orderId, item } = await orderedVisit();
     const other = await orderedVisit();

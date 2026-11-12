@@ -299,7 +299,7 @@ export const listResults = createRoute({
   summary: "An encounter's lab results",
   description: "Released and verified results, with each order's current printed report (`/documents/{id}/pdf`). Audited.",
   middleware: [clinicalReaders] as const,
-  request: { headers: facilityHeaders, params: IdParamsSchema },
+  request: { headers: facilityHeaders, params: IdParamsSchema, query: z.object({ offset: z.coerce.number().int().min(0).default(0) }) },
   responses: {
     [HttpStatusCodes.OK]: jsonContent(z.object({
       results: z.array(ResultSchema),

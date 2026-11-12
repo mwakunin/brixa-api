@@ -140,6 +140,11 @@ describe("a prescription", () => {
     const [override] = await db.select().from(auditLog).where(eq(auditLog.action, "prescription.allergy_overridden"));
     expect(override.detail).toMatchObject({ drugCode: "AMC-625-TAB", allergens: ["Amoxicillin"] });
 
+    // An allergy recorded as text alone is matched where it names the drug, strength and all.
+    const third = await visit();
+    await call("POST", `/patients/${third.patientId}/allergies`, h.facility.id, doctor, { category: "drug", allergen: "Amoxicillin 500 mg caps" });
+    expect((await (await prescribe(third.encounterId, { items: [coAmoxiclav] })).json()).code).toBe("drug_allergy");
+
     // An allergy recorded as text alone, before drugs could be named, is matched by name.
     const other = await visit();
     await call("POST", `/patients/${other.patientId}/allergies`, h.facility.id, doctor, { category: "drug", allergen: "ibuprofen" });
@@ -271,11 +276,22 @@ describe("the database's prescription guards", () => {
     expect(await refusal("UPDATE order_items SET quantity = 100 WHERE id = $1")).toMatch(/never changes/);
     expect(await refusal("UPDATE order_items SET drug_description = 'Other' WHERE id = $1")).toMatch(/never changes/);
     expect(await refusal("DELETE FROM order_items WHERE id = $1")).toMatch(/never deleted/);
+    // Nor does an issued prescription take a medicine its printed paper does not list.
+    const added = await pool.query(
+      `INSERT INTO order_items (facility_id, order_id, status, drug_code, drug_description, dose_amount, dose_unit, route, frequency, quantity)
+       SELECT facility_id, order_id, 'ordered', 'IBU-400-TAB', 'Ibuprofen 400 mg Tablet', 1, 'tablet', 'oral', 'stat', 1 FROM order_items WHERE id = $1`,
+      [order.items[0].id],
+    ).then(() => "accepted", (err: { message: string }) => err.message);
+    expect(added).toMatch(/issued prescription/);
   });
 
   it("hold a medicine to its shape", async () => {
     const { encounterId } = await visit();
-    const order = await (await prescribe(encounterId, { items: [paracetamol] })).json();
+    // An order with no paper of its own, so the shape is what refuses.
+    const { rows: [order] } = await pool.query(
+      "INSERT INTO orders (facility_id, encounter_id, urgency, ordered_by, entered_by, ordered_at) VALUES ($1, $2, 'routine', $3, $3, now()) RETURNING id",
+      [h.facility.id, encounterId, doctor.actor.membershipId],
+    );
     const insert = (columns: string, values: string) => pool.query(
       `INSERT INTO order_items (facility_id, order_id, status, drug_code, drug_description, dose_amount, dose_unit, route, quantity${columns})
        VALUES ($1, $2, 'ordered', 'AMX-500-CAP', 'Amoxicillin 500 mg Capsule', 1, 'capsule', 'oral', 15${values})`,

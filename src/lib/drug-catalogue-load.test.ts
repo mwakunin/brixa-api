@@ -3,7 +3,7 @@ import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { pool } from "@/db";
-import { resetDb } from "@/test/helpers";
+import { resetDb, waitForBlockedBackend } from "@/test/helpers";
 
 import { DrugFileError, loadDrugCatalogue, parseCsv, parseDrugFile } from "./drug-catalogue-load";
 
@@ -62,12 +62,26 @@ describe("the drug catalogue file", () => {
     await expect(loadDrugCatalogue(sample)).rejects.toThrow(/would retire 30 of 30/);
   });
 
-  it("loads one file at a time, so overlapping loads leave one file's drugs in use", async () => {
+  it("loads one file at a time: a load waits while another holds the catalogue", async () => {
     const file = (prefix: string) => [HEADER, ...Array.from({ length: 5 }, (_, i) => `${prefix}${i},Drug ${prefix}${i},1 mg,Tablet,tablet,oral,`)].join("\n");
+    await loadDrugCatalogue(file("A"));
+    const holder = await pool.connect();
+    let loading: Promise<unknown> | undefined;
+    try {
+      await holder.query("BEGIN");
+      await holder.query("SELECT pg_advisory_xact_lock(hashtextextended('drug_catalogue_load', 0))");
+      const { rows: [{ pid }] } = await holder.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
 
-    await Promise.all([loadDrugCatalogue(file("A")), loadDrugCatalogue(file("B"))]);
+      loading = loadDrugCatalogue(file("B"));
+      expect(await waitForBlockedBackend(pid)).toBe(true);
+    }
+    finally {
+      await holder.query("COMMIT");
+      holder.release();
+    }
+    await loading;
 
-    const { rows } = await pool.query("SELECT left(code, 1) AS file, count(*)::int AS n FROM drug_catalogue WHERE retired_at IS NULL GROUP BY 1");
-    expect(rows).toHaveLength(1);
+    const { rows } = await pool.query("SELECT left(code, 1) AS file FROM drug_catalogue WHERE retired_at IS NULL GROUP BY 1");
+    expect(rows).toEqual([{ file: "B" }]);
   });
 });

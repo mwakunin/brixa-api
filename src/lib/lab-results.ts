@@ -30,6 +30,7 @@ import type { PatientActor } from "./patients";
 
 import { recordAudit } from "./audit";
 import { businessDate, printedAge, printedDateTime } from "./dates";
+import { NOTE_LENGTH, packNotes } from "./document-content";
 import { issueDocument, voidDocument } from "./documents";
 
 /**
@@ -68,7 +69,8 @@ export type LabResultErrorCode
     | "not_found"
     | "not_pending"
     | "same_person"
-    | "told_needed";
+    | "told_needed"
+    | "told_in_future";
 
 export class LabResultError extends Error {
   constructor(readonly code: LabResultErrorCode, detail?: string) {
@@ -84,6 +86,7 @@ export class LabResultError extends Error {
       not_pending: "Only a result not yet verified, and not corrected, is released or verified",
       same_person: "Another lab member verifies a result; it cannot be the one who entered it",
       told_needed: "A critical value: record who was told, how and when first",
+      told_in_future: "Someone is told before this is recorded, not after: the time cannot be later than now",
     }[code]);
     this.name = "LabResultError";
   }
@@ -125,6 +128,81 @@ function judge(value: number, range: { low: number | null; high: number | null }
   return { rangeLow: range?.low ?? null, rangeHigh: range?.high ?? null, flag };
 }
 
+type AnalyteRow = typeof labAnalytes.$inferSelect;
+type SpecimenRow = typeof specimens.$inferSelect;
+type RangeRow = typeof labReferenceRanges.$inferSelect;
+
+/**
+ * The values given, checked against the test as it stood when the specimen
+ * was taken (its panel, recorded then): every number and choice in it is
+ * needed, retired since or not; an analyte added since may be given, but
+ * need not be. Unchanged by this: which analytes, and how each is judged.
+ */
+async function panelAnalytes(tx: AppDb, onIt: { labTestId: string | null; panel: string[] }, values: Map<string, number | string>): Promise<AnalyteRow[]> {
+  const analytes = (await tx.select().from(labAnalytes).where(eq(labAnalytes.labTestId, onIt.labTestId!)))
+    .filter(a => onIt.panel.includes(a.id) || a.isActive);
+  if ([...values.keys()].some(id => !analytes.some(a => a.id === id)))
+    throw new LabResultError("analyte_not_on_test");
+  const missing = analytes.find(a => a.resultType !== "text" && onIt.panel.includes(a.id) && !values.has(a.id));
+  if (missing)
+    throw new LabResultError("value_missing", missing.code);
+  return analytes.filter(a => values.has(a.id));
+}
+
+/** The current reference ranges that apply to this patient at collection, for these analytes. */
+async function applicableRanges(tx: AppDb, specimen: SpecimenRow, analyteIds: string[]): Promise<RangeRow[]> {
+  const [patient] = await tx
+    .select({ sex: patients.sex, dateOfBirth: patients.dateOfBirth })
+    .from(orders)
+    .innerJoin(encounters, eq(encounters.id, orders.encounterId))
+    .innerJoin(patients, eq(patients.id, encounters.patientId))
+    .where(eq(orders.id, specimen.orderId))
+    .limit(1);
+  const ageDays = daysBetween(patient.dateOfBirth, businessDate(specimen.collectedAt));
+  // An intersex patient, or one whose sex is not recorded, is judged against `any` ranges only.
+  const sexes = patient.sex === "male" || patient.sex === "female" ? ["any", patient.sex] as const : ["any"] as const;
+  return tx
+    .select()
+    .from(labReferenceRanges)
+    .where(and(
+      inArray(labReferenceRanges.analyteId, analyteIds),
+      isNull(labReferenceRanges.retiredAt),
+      inArray(labReferenceRanges.sex, [...sexes]),
+      sql`${labReferenceRanges.ageFromDays} <= ${ageDays}`,
+      or(isNull(labReferenceRanges.ageToDays), sql`${labReferenceRanges.ageToDays} > ${ageDays}`),
+    ));
+}
+
+/** Each value given, checked for its kind and judged against its range and critical limits, as it will be stored. */
+async function judgedValues(
+  tx: AppDb,
+  facilityId: string,
+  specimen: SpecimenRow,
+  onIt: { labTestId: string | null; panel: string[] },
+  given: { analyteId: string; value: number | string }[],
+) {
+  const values = new Map(given.map(v => [v.analyteId, v.value]));
+  if (values.size !== given.length)
+    throw new LabResultError("analyte_not_on_test");
+  const analytes = await panelAnalytes(tx, onIt, values);
+  const ranges = await applicableRanges(tx, specimen, analytes.map(a => a.id));
+
+  return analytes.map((a) => {
+    const value = values.get(a.id)!;
+    const base = { facilityId, analyteId: a.id, analyteCode: a.code, analyteName: a.name, resultType: a.resultType };
+    if (a.resultType === "numeric") {
+      if (typeof value !== "number" || !Number.isFinite(value))
+        throw new LabResultError("value_invalid", a.code);
+      const judged = judge(value, ranges.find(r => r.analyteId === a.id), { low: a.criticalLow, high: a.criticalHigh });
+      return { ...base, unit: a.unit, valueNumeric: value, criticalLow: a.criticalLow, criticalHigh: a.criticalHigh, ...judged };
+    }
+    const text = typeof value === "string" ? value.trim() : "";
+    if (!text || (a.resultType === "choice" && !a.choices!.includes(text)))
+      throw new LabResultError("value_invalid", a.code);
+    return { ...base, valueText: text, flag: a.resultType === "choice" && a.abnormalChoices!.includes(text) ? "abnormal" as const : null };
+  });
+}
+
 /**
  * Enters a test's result on a received specimen, or a corrected version of
  * the one it has, which then supersedes it. Every number and choice of the
@@ -152,53 +230,7 @@ export async function enterResult(
   if (!onIt)
     throw new LabResultError("not_on_specimen");
 
-  // The test as it stood when the specimen was taken (its panel, recorded
-  // then): every number and choice in it is needed, retired since or not; an
-  // analyte added since may be given, but need not be.
-  const analytes = (await tx.select().from(labAnalytes).where(eq(labAnalytes.labTestId, onIt.labTestId!)))
-    .filter(a => onIt.panel.includes(a.id) || a.isActive);
-  const given = new Map(input.values.map(v => [v.analyteId, v.value]));
-  if (given.size !== input.values.length || [...given.keys()].some(id => !analytes.some(a => a.id === id)))
-    throw new LabResultError("analyte_not_on_test");
-  const missing = analytes.find(a => a.resultType !== "text" && onIt.panel.includes(a.id) && !given.has(a.id));
-  if (missing)
-    throw new LabResultError("value_missing", missing.code);
-
-  const [patient] = await tx
-    .select({ sex: patients.sex, dateOfBirth: patients.dateOfBirth })
-    .from(orders)
-    .innerJoin(encounters, eq(encounters.id, orders.encounterId))
-    .innerJoin(patients, eq(patients.id, encounters.patientId))
-    .where(eq(orders.id, specimen.orderId))
-    .limit(1);
-  const ageDays = daysBetween(patient.dateOfBirth, businessDate(specimen.collectedAt));
-  // An intersex patient, or one whose sex is not recorded, is judged against `any` ranges only.
-  const sexes = patient.sex === "male" || patient.sex === "female" ? ["any", patient.sex] as const : ["any"] as const;
-  const ranges = await tx
-    .select()
-    .from(labReferenceRanges)
-    .where(and(
-      inArray(labReferenceRanges.analyteId, analytes.map(a => a.id)),
-      isNull(labReferenceRanges.retiredAt),
-      inArray(labReferenceRanges.sex, [...sexes]),
-      sql`${labReferenceRanges.ageFromDays} <= ${ageDays}`,
-      or(isNull(labReferenceRanges.ageToDays), sql`${labReferenceRanges.ageToDays} > ${ageDays}`),
-    ));
-
-  const values = analytes.filter(a => given.has(a.id)).map((a) => {
-    const value = given.get(a.id)!;
-    const base = { facilityId, analyteId: a.id, analyteCode: a.code, analyteName: a.name, resultType: a.resultType };
-    if (a.resultType === "numeric") {
-      if (typeof value !== "number" || !Number.isFinite(value))
-        throw new LabResultError("value_invalid", a.code);
-      const judged = judge(value, ranges.find(r => r.analyteId === a.id), { low: a.criticalLow, high: a.criticalHigh });
-      return { ...base, unit: a.unit, valueNumeric: value, criticalLow: a.criticalLow, criticalHigh: a.criticalHigh, ...judged };
-    }
-    const text = typeof value === "string" ? value.trim() : "";
-    if (!text || (a.resultType === "choice" && !a.choices!.includes(text)))
-      throw new LabResultError("value_invalid", a.code);
-    return { ...base, valueText: text, flag: a.resultType === "choice" && a.abnormalChoices!.includes(text) ? "abnormal" as const : null };
-  });
+  const values = await judgedValues(tx, facilityId, specimen, onIt, input.values);
 
   const [previous] = await tx
     .select()
@@ -259,6 +291,8 @@ function toldColumns(result: ResultRow, told: Told | undefined, actor: PatientAc
       throw new LabResultError("told_needed");
     return {};
   }
+  if (told.at && told.at > at)
+    throw new LabResultError("told_in_future");
   return { toldName: told.name, toldHow: told.how, toldAt: told.at ?? at, toldRecordedBy: actor.membershipId };
 }
 
@@ -352,8 +386,11 @@ export interface ShownResult {
   values: ShownValue[];
 }
 
+/** A page of results: an encounter's are paged by `offset`; the lab's backlog to verify shows its first page, oldest and urgent first. */
+const RESULTS_PAGE = 500;
+
 /** Current results matching `where`, urgent first, then by entry, each with its values in report order. */
-export async function resultsWhere(tx: AppDb, where: SQL | undefined): Promise<ShownResult[]> {
+export async function resultsWhere(tx: AppDb, where: SQL | undefined, offset = 0): Promise<ShownResult[]> {
   const enterer = alias(user, "enterer");
   const verifier = alias(user, "verifier");
   const enteringMembership = alias(memberships, "entering_membership");
@@ -381,7 +418,8 @@ export async function resultsWhere(tx: AppDb, where: SQL | undefined): Promise<S
     .where(and(ne(labResults.status, "superseded"), where))
     // Urgent first, before the limit, so a late urgent result is never cut off.
     .orderBy(asc(sql`CASE ${orders.urgency} WHEN 'urgent' THEN 0 ELSE 1 END`), asc(labResults.enteredAt), asc(billableItems.code))
-    .limit(500);
+    .limit(RESULTS_PAGE)
+    .offset(offset);
   if (rows.length === 0)
     return [];
 
@@ -445,14 +483,14 @@ export interface EncounterResults {
 }
 
 /** An encounter's results as clinicians see them, and its reports. Audited (rule 9). */
-export async function listResults(tx: AppDb, facilityId: string, encounterId: string, actor: PatientActor): Promise<EncounterResults | null> {
+export async function listResults(tx: AppDb, facilityId: string, encounterId: string, actor: PatientActor, offset = 0): Promise<EncounterResults | null> {
   const [encounter] = await tx.select({ id: encounters.id }).from(encounters).where(eq(encounters.id, encounterId)).limit(1);
   if (!encounter)
     return null;
   const orderIds = (await tx.select({ id: orders.id }).from(orders).where(eq(orders.encounterId, encounterId))).map(o => o.id);
   const results = orderIds.length === 0
     ? []
-    : await resultsWhere(tx, and(inArray(specimens.orderId, orderIds), inArray(labResults.status, ["released", "verified"])));
+    : await resultsWhere(tx, and(inArray(specimens.orderId, orderIds), inArray(labResults.status, ["released", "verified"])), offset);
   const reports = orderIds.length === 0
     ? []
     : await tx
@@ -478,6 +516,21 @@ export async function listResults(tx: AppDb, facilityId: string, encounterId: st
 // ---------------------------------------------------------------------------
 
 const FLAGS: Record<Flag, string> = { low: "L", high: "H", critical_low: "LL (critical)", critical_high: "HH (critical)", abnormal: "Abnormal" };
+
+/**
+ * One kind of note: "Verified: HB by A; MRDT by B.", every entry whole,
+ * continued on another note when one cannot hold them all.
+ */
+function labelled(label: string, entries: string[]): string[] {
+  if (entries.length === 0)
+    return [];
+  const prefix = `${label} (continued): `;
+  const packed = packNotes(entries, NOTE_LENGTH - prefix.length - 1);
+  // Every entry is a code and a line of at most a few hundred characters.
+  if (!packed)
+    throw new Error(`lab report: the "${label}" notes cannot be printed whole`);
+  return packed.map((note, i) => `${i === 0 ? `${label}: ` : prefix}${note}.`);
+}
 
 function printedNumber(n: number): string {
   return String(Number(n.toFixed(6)));
@@ -525,21 +578,12 @@ async function printedReport(tx: AppDb, orderId: string, results: ShownResult[],
   const today = businessDate();
   const sex = order.sex ? `${order.sex[0].toUpperCase()}${order.sex.slice(1)}, ` : "";
 
-  const unverified = results.filter(r => r.status === "released");
   const notes = [
-    ...(unverified.length > 0
-      ? [`Released unverified, to be verified: ${unverified.map(r => `${r.code} (${r.releaseReason})`).join("; ")}.`]
-      : []),
-    ...(results.some(r => r.verifiedBy)
-      ? [`Verified: ${results.filter(r => r.verifiedBy).map(r => `${r.code} by ${r.verifiedBy!.name}`).join("; ")}.`]
-      : []),
-    ...(results.some(r => r.told)
-      ? [`Critical values reported: ${results.filter(r => r.told).map(r => `${r.code} to ${r.told!.name} (${r.told!.how === "phone" ? "by phone" : "in person"}, ${printedDateTime(r.told!.at)})`).join("; ")}.`]
-      : []),
-    ...(results.some(r => r.version > 1)
-      ? [`Corrected: ${results.filter(r => r.version > 1).map(r => `${r.code} (${r.correctionReason})`).join("; ")}.`]
-      : []),
-  ].map(n => n.slice(0, 1000));
+    ...labelled("Released unverified, to be verified", results.filter(r => r.status === "released").map(r => `${r.code} (${r.releaseReason})`)),
+    ...labelled("Verified", results.filter(r => r.verifiedBy).map(r => `${r.code} by ${r.verifiedBy!.name}`)),
+    ...labelled("Critical values reported", results.filter(r => r.told).map(r => `${r.code} to ${r.told!.name} (${r.told!.how === "phone" ? "by phone" : "in person"}, ${printedDateTime(r.told!.at)})`)),
+    ...labelled("Corrected", results.filter(r => r.version > 1).map(r => `${r.code} (${r.correctionReason})`)),
+  ];
 
   return {
     title: "Laboratory report",
@@ -564,7 +608,7 @@ async function printedReport(tx: AppDb, orderId: string, results: ShownResult[],
         ...results.flatMap(r => r.values.map((v, i) => [
           i === 0 ? `${r.name}${r.status === "released" ? " (unverified)" : ""}` : "",
           v.name,
-          typeof v.value === "number" ? printedNumber(v.value) : v.value.slice(0, 500),
+          typeof v.value === "number" ? printedNumber(v.value) : v.value,
           v.unit ?? "",
           printedRange(v.range),
           v.flag ? FLAGS[v.flag] : "",
@@ -612,11 +656,11 @@ export async function refreshReport(tx: AppDb, facilityId: string, orderId: stri
   const cancelled = items.filter(i => i.status === "cancelled").map(i => ({ code: i.code, name: i.name, reason: i.reason! }));
   if (results.length === 0)
     return;
-  results.sort((a, b) => a.code.localeCompare(b.code));
+  const byCode = [...results].sort((a, b) => a.code.localeCompare(b.code));
   const document = await issueDocument(tx, {
     facilityId,
     kind: "lab_report",
-    content: await printedReport(tx, orderId, results, cancelled),
+    content: await printedReport(tx, orderId, byCode, cancelled),
     issuedBy: actor,
     at,
   });

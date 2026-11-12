@@ -708,6 +708,31 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - It is closed by nobody, re-checked under the encounter's lock. Failures are recorded as `visit_finish` by the runner the nightly close shares (`src/jobs/visits.ts`).
 - **Not yet:** the results-to-review list for the ordering clinician (still proposed); analyser interfaces (out of v1).
 
+**Hardened in review (PR #15, 2026-11-12)**, across slices 4a–5b:
+
+- **Frozen at the moment of the act:**
+  - A lab order item keeps its test's specimen type (`order_items.specimen_type`).
+  - A specimen keeps each test's analytes as they stood when it was taken (`specimen_tests.analyte_ids`). A result must give every number and choice in that panel, retired since or not, and may give an analyte added since. A test with no analyte in use is not collected.
+  - A result's values are written only while it is entered (0061).
+  - A verified result's record of who was told never changes (0063).
+  - An issued prescription takes no new medicine: its items are written in the transaction that wrote its order, which the trigger tells from the order row's `xmin` (0064).
+- **Refusals:**
+  - An order item whose charge waits on a draft bill is not cancelled (`on_draft_invoice`): void the draft first.
+  - A stat medicine takes no separate quantity.
+  - Request bodies refuse unknown fields.
+  - Result values that do not fit answer 422.
+  - Who was told of a critical value cannot be later than now.
+- **Printed whole:**
+  - Allergy-override notes and the report's notes are packed whole into up to 50 notes (`packNotes`). A prescription that cannot print every override is refused.
+  - A text result prints whole (cells up to 2,000 characters), and a long allergy list says how many more there are.
+  - A test has at most 60 analytes, so a report of 30 tests fits its 2,000 rows.
+- **The allergy check** also matches a drug allergy told as text that names the drug anywhere ("Amoxicillin 500 mg caps"). Brands and drug classes are still not caught.
+- **Lists:**
+  - An encounter's results page by `offset`.
+  - The worklist limits whole order-and-type groups.
+  - The visit-finish check pages candidates on a full-precision cursor.
+  - Invoice balances for the unpaid warning are read in one statement.
+
 **Clinical record.** `observations` (vitals and charted values, with `entered_in_error` instead of deletion), `diagnoses` (ICD code, provisional \| final \| secondary), `clinical_notes` (`signed_at`, `addendum_of`: a signed note is corrected only by an addendum), `orders` and `order_items` (lab, imaging, procedure, medication, service; medication items carry dose, route, frequency and duration). Every clinical act records the acting membership, whose licence details live on `memberships` (rule 25).
 
 **Inpatient.** `admissions` is 1:1 with an ipd encounter and carries the admission number. `bed_stays` holds a `tstzrange` with two `EXCLUDE` constraints: no bed holds two patients at once, and no admission is in two beds at once. A transfer ends one stay and starts the next. `medication_administrations` records each dose against its order item (given \| held \| refused \| missed). `discharge_summaries` are immutable once signed.

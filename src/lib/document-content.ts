@@ -15,6 +15,32 @@ import { z } from "zod";
 
 const label = z.string().trim().min(1).max(60);
 const printed = z.string().max(500);
+/** A table cell: a lab report prints a text result of up to 2,000 characters whole. */
+const cell = z.string().max(2000);
+
+/** The notes a document holds, and how long each may be. */
+export const MAX_NOTES = 50;
+export const NOTE_LENGTH = 1000;
+
+/**
+ * Lines packed into as few notes as hold them, joined with "; ", a line
+ * never cut nor split: null when they cannot all be printed whole (a line
+ * longer than `length`, or more notes than a document holds), for the caller
+ * to refuse rather than print part.
+ */
+export function packNotes(lines: string[], length = NOTE_LENGTH): string[] | null {
+  const notes: string[] = [];
+  for (const line of lines) {
+    if (line.length > length)
+      return null;
+    const last = notes.at(-1);
+    if (last !== undefined && last.length + 2 + line.length <= length)
+      notes[notes.length - 1] = `${last}; ${line}`;
+    else
+      notes.push(line);
+  }
+  return notes.length > MAX_NOTES ? null : notes;
+}
 
 const lineSchema = z.object({ label, value: printed });
 
@@ -24,7 +50,7 @@ const tableSchema = z.object({
     align: z.enum(["left", "right"]).default("left"),
   })).min(1).max(8),
   // A lab report runs to an order's tests times their analytes (30 × 60, lib/lab-results.ts).
-  rows: z.array(z.array(printed)).max(2000),
+  rows: z.array(z.array(cell)).max(2000),
 }).refine(
   table => table.rows.every(row => row.length === table.columns.length),
   "Every row needs one cell per column",
@@ -39,7 +65,7 @@ export const printedContentSchema = z.object({
   table: tableSchema.optional(),
   /** Right-aligned under the table: subtotal, paid, balance. */
   totals: z.array(lineSchema).max(10).default([]),
-  notes: z.array(z.string().max(1000)).max(10).default([]),
+  notes: z.array(z.string().max(NOTE_LENGTH)).max(MAX_NOTES).default([]),
 });
 
 export type PrintedContent = z.input<typeof printedContentSchema>;

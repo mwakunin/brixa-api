@@ -75,7 +75,7 @@ const TextAnalyteSchema = z.strictObject({
 // Strict, so a field that does not fit the result type is refused rather than dropped.
 const AnalyteBodySchema = z.discriminatedUnion("resultType", [NumericAnalyteSchema, ChoiceAnalyteSchema, TextAnalyteSchema]);
 
-const CreateBodySchema = z.object({
+const CreateBodySchema = z.strictObject({
   /** An active `lab` item: the test goes by its code and name, and is charged at its price. */
   billableItemId: z.uuid(),
   specimenType: z.enum(SPECIMEN_TYPES),

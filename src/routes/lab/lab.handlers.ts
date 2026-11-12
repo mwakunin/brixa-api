@@ -34,10 +34,10 @@ function refusal(c: Context, err: unknown) {
     return null;
   if (NOT_FOUND.has(err.code))
     return c.json({ message: HttpStatusPhrases.NOT_FOUND }, HttpStatusCodes.NOT_FOUND);
-  if (ABOUT_THE_VALUES.has(err.code)) {
+  if (ABOUT_THE_VALUES.has(err.code) || err.code === "told_in_future") {
     return c.json({
       success: false as const,
-      error: { name: "ValidationError", issues: [{ code: "custom" as const, path: ["values"], message: err.message }] },
+      error: { name: "ValidationError", issues: [{ code: "custom" as const, path: err.code === "told_in_future" ? ["told", "at"] : ["values"], message: err.message }] },
     }, HttpStatusCodes.UNPROCESSABLE_ENTITY);
   }
   return c.json({ message: err.message, code: err.code }, HttpStatusCodes.CONFLICT);
@@ -123,7 +123,8 @@ export const verifyResult: TenantRouteHandler<VerifyResultRoute> = async (c) => 
 
 export const listResults: TenantRouteHandler<ListResultsRoute> = async (c) => {
   const { id } = c.req.valid("param");
-  const listed = await results.listResults(c.var.db, c.var.facility.id, id, actorOf(c));
+  const { offset } = c.req.valid("query");
+  const listed = await results.listResults(c.var.db, c.var.facility.id, id, actorOf(c), offset);
   if (!listed)
     return c.json({ message: HttpStatusPhrases.NOT_FOUND }, HttpStatusCodes.NOT_FOUND);
   return c.json({ results: listed.results.map(resultJson), reports: listed.reports }, HttpStatusCodes.OK);

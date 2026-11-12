@@ -32,7 +32,7 @@ import type { PatientActor } from "./patients";
 import { recordAudit } from "./audit";
 import { ageInYears } from "./dates";
 import { isUniqueViolation } from "./db-errors";
-import { balanceCents } from "./invoice-balance";
+import { balancesCents } from "./invoice-balance";
 import { hasResults, pendingResults } from "./lab-results";
 import { issueNumber } from "./number-series";
 
@@ -69,6 +69,7 @@ export type SpecimenErrorCode
     | "nothing_to_collect"
     | "not_collectable"
     | "not_found"
+    | "test_has_no_analytes"
     | "already_received"
     | "already_rejected"
     | "has_results"
@@ -82,6 +83,7 @@ export class SpecimenError extends Error {
       nothing_to_collect: "No test of that specimen type on this order is waiting to be collected",
       not_collectable: "Each test must be a lab test on this order, of this specimen type, not yet collected or cancelled",
       not_found: "No such specimen",
+      test_has_no_analytes: "A test on it has no analyte in use, so it could never be resulted; the lab supervisor sets one up first",
       already_received: "This specimen has already been received",
       already_rejected: "This specimen was rejected; recollect it instead",
       has_results: "This specimen has results; correct them rather than rejecting it",
@@ -141,6 +143,9 @@ async function writeSpecimen(
     .innerJoin(labAnalytes, and(eq(labAnalytes.labTestId, orderItems.labTestId), eq(labAnalytes.isActive, true)))
     .where(inArray(orderItems.id, input.itemIds))
     .orderBy(asc(labAnalytes.position));
+  // A test with nothing in use could never be resulted: refused, so nothing is collected in vain.
+  if (input.itemIds.some(id => !panels.some(p => p.orderItemId === id)))
+    throw new SpecimenError("test_has_no_analytes");
   await tx.insert(specimenTests).values(input.itemIds.map(orderItemId => ({
     facilityId,
     specimenId: specimen.id,
@@ -307,11 +312,8 @@ export async function paidCharges(tx: AppDb, chargeIds: string[]): Promise<Set<s
     .innerJoin(invoices, and(eq(invoices.id, invoiceLines.invoiceId), ne(invoices.status, "void")))
     .where(inArray(charges.id, chargeIds));
 
-  const owing = new Map<string, number>();
-  for (const r of rows.filter(r => r.invoiceStatus === "finalised")) {
-    if (!owing.has(r.invoiceId))
-      owing.set(r.invoiceId, await balanceCents(tx, { id: r.invoiceId, totalCents: r.invoiceTotalCents }));
-  }
+  const finalised = rows.filter(r => r.invoiceStatus === "finalised");
+  const owing = await balancesCents(tx, [...new Map(finalised.map(r => [r.invoiceId, { id: r.invoiceId, totalCents: r.invoiceTotalCents }])).values()]);
 
   const paid = new Set<string>();
   for (const chargeId of new Set(rows.map(r => r.chargeId))) {

@@ -4,7 +4,7 @@ import { alias } from "drizzle-orm/pg-core";
 import type { AppDb } from "@/db";
 import type { MembershipRole } from "@/db/schema";
 
-import { billableItems, charges, documents, encounters, labTests, memberships, orderItems, orders, user } from "@/db/schema";
+import { billableItems, chargeAssignments, charges, documents, encounters, invoiceLines, invoices, labTests, memberships, orderItems, orders, user } from "@/db/schema";
 
 import type { PatientActor } from "./patients";
 
@@ -56,6 +56,7 @@ export type OrderErrorCode
     | "not_ordered"
     | "not_a_service_item"
     | "cancel_the_prescription"
+    | "on_draft_invoice"
     | "not_yours_to_cancel";
 
 export class OrderError extends Error {
@@ -73,6 +74,7 @@ export class OrderError extends Error {
       not_ordered: "This item is already done or cancelled",
       not_a_service_item: "Only a service is marked done: a lab test is done once its specimen is collected, a medicine once dispensed",
       cancel_the_prescription: "A medicine is cancelled with its prescription, which is then written again",
+      on_draft_invoice: "This item is on a draft bill; void the draft first, or finalise it and credit the item",
       not_yours_to_cancel: "Only someone who could have placed this order, or the lab for a lab test, cancels it",
     }[code]);
     this.name = "OrderError";
@@ -261,6 +263,19 @@ async function lockItem(tx: AppDb, itemId: string) {
   return { item, encounterId: found.encounterId, walkIn: found.orderedBy === null };
 }
 
+/** Whether the item's charge is on a draft invoice. */
+async function onDraftInvoice(tx: AppDb, itemId: string): Promise<boolean> {
+  const [row] = await tx
+    .select({ id: invoices.id })
+    .from(charges)
+    .innerJoin(chargeAssignments, eq(chargeAssignments.chargeId, charges.id))
+    .innerJoin(invoiceLines, eq(invoiceLines.id, chargeAssignments.invoiceLineId))
+    .innerJoin(invoices, and(eq(invoices.id, invoiceLines.invoiceId), eq(invoices.status, "draft")))
+    .where(eq(charges.orderItemId, itemId))
+    .limit(1);
+  return Boolean(row);
+}
+
 async function chargedCode(tx: AppDb, item: ItemRow): Promise<string> {
   const [row] = await tx
     .select({ code: billableItems.code })
@@ -286,6 +301,10 @@ export async function cancelOrderItem(tx: AppDb, facilityId: string, itemId: str
   const may = [...placers, ...(item.labTestId ? LAB_STAFF : [])];
   if (!actor.roles.some(r => may.includes(r)))
     throw new OrderError("not_yours_to_cancel");
+
+  // A draft would still bill it once finalised; a finalised bill is credited instead.
+  if (await onDraftInvoice(tx, itemId))
+    throw new OrderError("on_draft_invoice");
 
   const [cancelled] = await tx.update(orderItems)
     .set({ status: "cancelled", cancelledAt: at, cancelledBy: actor.membershipId, cancellationReason: reason })

@@ -90,6 +90,8 @@ describe("the lab catalogue", () => {
     expect((await analyte({ code: "HGB", name: "Hb", resultType: "numeric", criticalLow: 20, criticalHigh: 7 })).status).toBe(422);
     expect((await analyte({ code: "HGB", name: "Hb", resultType: "numeric", ranges: [{ low: 17, high: 13 }] })).status).toBe(422);
     expect((await analyte({ code: "HGB", name: "Hb", resultType: "numeric", ranges: [{ ageFromDays: 30, ageToDays: 30, low: 1 }] })).status).toBe(422);
+    // Put beside the analytes, it is refused too.
+    expect((await create({ billableItemId: fbcItem, specimenType: "blood", criticalHigh: 20, analytes: [FBC.analytes[1]] })).status).toBe(422);
     // A critical limit belongs on the analyte; put on a range, it is refused, not dropped.
     expect((await analyte({ code: "HGB", name: "Hb", resultType: "numeric", ranges: [{ low: 12, high: 16, criticalHigh: 20 }] })).status).toBe(422);
     expect((await create({ billableItemId: fbcItem, specimenType: "blood", analytes: [FBC.analytes[1], FBC.analytes[1]] })).status).toBe(422);

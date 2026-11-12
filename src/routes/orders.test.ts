@@ -184,6 +184,19 @@ describe("an order item", () => {
     expect((await (await cancel(mrdt.id)).json()).code).toBe("not_ordered");
   });
 
+  it("is not cancelled while its charge waits on a draft bill", async () => {
+    const encounterId = await visit();
+    const [mrdt] = (await (await order(encounterId, { items: [{ labTestId: tests.mrdt }] })).json()).items;
+    const draft = await (await call("POST", `/encounters/${encounterId}/invoices`, h.facility.id, h.cashier, { kind: "interim" })).json();
+
+    const refused = await cancel(mrdt.id);
+    expect([refused.status, (await refused.json()).code]).toEqual([409, "on_draft_invoice"]);
+
+    await call("POST", `/invoices/${draft.id}/void`, h.facility.id, h.cashier, { reason: "Patient changed their mind" });
+    expect((await cancel(mrdt.id)).status).toBe(200);
+    expect((await orderCharges(encounterId))[0].cancelledAt).not.toBeNull();
+  });
+
   it("keeps its charge once billed: the bill is credited or refunded instead", async () => {
     const encounterId = await visit();
     const [mrdt] = (await (await order(encounterId, { items: [{ labTestId: tests.mrdt }] })).json()).items;

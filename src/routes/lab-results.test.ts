@@ -214,6 +214,40 @@ describe("a result", () => {
     expect((await enter(t.specimenId, hb(t, 14))).status).toBe(201);
   });
 
+  it("needs no analyte whose addition was still uncommitted when the specimen was taken", async () => {
+    const patientId = await h.patient();
+    const encounterId = (await (await call("POST", "/encounters", h.facility.id, h.nurse, { patientId, kind: "opd", queueAt: null })).json()).id;
+    const order = await (await call("POST", `/encounters/${encounterId}/orders`, h.facility.id, doctor, { items: [{ labTestId: tests.hb }] })).json();
+    // The addition begins first, and commits only after the collection has read the test.
+    const adding = await pool.connect();
+    try {
+      await adding.query("BEGIN");
+      await adding.query(
+        "INSERT INTO lab_analytes (facility_id, lab_test_id, code, name, position, result_type) VALUES ($1, $2, 'PLT', 'Platelets', 9, 'numeric')",
+        [h.facility.id, tests.hb],
+      );
+      const specimen = await (await call("POST", `/orders/${order.id}/specimens`, h.facility.id, labTech, { specimenType: "blood" })).json();
+      await adding.query("COMMIT");
+
+      const res = await enter(specimen.id, { orderItemId: order.items[0].id, values: [{ analyteId: analytes.hgb, value: 14 }] });
+      expect(res.status).toBe(201);
+    }
+    finally {
+      await adding.query("ROLLBACK").catch(() => {});
+      adding.release();
+    }
+  });
+
+  it("records who was told of a critical value no later than now", async () => {
+    const t = await tested([tests.hb]);
+    const result = await (await enter(t.specimenId, hb(t, 6.1))).json();
+    const tomorrow = new Date(Date.now() + 86_400_000).toISOString();
+
+    const res = await act(result.id, "verify", { told: { name: "Dr Achieng", how: "phone", at: tomorrow } });
+
+    expect([res.status, (await res.json()).error?.issues?.[0]?.path]).toEqual([422, ["told", "at"]]);
+  });
+
   it("keeps its specimen from being rejected", async () => {
     const t = await tested([tests.hb]);
     await enter(t.specimenId, hb(t, 14.2));
@@ -267,6 +301,29 @@ describe("the lab report", () => {
 });
 
 describe("the lab's worklist with results", () => {
+  it("pages an encounter's results", async () => {
+    const t = await tested();
+    for (const body of [hb(t, 14), { orderItemId: t.item("MRDT"), values: [{ analyteId: analytes.mps, value: "Negative" }] }]) {
+      const result = await (await enter(t.specimenId, body)).json();
+      await act(result.id, "verify");
+    }
+
+    const page = async (offset: number) => (await (await call("GET", `/encounters/${t.encounterId}/lab-results?offset=${offset}`, h.facility.id, doctor)).json()).results.map((r: { code: string }) => r.code);
+    expect([await page(0), await page(1)]).toEqual([["HB", "MRDT"], ["MRDT"]]);
+  });
+
+  it("prints a long text result whole", async () => {
+    const t = await tested([tests.hb]);
+    const film = `Film: ${"normocytic normochromic cells, ".repeat(40)}no parasites seen.`;
+    const result = await (await enter(t.specimenId, { orderItemId: t.item("HB"), values: [{ analyteId: analytes.hgb, value: 14 }, { analyteId: analytes.comment, value: film }] })).json();
+    await act(result.id, "verify");
+
+    const [report] = (await clinicianSees(t.encounterId)).reports;
+    const [doc] = await db.select().from(documents).where(eq(documents.id, report.documentId));
+    expect(film.length).toBeGreaterThan(1000);
+    expect(doc.content.table!.rows[1][2]).toBe(film);
+  });
+
   it("lists urgent results to verify first", async () => {
     const routine = await tested([tests.hb]);
     const urgentPatient = await h.patient();
