@@ -1941,12 +1941,20 @@ export const specimens = pgTable("specimens", {
   ),
 ]);
 
-/** Which ordered lab tests a specimen was taken for. Written with the specimen, never changed. */
+/**
+ * Which ordered lab tests a specimen was taken for, each with its analytes
+ * as the test had them then. Written with the specimen, never changed.
+ */
 export const specimenTests = pgTable("specimen_tests", {
   id: uuid().primaryKey().defaultRandom(),
   facilityId: uuid().notNull().references(() => facilities.id),
   specimenId: uuid().notNull(),
   orderItemId: uuid().notNull(),
+  /**
+   * The test's analytes in use when the specimen was taken: its numbers and
+   * choices are what a result must give, whatever the catalogue says since.
+   */
+  analyteIds: uuid().array().notNull(),
 }, t => [
   unique("specimen_tests_specimen_item_key").on(t.specimenId, t.orderItemId),
   foreignKey({ name: "specimen_tests_specimen_fk", columns: [t.facilityId, t.specimenId], foreignColumns: [specimens.facilityId, specimens.id] }),

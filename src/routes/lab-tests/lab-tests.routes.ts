@@ -24,7 +24,8 @@ const AnalyteCodeSchema = z.string().trim().toUpperCase().regex(/^[A-Z0-9][A-Z0-
 const LimitSchema = z.number().finite();
 
 /** Ages in days: from (inclusive) and to (exclusive); none for every age after. */
-const RangeSchema = z.object({
+// Strict, so a field put on the wrong level (a critical limit on a range) is refused, not dropped.
+const RangeSchema = z.strictObject({
   sex: z.enum(["any", "male", "female"]).default("any"),
   ageFromDays: z.number().int().min(0).max(54_750).default(0),
   ageToDays: z.number().int().positive().max(54_750).nullable().default(null),

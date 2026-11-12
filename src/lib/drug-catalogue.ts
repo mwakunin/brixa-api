@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull, like, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, like, or, sql } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 
@@ -45,7 +45,8 @@ export interface DrugMatch {
 
 /**
  * Current drugs whose generic name has a word starting with each word typed,
- * or whose code starts with what was typed. At most 20, by name and strength.
+ * or whose code starts with what was typed. At most 20: those whose name
+ * starts with the first word typed first, then by name and strength.
  */
 export async function searchDrugs(tx: AppDb, q: string): Promise<DrugMatch[]> {
   const words = q.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
@@ -74,7 +75,9 @@ export async function searchDrugs(tx: AppDb, q: string): Promise<DrugMatch[]> {
         codeLike ? like(drugCatalogue.code, `${codeLike.replaceAll("_", "\\_")}%`) : undefined,
       ),
     ))
-    .orderBy(asc(drugCatalogue.genericName), asc(drugCatalogue.strength), asc(drugCatalogue.code))
+    // A name that starts with what was typed first, so "metformin" finds
+    // Metformin before the combinations that only contain it.
+    .orderBy(desc(sql`${drugCatalogue.genericName} ~* ${`^${words[0]}`}`), asc(drugCatalogue.genericName), asc(drugCatalogue.strength), asc(drugCatalogue.code))
     .limit(SEARCH_LIMIT);
 }
 

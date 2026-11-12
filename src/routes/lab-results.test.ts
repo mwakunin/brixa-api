@@ -110,10 +110,15 @@ describe("a result", () => {
     const t = await tested();
     const code = async (body: Record<string, unknown>) => (await (await enter(t.specimenId, body)).json()).code;
 
-    expect(await code({ orderItemId: t.item("HB"), values: [{ analyteId: analytes.comment, value: "x" }] })).toBe("value_missing");
-    expect(await code({ orderItemId: t.item("HB"), values: [{ analyteId: analytes.hgb, value: "high" }] })).toBe("value_invalid");
-    expect(await code({ orderItemId: t.item("MRDT"), values: [{ analyteId: analytes.mps, value: "Maybe" }] })).toBe("value_invalid");
-    expect(await code({ orderItemId: t.item("HB"), values: [{ analyteId: analytes.hgb, value: 14 }, { analyteId: analytes.mps, value: "Negative" }] })).toBe("analyte_not_on_test");
+    // A value that does not fit is a validation failure on `values`, not a conflict.
+    const invalid = async (body: Record<string, unknown>) => {
+      const res = await enter(t.specimenId, body);
+      return [res.status, (await res.json()).error?.issues?.[0]?.path];
+    };
+    expect(await invalid({ orderItemId: t.item("HB"), values: [{ analyteId: analytes.comment, value: "x" }] })).toEqual([422, ["values"]]);
+    expect(await invalid({ orderItemId: t.item("HB"), values: [{ analyteId: analytes.hgb, value: "high" }] })).toEqual([422, ["values"]]);
+    expect(await invalid({ orderItemId: t.item("MRDT"), values: [{ analyteId: analytes.mps, value: "Maybe" }] })).toEqual([422, ["values"]]);
+    expect(await invalid({ orderItemId: t.item("HB"), values: [{ analyteId: analytes.hgb, value: 14 }, { analyteId: analytes.mps, value: "Negative" }] })).toEqual([422, ["values"]]);
     const other = await tested([tests.hb]);
     expect(await code({ orderItemId: other.item("HB"), values: [{ analyteId: analytes.hgb, value: 14 }] })).toBe("not_on_specimen");
     expect((await enter(t.specimenId, hb(t, 14), doctor)).status).toBe(403);
@@ -187,6 +192,26 @@ describe("a result", () => {
 
     expect(res.status).toBe(201);
     expect((await res.json()).values.map((v: { code: string }) => v.code)).toEqual(["HGB", "COMMENT"]);
+  });
+
+  it("still needs every number it needed when the specimen was taken, though retired since", async () => {
+    const t = await tested([tests.hb]);
+    await call("PATCH", `/lab-analytes/${analytes.hgb}`, h.facility.id, h.admin, { isActive: false });
+
+    const res = await enter(t.specimenId, { orderItemId: t.item("HB"), values: [{ analyteId: analytes.comment, value: "Film only" }] });
+
+    expect([res.status, (await res.json()).error?.issues?.[0]?.message]).toEqual([422, expect.stringContaining("HGB")]);
+  });
+
+  it("does not need an analyte added while the specimen was being taken", async () => {
+    // An analyte whose addition began before the collection, and committed after it read the test.
+    const t = await tested([tests.hb]);
+    await pool.query(
+      "INSERT INTO lab_analytes (facility_id, lab_test_id, code, name, position, result_type, created_at) VALUES ($1, $2, 'PLT', 'Platelets', 9, 'numeric', now() - interval '1 hour')",
+      [h.facility.id, tests.hb],
+    );
+
+    expect((await enter(t.specimenId, hb(t, 14))).status).toBe(201);
   });
 
   it("keeps its specimen from being rejected", async () => {
@@ -287,5 +312,7 @@ describe("the database's result guards", () => {
       "INSERT INTO lab_result_values (facility_id, result_id, analyte_id, analyte_code, analyte_name, result_type, value_text) SELECT facility_id, id, $2, 'COMMENT', 'Comment', 'text', 'Added later' FROM lab_results WHERE id = $1",
       [result.id, analytes.comment],
     )).toMatch(/entered/);
+    // Nor, verified with no critical value, a record of someone told.
+    expect(await refusal("UPDATE lab_results SET told_name = 'Late', told_how = 'phone', told_at = now(), told_recorded_by = entered_by WHERE id = $1")).toMatch(/once/);
   });
 });

@@ -23,7 +23,8 @@ const tableSchema = z.object({
     label,
     align: z.enum(["left", "right"]).default("left"),
   })).min(1).max(8),
-  rows: z.array(z.array(printed)).max(500),
+  // A lab report runs to an order's tests times their analytes (30 × 60, lib/lab-results.ts).
+  rows: z.array(z.array(printed)).max(2000),
 }).refine(
   table => table.rows.every(row => row.length === table.columns.length),
   "Every row needs one cell per column",

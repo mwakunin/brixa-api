@@ -41,12 +41,13 @@ const common = {
   indication: z.string().trim().min(1).max(500).optional(),
 };
 
-const OrderBodySchema = z.object({
+// Strict, so a misspelt field (`urgnecy`) is refused rather than an urgent order going in as routine.
+const OrderBodySchema = z.strictObject({
   ...common,
   items: z.array(ItemBodySchema).min(1).max(30),
 });
 
-const WalkInBodySchema = z.object({
+const WalkInBodySchema = z.strictObject({
   ...common,
   /** The outside requester, as their form names them. */
   requester: z.object({
@@ -136,6 +137,10 @@ export const cancelOrderItem = createRoute({
     ...refusals,
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(CancelBodySchema), "No reason given"),
     ...tenantResponses,
+    [HttpStatusCodes.FORBIDDEN]: jsonContent(
+      z.union([RefusalSchema, z.object({ message: z.string() })]),
+      "Role not allowed, or `not_yours_to_cancel`: not someone who could have placed this order",
+    ),
   },
 });
 

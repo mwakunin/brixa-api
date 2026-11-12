@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { addDays, ageInYears, businessDate, dateOfBirthForAge, printedDate, printedDateTime, startOfBusinessDay } from "./dates";
+import { addDays, ageInYears, businessDate, dateOfBirthForAge, printedAge, printedDate, printedDateTime, startOfBusinessDay } from "./dates";
 
 describe("businessDate", () => {
   it.each([
@@ -71,5 +71,19 @@ describe("printedDateTime", () => {
 describe("printedDate", () => {
   it.each([["2026-11-04", "4 Nov 2026"], ["2027-01-01", "1 Jan 2027"], ["2026-12-31", "31 Dec 2026"]])("prints %s as %s", (date, expected) => {
     expect(printedDate(date)).toBe(expected);
+  });
+});
+
+describe("printedAge", () => {
+  it.each([
+    ["2026-11-12", "2026-11-12", "0 days"],
+    ["2026-11-11", "2026-11-12", "1 day"],
+    ["2026-10-13", "2026-11-12", "30 days"],
+    ["2026-10-12", "2026-11-12", "1 month"],
+    ["2025-11-13", "2026-11-12", "11 months"],
+    ["2025-11-12", "2026-11-12", "1 year"],
+    ["1980-01-01", "2026-11-12", "46 years"],
+  ])("is %s to %s: %s", (born, today, expected) => {
+    expect(printedAge(born, today)).toBe(expected);
   });
 });

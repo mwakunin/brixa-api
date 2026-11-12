@@ -12,6 +12,7 @@ import {
   encounters,
   invoiceLines,
   invoices,
+  labAnalytes,
   labResults,
   labTests,
   memberships,
@@ -133,7 +134,19 @@ async function writeSpecimen(
       throw new SpecimenError("already_recollected");
     throw err;
   }
-  await tx.insert(specimenTests).values(input.itemIds.map(orderItemId => ({ facilityId, specimenId: specimen.id, orderItemId })));
+  // Each test's analytes as they stand now: what its result must give (lib/lab-results.ts).
+  const panels = await tx
+    .select({ orderItemId: orderItems.id, analyteId: labAnalytes.id })
+    .from(orderItems)
+    .innerJoin(labAnalytes, and(eq(labAnalytes.labTestId, orderItems.labTestId), eq(labAnalytes.isActive, true)))
+    .where(inArray(orderItems.id, input.itemIds))
+    .orderBy(asc(labAnalytes.position));
+  await tx.insert(specimenTests).values(input.itemIds.map(orderItemId => ({
+    facilityId,
+    specimenId: specimen.id,
+    orderItemId,
+    analyteIds: panels.filter(p => p.orderItemId === orderItemId).map(p => p.analyteId),
+  })));
   return specimen;
 }
 
@@ -468,26 +481,39 @@ export async function specimenShown(tx: AppDb, id: string): Promise<ShownSpecime
  * specimens waiting to be received, then those in the lab. Audited, since it
  * names patients and what they are tested for (rule 9).
  */
-export async function viewWorklist(tx: AppDb, facilityId: string, actor: PatientActor, today?: string): Promise<Worklist> {
-  const due = await tx
-    .select({
-      orderItemId: orderItems.id,
-      orderId: orders.id,
-      encounterId: orders.encounterId,
-      urgency: orders.urgency,
-      orderedAt: orders.orderedAt,
-      specimenType: orderItems.specimenType,
-      ...patientColumns,
-    })
+export async function viewWorklist(tx: AppDb, facilityId: string, actor: PatientActor, today?: string, limit = WORKLIST_LIMIT): Promise<Worklist> {
+  // The groups first (an order's tests of one specimen type), then every test
+  // in them, so a group is never shown in part.
+  const urgentFirst = sql`CASE ${orders.urgency} WHEN 'urgent' THEN 0 ELSE 1 END`;
+  const waiting = and(eq(orderItems.status, "ordered"), isNotNull(orderItems.labTestId), eq(encounters.status, "open"));
+  const chosen = await tx
+    .selectDistinct({ orderId: orders.id, specimenType: orderItems.specimenType, urgent: urgentFirst, orderedAt: orders.orderedAt })
     .from(orderItems)
     .innerJoin(orders, eq(orders.id, orderItems.orderId))
-    .innerJoin(encounters, and(eq(encounters.id, orders.encounterId), eq(encounters.status, "open")))
-    .innerJoin(patients, eq(patients.id, encounters.patientId))
-    .leftJoin(patientNumbers, and(eq(patientNumbers.patientId, patients.id), eq(patientNumbers.kind, "outpatient")))
-    .where(and(eq(orderItems.status, "ordered"), isNotNull(orderItems.labTestId)))
-    // An order's specimen types in a fixed order, so its groups do not shuffle between views.
-    .orderBy(asc(sql`CASE ${orders.urgency} WHEN 'urgent' THEN 0 ELSE 1 END`), asc(orders.orderedAt), asc(orders.id), asc(orderItems.specimenType))
-    .limit(WORKLIST_LIMIT * 5);
+    .innerJoin(encounters, eq(encounters.id, orders.encounterId))
+    .where(waiting)
+    .orderBy(asc(urgentFirst), asc(orders.orderedAt), asc(orders.id), asc(orderItems.specimenType))
+    .limit(limit);
+  const due = chosen.length === 0
+    ? []
+    : await tx
+        .select({
+          orderItemId: orderItems.id,
+          orderId: orders.id,
+          encounterId: orders.encounterId,
+          urgency: orders.urgency,
+          orderedAt: orders.orderedAt,
+          specimenType: orderItems.specimenType,
+          ...patientColumns,
+        })
+        .from(orderItems)
+        .innerJoin(orders, eq(orders.id, orderItems.orderId))
+        .innerJoin(encounters, and(eq(encounters.id, orders.encounterId), eq(encounters.status, "open")))
+        .innerJoin(patients, eq(patients.id, encounters.patientId))
+        .leftJoin(patientNumbers, and(eq(patientNumbers.patientId, patients.id), eq(patientNumbers.kind, "outpatient")))
+        .where(and(waiting, sql`(${orders.id}, ${orderItems.specimenType}) IN (${sql.join(chosen.map(g => sql`(${g.orderId}::uuid, ${g.specimenType})`), sql`, `)})`))
+        // An order's specimen types in a fixed order, so its groups do not shuffle between views.
+        .orderBy(asc(urgentFirst), asc(orders.orderedAt), asc(orders.id), asc(orderItems.specimenType));
   const tests = await testsOf(tx, due.map(d => d.orderItemId));
 
   const groups = new Map<string, CollectionDue>();
@@ -506,7 +532,7 @@ export async function viewWorklist(tx: AppDb, facilityId: string, actor: Patient
     group.tests.push(tests.get(d.orderItemId)!);
     groups.set(key, group);
   }
-  const toCollect = [...groups.values()].slice(0, WORKLIST_LIMIT);
+  const toCollect = [...groups.values()];
   for (const group of toCollect)
     group.tests.sort((a, b) => a.code.localeCompare(b.code));
 

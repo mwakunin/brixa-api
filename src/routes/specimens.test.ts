@@ -5,7 +5,9 @@ import type { Hospital, StaffMember } from "@/test/hospital";
 
 import db, { pool } from "@/db";
 import { auditLog, charges } from "@/db/schema";
+import { runAsFacility } from "@/db/tenant-transaction";
 import { businessDate } from "@/lib/dates";
+import { viewWorklist } from "@/lib/specimens";
 import { addMembership, resetDb, signedInUser } from "@/test/helpers";
 import { call, hospital, TODAY } from "@/test/hospital";
 
@@ -157,6 +159,15 @@ describe("the lab's worklist", () => {
     expect((await call("GET", "/lab/worklist", h.facility.id, nurse)).status).toBe(403);
     const viewed = await db.select().from(auditLog).where(eq(auditLog.action, "lab.worklist_viewed"));
     expect(viewed).toEqual([expect.objectContaining({ actorId: labTech.id, summary: "Viewed the lab worklist (3 to collect, 0 to receive, 0 in the lab, 0 to verify)" })]);
+  });
+
+  it("shows each order's tests of one type together, never part of a group", async () => {
+    const first = await orderedVisit("opd", [tests.fbc, tests.mrdt]);
+    await orderedVisit("opd", [tests.fbc, tests.mrdt]);
+
+    const list = await runAsFacility(h.facility.id, async tx => viewWorklist(tx, h.facility.id, labTech.actor, undefined, 1));
+
+    expect(list.toCollect.map(d => [d.orderId, d.tests.map(t => t.code)])).toEqual([[first.orderId, ["FBC", "MRDT"]]]);
   });
 
   it("warns of a test not yet paid for at an outpatient visit, never at an emergency, and never blocks", async () => {

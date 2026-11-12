@@ -90,6 +90,8 @@ describe("the lab catalogue", () => {
     expect((await analyte({ code: "HGB", name: "Hb", resultType: "numeric", criticalLow: 20, criticalHigh: 7 })).status).toBe(422);
     expect((await analyte({ code: "HGB", name: "Hb", resultType: "numeric", ranges: [{ low: 17, high: 13 }] })).status).toBe(422);
     expect((await analyte({ code: "HGB", name: "Hb", resultType: "numeric", ranges: [{ ageFromDays: 30, ageToDays: 30, low: 1 }] })).status).toBe(422);
+    // A critical limit belongs on the analyte; put on a range, it is refused, not dropped.
+    expect((await analyte({ code: "HGB", name: "Hb", resultType: "numeric", ranges: [{ low: 12, high: 16, criticalHigh: 20 }] })).status).toBe(422);
     expect((await create({ billableItemId: fbcItem, specimenType: "blood", analytes: [FBC.analytes[1], FBC.analytes[1]] })).status).toBe(422);
 
     const res = await analyte({ ...choice, abnormalChoices: ["Positive"] });
@@ -137,6 +139,12 @@ describe("the lab catalogue", () => {
     const added = await call("POST", `/lab-tests/${test.id}/analytes`, h.facility.id, supervisor, { code: "WBC", name: "White cells", resultType: "numeric", unit: "10^9/L" });
     expect((await added.json()).analytes.map((a: { code: string }) => a.code)).toEqual(["HGB", "COMMENT", "WBC"]);
     expect((await (await call("POST", `/lab-tests/${test.id}/analytes`, h.facility.id, supervisor, { code: "WBC", name: "Again", resultType: "text" })).json()).code).toBe("code_taken");
+    // At most 60 analytes a test, so an order's report always fits on its document.
+    await pool.query(
+      "INSERT INTO lab_analytes (facility_id, lab_test_id, code, name, position, result_type) SELECT $1, $2, 'X' || n, 'X', 10 + n, 'text' FROM generate_series(1, 57) n",
+      [h.facility.id, test.id],
+    );
+    expect((await (await call("POST", `/lab-tests/${test.id}/analytes`, h.facility.id, supervisor, { code: "ONEMORE", name: "One more", resultType: "text" })).json()).code).toBe("too_many_analytes");
   });
 
   it("only ever retires a reference range, for every role", async () => {

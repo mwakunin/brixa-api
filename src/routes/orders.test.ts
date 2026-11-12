@@ -137,6 +137,9 @@ describe("orders", () => {
     expect(await refused({ items: [{ labTestId: tests.mrdt }, { labTestId: tests.mrdt }] })).toEqual([409, "duplicate_item"]);
     expect(await refused({ items: [{ labTestId: h.facility.id }] })).toEqual([409, "test_not_found"]);
     expect((await order(encounterId, { items: [{ labTestId: tests.mrdt, billableItemId: items.dressing }] })).status).toBe(422);
+    // A misspelt field is refused, not dropped: an urgent order must not go in as routine.
+    expect((await order(encounterId, { urgnecy: "urgent", items: [{ labTestId: tests.mrdt }] })).status).toBe(422);
+    expect((await walkIn(encounterId, { selfRequested: true, urgnecy: "urgent", labTestIds: [tests.mrdt] })).status).toBe(422);
 
     expect((await call("PATCH", `/lab-tests/${tests.mrdt}`, h.facility.id, h.admin, { isActive: false })).status).toBe(200);
     expect(await refused({ items: [{ labTestId: tests.mrdt }] })).toEqual([409, "test_inactive"]);

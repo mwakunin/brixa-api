@@ -27,7 +27,8 @@ import { withMoneyDue } from "./cashier";
 
 interface Candidate {
   id: string;
-  startedAt: Date;
+  /** As Postgres prints it, to the microsecond: a JavaScript Date keeps only milliseconds. */
+  startedAt: string;
 }
 
 /**
@@ -39,10 +40,10 @@ async function settledOtherwise(tx: AppDb, options: { ids?: string[]; after?: Ca
     ? sql`AND e.id IN (${sql.join(options.ids.map(id => sql`${id}::uuid`), sql`, `)})`
     : sql``;
   const after = options.after
-    ? sql`AND (e.started_at, e.id) > (${options.after.startedAt}, ${options.after.id}::uuid)`
+    ? sql`AND (e.started_at, e.id) > (${options.after.startedAt}::timestamptz, ${options.after.id}::uuid)`
     : sql``;
-  const { rows } = await tx.execute<{ id: string; started_at: Date | string }>(sql`
-    SELECT e.id, e.started_at FROM ${encounters} e
+  const { rows } = await tx.execute<{ id: string; started_at: string }>(sql`
+    SELECT e.id, e.started_at::text AS started_at FROM ${encounters} e
     WHERE e.status = 'open' AND e.kind = 'opd' ${named} ${after}
       AND NOT EXISTS (SELECT 1 FROM queue_entries q WHERE q.encounter_id = e.id AND q.status IN ('waiting', 'serving'))
       AND NOT EXISTS (
@@ -59,7 +60,7 @@ async function settledOtherwise(tx: AppDb, options: { ids?: string[]; after?: Ca
     ORDER BY e.started_at, e.id
     LIMIT ${options.limit}
   `);
-  return rows.map(r => ({ id: r.id, startedAt: new Date(r.started_at) }));
+  return rows.map(r => ({ id: r.id, startedAt: r.started_at }));
 }
 
 /**

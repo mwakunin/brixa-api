@@ -139,11 +139,12 @@ function thousandths(decimal: string): number {
 
 /** What to supply, in dose units. */
 function quantityOf(item: MedicineInput): string {
-  if (item.quantity)
-    return item.quantity;
   const dose = thousandths(item.doseAmount);
+  // A single dose supplies exactly the dose.
   if (item.frequency === "stat")
     return (dose / 1000).toFixed(3);
+  if (item.quantity)
+    return item.quantity;
   const perDay = DOSES_A_DAY[item.frequency];
   if (!perDay || !item.durationDays)
     throw new PrescriptionError("quantity_needed");
@@ -206,6 +207,23 @@ function printedAllergies(told: string[]): string {
   return shown === 0
     ? `${told.length} allergies recorded: check the patient's allergy record`
     : `${told.slice(0, shown).join("; ")}${more(told.length - shown)}`;
+}
+
+/** The notes a printed document holds, and their length (`document-content.ts`). */
+const MAX_NOTES = 10;
+const NOTE_LENGTH = 1000;
+
+/** Lines packed into as few notes as hold them, so any number of overrides prints. */
+function packedNotes(lines: string[]): string[] {
+  const notes: string[] = [];
+  for (const line of lines.map(l => l.slice(0, NOTE_LENGTH))) {
+    const last = notes.at(-1);
+    if (last !== undefined && last.length + 2 + line.length <= NOTE_LENGTH)
+      notes[notes.length - 1] = `${last}; ${line}`;
+    else
+      notes.push(line);
+  }
+  return notes.slice(0, MAX_NOTES);
 }
 
 interface Line {
@@ -278,9 +296,9 @@ async function printedPrescription(
         l.input.instructions ?? "",
       ]),
     },
-    notes: lines
+    notes: packedNotes(lines
       .filter(l => l.overridden.length > 0)
-      .map(l => `${l.drug.genericName} prescribed despite a recorded allergy to ${[...new Set(l.overridden.map(o => o.allergen))].join(", ")}: ${l.input.allergyOverride}`),
+      .map(l => `${l.drug.genericName} prescribed despite a recorded allergy to ${[...new Set(l.overridden.map(o => o.allergen))].join(", ")}: ${l.input.allergyOverride}`)),
   };
 }
 

@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, max } from "drizzle-orm";
+import { and, asc, count, eq, inArray, isNull, max } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 
@@ -27,6 +27,12 @@ export type SpecimenType = LabTestRow["specimenType"];
 export type ResultType = AnalyteRow["resultType"];
 export type RangeSex = RangeRow["sex"];
 
+/**
+ * The most analytes a test has, so an order's report (at most 30 tests) fits
+ * the rows a printed document holds (`document-content.ts`).
+ */
+export const MAX_ANALYTES = 60;
+
 export type LabCatalogueErrorCode
   = | "not_found"
     | "analyte_not_found"
@@ -37,7 +43,8 @@ export type LabCatalogueErrorCode
     | "not_a_choice"
     | "abnormal_not_a_choice"
     | "critical_limits_invalid"
-    | "ranges_overlap";
+    | "ranges_overlap"
+    | "too_many_analytes";
 
 export class LabCatalogueError extends Error {
   constructor(readonly code: LabCatalogueErrorCode) {
@@ -52,6 +59,7 @@ export class LabCatalogueError extends Error {
       abnormal_not_a_choice: "Each abnormal answer must be one of the analyte's answers",
       critical_limits_invalid: "The critical low must be below the critical high",
       ranges_overlap: "Two of these ranges cover the same patients; each sex and age may have one range",
+      too_many_analytes: `A test has at most ${MAX_ANALYTES} analytes`,
     }[code]);
     this.name = "LabCatalogueError";
   }
@@ -177,7 +185,9 @@ export async function addAnalyte(tx: AppDb, facilityId: string, labTestId: strin
   const [test] = await tx.select({ id: labTests.id }).from(labTests).where(eq(labTests.id, labTestId)).for("update").limit(1);
   if (!test)
     throw new LabCatalogueError("not_found");
-  const [{ last }] = await tx.select({ last: max(labAnalytes.position) }).from(labAnalytes).where(eq(labAnalytes.labTestId, labTestId));
+  const [{ last, n }] = await tx.select({ last: max(labAnalytes.position), n: count() }).from(labAnalytes).where(eq(labAnalytes.labTestId, labTestId));
+  if (n >= MAX_ANALYTES)
+    throw new LabCatalogueError("too_many_analytes");
   const analyte = await insertAnalyte(tx, facilityId, labTestId, last === null ? 0 : last + 1, input);
 
   await recordAudit(tx, {
@@ -331,6 +341,7 @@ export async function listLabTests(tx: AppDb, filter: { id?: string } = {}): Pro
         .where(and(inArray(labReferenceRanges.analyteId, analytes.map(a => a.id)), isNull(labReferenceRanges.retiredAt)))
         .orderBy(asc(labReferenceRanges.sex), asc(labReferenceRanges.ageFromDays));
 
+  const rangesOf = Map.groupBy(ranges, r => r.analyteId);
   return tests.map(({ test, code, name }) => ({
     id: test.id,
     billableItemId: test.billableItemId,
@@ -349,7 +360,7 @@ export async function listLabTests(tx: AppDb, filter: { id?: string } = {}): Pro
       criticalLow: a.criticalLow,
       criticalHigh: a.criticalHigh,
       isActive: a.isActive,
-      ranges: ranges.filter(r => r.analyteId === a.id).map(r => ({ sex: r.sex, ageFromDays: r.ageFromDays, ageToDays: r.ageToDays, low: r.low, high: r.high })),
+      ranges: (rangesOf.get(a.id) ?? []).map(r => ({ sex: r.sex, ageFromDays: r.ageFromDays, ageToDays: r.ageToDays, low: r.low, high: r.high })),
     })),
   }));
 }

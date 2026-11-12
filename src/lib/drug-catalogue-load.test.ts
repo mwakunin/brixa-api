@@ -21,6 +21,7 @@ describe("the drug catalogue file", () => {
     expect(parseCsv("﻿a,\"b, c\",\"say \"\"hi\"\"\"\r\nd,e,f\n\n")).toEqual([["a", "b, c", "say \"hi\""], ["d", "e", "f"]]);
     expect(() => parseCsv("a,\"b")).toThrow(DrugFileError);
     expect(() => parseCsv("PCM,\"500\"0 mg,Tablet")).toThrow(/after a closing quote/);
+    expect(() => parseCsv("PCM,Para\"cetamol,Tablet")).toThrow(/quote inside an unquoted field/);
   });
 
   it("is refused whole for a wrong header, a bad row, or a code twice", () => {

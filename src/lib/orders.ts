@@ -140,6 +140,29 @@ async function resolveItems(tx: AppDb, items: ItemInput[]): Promise<Resolved[]> 
   return resolved;
 }
 
+/** Writes an order's items, each charged as it is written. */
+async function writeItems(tx: AppDb, facilityId: string, order: { encounterId: string; orderId: string; at: Date }, resolved: Resolved[], actor: PatientActor): Promise<void> {
+  for (const item of resolved) {
+    const [row] = await tx.insert(orderItems).values({
+      facilityId,
+      orderId: order.orderId,
+      labTestId: "labTestId" in item.input ? item.input.labTestId : null,
+      specimenType: item.specimenType,
+      billableItemId: "billableItemId" in item.input ? item.input.billableItemId : null,
+      status: "ordered",
+    }).returning({ id: orderItems.id });
+    try {
+      await captureOrderItemCharge(tx, facilityId, { encounterId: order.encounterId, orderItemId: row.id, billableItemId: item.billableItemId, code: item.code, at: order.at }, actor);
+    }
+    catch (err) {
+      // The request's transaction rolls back with the refusal: nothing of the order is kept.
+      if (err instanceof ChargeError && err.code === "not_covered")
+        throw new OrderError("not_covered");
+      throw err;
+    }
+  }
+}
+
 type Requester = Pick<typeof orders.$inferInsert, "orderedBy" | "requesterName" | "requesterFacility" | "requesterLicence" | "selfRequested">;
 
 async function place(
@@ -166,25 +189,7 @@ async function place(
     enteredBy: actor.membershipId,
     orderedAt: at,
   }).returning();
-  for (const item of resolved) {
-    const [row] = await tx.insert(orderItems).values({
-      facilityId,
-      orderId: order.id,
-      labTestId: "labTestId" in item.input ? item.input.labTestId : null,
-      specimenType: item.specimenType,
-      billableItemId: "billableItemId" in item.input ? item.input.billableItemId : null,
-      status: "ordered",
-    }).returning({ id: orderItems.id });
-    try {
-      await captureOrderItemCharge(tx, facilityId, { encounterId, orderItemId: row.id, billableItemId: item.billableItemId, code: item.code, at }, actor);
-    }
-    catch (err) {
-      // The request's transaction rolls back with the refusal: nothing of the order is kept.
-      if (err instanceof ChargeError && err.code === "not_covered")
-        throw new OrderError("not_covered");
-      throw err;
-    }
-  }
+  await writeItems(tx, facilityId, { encounterId, orderId: order.id, at }, resolved, actor);
 
   const codes = resolved.map(r => r.code);
   await recordAudit(tx, {
@@ -421,6 +426,7 @@ export async function ordersOf(tx: AppDb, encounterId: string, filter: { orderId
     .where(inArray(orderItems.orderId, rows.map(r => r.order.id)))
     .orderBy(sql`coalesce(${billableItems.code}, ${labItem.code}, ${orderItems.drugCode})`, asc(orderItems.id));
 
+  const itemsOf = Map.groupBy(items, i => i.item.orderId);
   return rows.map(({ order: o, enteredByName, documentNumber, documentVoidedAt }) => {
     const enteredBy = { membershipId: o.enteredBy, name: enteredByName };
     return {
@@ -434,7 +440,7 @@ export async function ordersOf(tx: AppDb, encounterId: string, filter: { orderId
       selfRequested: o.selfRequested,
       enteredBy,
       prescription: o.documentId ? { documentId: o.documentId, number: documentNumber!, voided: documentVoidedAt !== null } : null,
-      items: items.filter(i => i.item.orderId === o.id).map(({ item: i, billableItemId, code, name, amountCents }) => ({
+      items: (itemsOf.get(o.id) ?? []).map(({ item: i, billableItemId, code, name, amountCents }) => ({
         id: i.id,
         kind: i.labTestId ? "lab" as const : i.drugCode ? "medication" as const : "service" as const,
         labTestId: i.labTestId,

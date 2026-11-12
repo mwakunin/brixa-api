@@ -86,6 +86,9 @@ export function parseCsv(text: string): string[][] {
     if (c === "\"" && field === "") {
       quoted = true;
     }
+    else if (c === "\"") {
+      throw new DrugFileError(`record ${records.length + 1} has a quote inside an unquoted field`);
+    }
     else if (c === ",") {
       record.push(field);
       field = "";

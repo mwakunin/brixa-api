@@ -144,7 +144,7 @@ export async function enterResult(
   if (specimen.status !== "received")
     throw new LabResultError("not_received");
   const [onIt] = await tx
-    .select({ labTestId: orderItems.labTestId })
+    .select({ labTestId: orderItems.labTestId, panel: specimenTests.analyteIds })
     .from(specimenTests)
     .innerJoin(orderItems, eq(orderItems.id, specimenTests.orderItemId))
     .where(and(eq(specimenTests.specimenId, specimenId), eq(specimenTests.orderItemId, input.orderItemId)))
@@ -152,14 +152,15 @@ export async function enterResult(
   if (!onIt)
     throw new LabResultError("not_on_specimen");
 
-  // The test as it stood when the specimen was taken: an analyte retired since
-  // may still be given, and one added since may be but need not be.
+  // The test as it stood when the specimen was taken (its panel, recorded
+  // then): every number and choice in it is needed, retired since or not; an
+  // analyte added since may be given, but need not be.
   const analytes = (await tx.select().from(labAnalytes).where(eq(labAnalytes.labTestId, onIt.labTestId!)))
-    .filter(a => a.isActive || a.createdAt <= specimen.collectedAt);
+    .filter(a => onIt.panel.includes(a.id) || a.isActive);
   const given = new Map(input.values.map(v => [v.analyteId, v.value]));
   if (given.size !== input.values.length || [...given.keys()].some(id => !analytes.some(a => a.id === id)))
     throw new LabResultError("analyte_not_on_test");
-  const missing = analytes.find(a => a.resultType !== "text" && a.isActive && a.createdAt <= specimen.collectedAt && !given.has(a.id));
+  const missing = analytes.find(a => a.resultType !== "text" && onIt.panel.includes(a.id) && !given.has(a.id));
   if (missing)
     throw new LabResultError("value_missing", missing.code);
 

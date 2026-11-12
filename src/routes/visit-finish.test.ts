@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { Hospital, StaffMember } from "@/test/hospital";
 
 import app from "@/app";
-import db from "@/db";
+import db, { pool } from "@/db";
 import { auditLog, encounters } from "@/db/schema";
 import { runAsFacility } from "@/db/tenant-transaction";
 import { closeFinishedVisits } from "@/jobs/visits";
@@ -112,6 +112,39 @@ describe("a visit with nothing pending", () => {
     const ids = await runAsFacility(h.facility.id, async tx => finishedVisits(tx, 1));
 
     expect(ids).toEqual([finished.encounterId]);
+  });
+
+  it("pages past older visits that owe, however finely their times differ", async () => {
+    const owing = [await visit(), await visit()];
+    for (const v of owing)
+      await call("POST", `/encounters/${v.encounterId}/charges`, h.facility.id, h.clerk, { billableItemId: h.items.consultation, quantity: "1", reason: "Before P3" });
+    const finished = await visit();
+    // Both owing visits start at the same instant, to the microsecond; the finished one after.
+    await pool.query("UPDATE encounters SET started_at = '2026-01-01 08:00:00.123456+03' WHERE id = ANY($1)", [owing.map(v => v.encounterId)]);
+    await pool.query("UPDATE encounters SET started_at = '2026-01-01 08:00:00.123789+03' WHERE id = $1", [finished.encounterId]);
+
+    const ids = await runAsFacility(h.facility.id, async tx => finishedVisits(tx, 1));
+
+    expect(ids).toEqual([finished.encounterId]);
+  }, 30_000);
+
+  it("waits for a paid-for test until its result is out", async () => {
+    const { patientId, encounterId } = await visit();
+    const order = await (await call("POST", `/encounters/${encounterId}/orders`, h.facility.id, doctor, { items: [{ labTestId: mrdt.id }] })).json();
+    const bill = await (await call("POST", `/encounters/${encounterId}/bill-now`, h.facility.id, h.cashier)).json();
+    await call("POST", "/payments", h.facility.id, h.cashier, { patientId, method: "bank", reference: "BANK 0002", amountCents: bill.totalCents, invoiceId: bill.id });
+
+    expect(await closeFinishedVisits()).toMatchObject({ closed: 0 });
+    const specimen = await (await call("POST", `/orders/${order.id}/specimens`, h.facility.id, labTech, { specimenType: "blood" })).json();
+    expect(await closeFinishedVisits()).toMatchObject({ closed: 0 });
+    const result = await (await call("POST", `/specimens/${specimen.id}/results`, h.facility.id, labTech, {
+      orderItemId: order.items[0].id,
+      values: [{ analyteId: mrdt.analyteId, value: "Negative" }],
+    })).json();
+    expect(await closeFinishedVisits()).toMatchObject({ closed: 0 });
+    await call("POST", `/lab-results/${result.id}/verify`, h.facility.id, supervisor, {});
+
+    expect(await closeFinishedVisits()).toMatchObject({ closed: 1 });
   });
 
   it("is checked by Cloud Scheduler alone", async () => {

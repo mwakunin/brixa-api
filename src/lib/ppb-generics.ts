@@ -20,8 +20,12 @@ import type { DrugRow } from "./drug-catalogue-load";
  * Pharmacy and Poisons Act's schedules, by hand.
  */
 
+/** The list's canonical URL in DHA's ePrescription guide: any other code system is refused. */
+export const GENERIC_PRODUCTS_URL = "https://fhir.dha.go.ke/terminology/CodeSystem/generic-products-cs";
+
 const CodeSystemSchema = z.object({
   resourceType: z.literal("CodeSystem"),
+  url: z.literal(GENERIC_PRODUCTS_URL),
   concept: z.array(z.object({ code: z.string(), display: z.string() })).min(1),
 });
 
@@ -142,6 +146,8 @@ function read(code: string, display: string): { row: DrugRow; issues: string[] }
     issues.push("A vitamin dosed in mg: usually IU or mcg; check the strength");
   if (route === "oral" && /^(?:Inhaler|Aerosol)/i.test(form))
     issues.push("An inhaler given by mouth: check the route");
+  if (doseUnit === "vial" && /\bper\b/i.test(parsed.strength))
+    issues.push("A powder counted in vials with a strength per mL: check the dose unit");
 
   return { row: { code, ...parsed, form, doseUnit, route, controlledSchedule: null }, issues };
 }
@@ -184,8 +190,17 @@ export function drugsCsv(rows: DrugRow[]): string {
   return `${["code,generic_name,strength,form,dose_unit,route,controlled_schedule", ...lines].join("\n")}\n`;
 }
 
+/**
+ * A cell a spreadsheet would run as a formula (= + - @, or a tab or return
+ * first), made plain text with a leading apostrophe. Only the review list, which
+ * a person opens, needs it; the load file is read by the loader alone.
+ */
+function inert(value: string): string {
+  return /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
+}
+
 /** The review list, one issue a line. */
 export function reviewCsv(review: ReviewItem[]): string {
-  const lines = review.map(r => [r.code, r.display, r.included ? "yes" : "no", r.issue].map(field).join(","));
+  const lines = review.map(r => [r.code, r.display, r.included ? "yes" : "no", r.issue].map(v => field(inert(v))).join(","));
   return `${["code,name,in_catalogue,issue", ...lines].join("\n")}\n`;
 }

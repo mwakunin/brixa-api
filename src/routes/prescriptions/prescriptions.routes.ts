@@ -57,6 +57,7 @@ const MedicineBodySchema = z.strictObject({
   allergyOverride: oneLine(200).optional(),
 })
   .refine(m => m.frequency !== "stat" || m.durationDays === undefined, { message: "A single dose has no duration", path: ["durationDays"] })
+  .refine(m => m.frequency !== "stat" || m.quantity === undefined, { message: "A single dose supplies the dose itself; give no quantity", path: ["quantity"] })
   .refine(m => ["stat", "prn"].includes(m.frequency) || m.durationDays !== undefined, { message: "For how many days?", path: ["durationDays"] })
   .refine(m => m.frequency !== "prn" || m.quantity !== undefined, { message: "Give the quantity for a drug taken when needed", path: ["quantity"] });
 
@@ -116,6 +117,10 @@ export const prescribe = createRoute({
     [HttpStatusCodes.CONFLICT]: jsonContent(AllergyRefusalSchema, "Not possible in the encounter's or patient's state"),
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(PrescribeBodySchema), "Invalid prescription"),
     ...tenantResponses,
+    [HttpStatusCodes.FORBIDDEN]: jsonContent(
+      z.union([RefusalSchema, z.object({ message: z.string() })]),
+      "Role not allowed, a lapsed licence (`licence_expired`), or a controlled drug from a nurse (`controlled_prescriber`)",
+    ),
   },
 });
 

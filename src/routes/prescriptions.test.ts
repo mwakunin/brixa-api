@@ -107,6 +107,8 @@ describe("a prescription", () => {
 
     expect(await status({ ...paracetamol, durationDays: undefined })).toBe(422);
     expect(await status({ ...paracetamol, frequency: "stat" })).toBe(422);
+    // A single dose supplies the dose itself.
+    expect(await status({ drugCode: "PCM-500-TAB", doseAmount: "2", frequency: "stat", quantity: "1" })).toBe(422);
     expect(await status({ ...paracetamol, frequency: "prn" })).toBe(422);
     expect(await status({ ...paracetamol, doseAmount: "0" })).toBe(422);
     expect(await status({ ...paracetamol, dose: "1" })).toBe(422);
@@ -155,6 +157,22 @@ describe("a prescription", () => {
     const allergies = doc.content.fields.find(f => f.label === "Allergies")!.value;
     expect(allergies.length).toBeLessThanOrEqual(500);
     expect(allergies).toMatch(/and \d+ more: check the patient's allergy record$/);
+  });
+
+  it("prints every allergy override, however many, within the notes a document holds", async () => {
+    const { encounterId, patientId } = await visit();
+    const drugs = ["PCM-500-TAB", "PCM-120-SUSP", "AMX-500-CAP", "AMX-125-SUSP", "AMC-625-TAB", "AL-20/120-TAB", "CRO-1G-INJ", "IBU-400-TAB", "ORS-SACH", "MOR-10-INJ"];
+    for (const name of ["Paracetamol", "Amoxicillin", "Artemether", "Ceftriaxone", "Ibuprofen", "Oral rehydration salts, low osmolarity", "Morphine", "Lumefantrine", "Clavulanic acid"])
+      await call("POST", `/patients/${patientId}/allergies`, h.facility.id, doctor, { category: "drug", allergen: name });
+
+    const res = await prescribe(encounterId, {
+      items: drugs.map(drugCode => ({ drugCode, doseAmount: "1", frequency: "stat", allergyOverride: `Benefits outweigh the risk for ${drugCode}, discussed with the patient` })),
+    });
+
+    expect(res.status).toBe(201);
+    const doc = await printed((await res.json()).prescription.documentId);
+    expect(doc.content.notes.length).toBeLessThanOrEqual(10);
+    expect(doc.content.notes.join(" ")).toContain("Benefits outweigh the risk for MOR-10-INJ");
   });
 
   it("for a child under 12 needs a weight taken today, and prints it", async () => {
@@ -219,10 +237,16 @@ describe("the drug catalogue", () => {
     expect(await search("oral rehydration")).toEqual(["ORS-SACH"]);
     // An underscore typed is an underscore, not any one character.
     expect(await search("PCM_")).toEqual([]);
+    // A drug named for what was typed comes before a combination that only contains it.
+    expect(await search("clav")).toEqual(["AMC-625-TAB"]);
+    expect(await search("lumefantrine")).toEqual(["AL-20/120-TAB"]);
+    await pool.query("INSERT INTO drug_catalogue (code, generic_name, strength, form, dose_unit, route, loaded_at) VALUES ('AAA-1', 'Aaa/Paracetamol', '1 mg', 'Tablet', 'tablet', 'oral', now())");
+    expect(await search("paracetamol")).toEqual(["PCM-120-SUSP", "PCM-500-TAB", "AAA-1"]);
     expect((await call("GET", "/drugs?q=amox", h.facility.id, h.cashier)).status).toBe(403);
 
     const reloaded = (await readFile(SAMPLE, "utf8")).split("\n").filter(l => !l.startsWith("IBU-")).join("\n");
-    expect(await loadDrugCatalogue(reloaded)).toEqual({ loaded: 9, retired: 1 });
+    // Ibuprofen, and the made-up combination above, are not in it.
+    expect(await loadDrugCatalogue(reloaded)).toEqual({ loaded: 9, retired: 2 });
     expect(await search("ibuprofen")).toEqual([]);
   });
 

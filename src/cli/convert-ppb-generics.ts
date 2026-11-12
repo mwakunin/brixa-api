@@ -1,5 +1,6 @@
 /* eslint-disable no-console */
 import { readFile, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 import { errorLine } from "@/lib/error-summary";
@@ -21,6 +22,11 @@ const [input, output, review] = positionals;
 
 if (!input || !output || !review) {
   console.error("Usage: convert-ppb-generics <generic-products-cs.json> <drugs.csv> <review.csv>");
+  process.exit(2);
+}
+// Three different files, so neither output overwrites the list or the other.
+if (new Set([input, output, review].map(p => resolve(p))).size !== 3) {
+  console.error("The list, the drugs file and the review file must be three different paths.");
   process.exit(2);
 }
 

@@ -6,7 +6,11 @@ import { convertGenericProducts, drugsCsv, reviewCsv } from "./ppb-generics";
 /** P3 slice 4b: PPB's Generic Products list, converted into the drug catalogue's file. */
 
 function codeSystem(...names: string[]) {
-  return { resourceType: "CodeSystem", concept: names.map((display, i) => ({ code: `GE1${String(i).padStart(4, "0")}`, display })) };
+  return {
+    resourceType: "CodeSystem",
+    url: "https://fhir.dha.go.ke/terminology/CodeSystem/generic-products-cs",
+    concept: names.map((display, i) => ({ code: `GE1${String(i).padStart(4, "0")}`, display })),
+  };
 }
 
 describe("converting PPB's Generic Products", () => {
@@ -67,8 +71,19 @@ describe("converting PPB's Generic Products", () => {
     expect(parseDrugFile(csv)).toEqual(rows);
   });
 
-  it("refuses a file that is not a code system of products", () => {
+  it("refuses a file that is not PPB's Generic Products", () => {
     expect(() => convertGenericProducts({ resourceType: "ValueSet" })).toThrow();
-    expect(() => convertGenericProducts({ resourceType: "CodeSystem", concept: [] })).toThrow();
+    expect(() => convertGenericProducts({ ...codeSystem("Metformin 500 mg Oral Tablet"), concept: [] })).toThrow();
+    expect(() => convertGenericProducts({ ...codeSystem("Metformin 500 mg Oral Tablet"), url: "https://fhir.dha.go.ke/terminology/CodeSystem/formulation-cs" })).toThrow();
+  });
+
+  it("flags a powder counted in vials with a strength per mL", () => {
+    const { review } = convertGenericProducts(codeSystem("Ceftriaxone 250 mg per 1ml Intravenous Powder for Solution"));
+    expect(review.map(r => r.issue.split(":")[0])).toEqual(["A powder counted in vials with a strength per mL"]);
+  });
+
+  it("keeps a name that looks like a formula from running in a spreadsheet", () => {
+    const csv = reviewCsv([{ code: "GE19999", display: "=HYPERLINK(\"x\")", included: false, issue: "No route" }]);
+    expect(csv.split("\n")[1]).toBe("GE19999,\"'=HYPERLINK(\"\"x\"\")\",no,No route");
   });
 });

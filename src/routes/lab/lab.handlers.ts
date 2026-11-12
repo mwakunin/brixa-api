@@ -26,12 +26,20 @@ function actorOf(c: Context<TenantBindings>): OrderActor {
 }
 
 const NOT_FOUND = new Set(["order_not_found", "not_found", "specimen_not_found"]);
+/** Refusals about the values sent: a validation failure on `values`, not a conflict. */
+const ABOUT_THE_VALUES = new Set(["analyte_not_on_test", "value_missing", "value_invalid"]);
 
 function refusal(c: Context, err: unknown) {
   if (!(err instanceof lab.SpecimenError) && !(err instanceof results.LabResultError))
     return null;
   if (NOT_FOUND.has(err.code))
     return c.json({ message: HttpStatusPhrases.NOT_FOUND }, HttpStatusCodes.NOT_FOUND);
+  if (ABOUT_THE_VALUES.has(err.code)) {
+    return c.json({
+      success: false as const,
+      error: { name: "ValidationError", issues: [{ code: "custom" as const, path: ["values"], message: err.message }] },
+    }, HttpStatusCodes.UNPROCESSABLE_ENTITY);
+  }
   return c.json({ message: err.message, code: err.code }, HttpStatusCodes.CONFLICT);
 }
 
