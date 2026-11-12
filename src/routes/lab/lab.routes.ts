@@ -66,6 +66,8 @@ const CollectionDueSchema = z.object({
   encounterId: z.uuid(),
   urgency: z.enum(["routine", "urgent"]),
   orderedAt: z.string(),
+  /** When its visit ended: such tests stay listed for a week, after the open visits. Null while the visit is open. */
+  visitEndedAt: z.string().nullable(),
   patient: PatientSchema,
   specimenType: z.enum(SPECIMEN_TYPES),
   tests: z.array(TestSchema),

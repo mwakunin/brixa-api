@@ -7,6 +7,7 @@ import db, { pool } from "@/db";
 import { auditLog, charges } from "@/db/schema";
 import { runAsFacility } from "@/db/tenant-transaction";
 import { businessDate } from "@/lib/dates";
+import { closeStaleVisit } from "@/lib/encounters";
 import { viewWorklist } from "@/lib/specimens";
 import { addMembership, resetDb, signedInUser } from "@/test/helpers";
 import { call, hospital, TODAY } from "@/test/hospital";
@@ -168,6 +169,27 @@ describe("the lab's worklist", () => {
     expect((await call("GET", "/lab/worklist", h.facility.id, nurse)).status).toBe(403);
     const viewed = await db.select().from(auditLog).where(eq(auditLog.action, "lab.worklist_viewed"));
     expect(viewed).toEqual([expect.objectContaining({ actorId: labTech.id, summary: "Viewed the lab worklist (3 to collect, 0 to receive, 0 in the lab, 0 to verify)" })]);
+  });
+
+  it("keeps a test not collected for a week after its visit closes, after the patients still here", async () => {
+    const yesterday = await orderedVisit("opd", [tests.fbc], "urgent");
+    const lastWeek = await orderedVisit("opd", [tests.urine]);
+    const today = await orderedVisit("opd", [tests.mrdt]);
+    for (const visit of [yesterday, lastWeek])
+      await runAsFacility(h.facility.id, async tx => closeStaleVisit(tx, h.facility.id, visit.encounterId));
+    // Closed eight days ago: past the week.
+    await pool.query("UPDATE encounters SET started_at = started_at - interval '8 days', ended_at = ended_at - interval '8 days' WHERE id = $1", [lastWeek.encounterId]);
+
+    const list = await worklist();
+
+    // Today's patient is here; yesterday's comes back for the sample, urgent or not.
+    expect(list.toCollect.map((d: { orderId: string; visitEndedAt: string | null }) => [d.orderId, d.visitEndedAt])).toEqual([
+      [today.orderId, null],
+      [yesterday.orderId, expect.any(String)],
+    ]);
+    // Off the list or on it, a closed visit's test is still collected from its order.
+    expect((await collect(lastWeek.orderId, { specimenType: "urine" })).status).toBe(201);
+    expect((await collect(yesterday.orderId, { specimenType: "blood" })).status).toBe(201);
   });
 
   it("shows each order's tests of one type together, never part of a group", async () => {

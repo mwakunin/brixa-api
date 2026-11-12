@@ -148,6 +148,7 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
 - **Rejection** is for a reason from a fixed list (haemolysed, clotted, insufficient, wrong container, mislabelled, leaked, too old, other with a note). Recollecting takes a new specimen with a new number; the rejected one keeps its number.
 - **Paid**, for the lab's warning, means the test's charge is on finalised bills that owe nothing. The warning shows at outpatient visits only: never at an emergency, nor for an admission, which runs its own bill.
 - **The worklist** shows tests to collect, specimens to receive and specimens in the lab, urgent first, then oldest. It is the lab's alone, and each view is audited.
+- **A test not collected when its visit closes** (a fasting sample, or "pay now, come back tomorrow") stays on the worklist for 7 days after the visit, below the patients still at the hospital. It is not cancelled: its charge stands, and the lab collects it on the patient's return (decided 2026-11-12).
 
 **Decided 2026-11-11** (product owner, for 5b; recommendations accepted):
 - **A result** is one test's values on one specimen, entered together and verified together by another lab member. A correction is a new version; the one it corrects stays on record.

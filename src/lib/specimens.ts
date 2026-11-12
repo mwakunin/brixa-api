@@ -1,6 +1,6 @@
 import type { SQL } from "drizzle-orm";
 
-import { and, asc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 import type { MembershipRole } from "@/db/schema";
@@ -63,6 +63,12 @@ export const COLLECTING_STAFF = ["lab_tech", "lab_supervisor", "nurse", "ward_nu
 export const LAB_STAFF = ["lab_tech", "lab_supervisor"] as const;
 
 const WORKLIST_LIMIT = 200;
+/**
+ * How long a test not yet collected stays on the worklist after its visit
+ * ends: the patient may come back for the sample, fasting or once they have
+ * paid (decided 2026-11-12). After that it is still collected from its order.
+ */
+const AFTER_VISIT_DAYS = 7;
 
 export type SpecimenErrorCode
   = | "order_not_found"
@@ -347,6 +353,8 @@ export interface CollectionDue {
   encounterId: string;
   urgency: (typeof orders.$inferSelect)["urgency"];
   orderedAt: Date;
+  /** When its visit ended, for tests still waiting after it; null while the visit is open. */
+  visitEndedAt: Date | null;
   patient: WorklistPatient;
   specimenType: SpecimenType;
   tests: WorklistTest[];
@@ -479,22 +487,29 @@ export async function specimenShown(tx: AppDb, id: string): Promise<ShownSpecime
 }
 
 /**
- * The lab's worklist: tests waiting to be collected on open encounters, then
- * specimens waiting to be received, then those in the lab. Audited, since it
- * names patients and what they are tested for (rule 9).
+ * The lab's worklist: tests waiting to be collected, on open encounters and
+ * for a week after a visit ends, then specimens waiting to be received, then
+ * those in the lab. Audited, since it names patients and what they are
+ * tested for (rule 9).
  */
 export async function viewWorklist(tx: AppDb, facilityId: string, actor: PatientActor, today?: string, limit = WORKLIST_LIMIT): Promise<Worklist> {
   // The groups first (an order's tests of one specimen type), then every test
-  // in them, so a group is never shown in part.
+  // in them, so a group is never shown in part. Patients still here come
+  // first; then each part urgent first, then oldest.
+  const hereFirst = sql`CASE ${encounters.status} WHEN 'open' THEN 0 ELSE 1 END`;
   const urgentFirst = sql`CASE ${orders.urgency} WHEN 'urgent' THEN 0 ELSE 1 END`;
-  const waiting = and(eq(orderItems.status, "ordered"), isNotNull(orderItems.labTestId), eq(encounters.status, "open"));
+  const listed = or(
+    eq(encounters.status, "open"),
+    and(eq(encounters.status, "closed"), sql`${encounters.endedAt} > now() - make_interval(days => ${AFTER_VISIT_DAYS})`),
+  );
+  const waiting = and(eq(orderItems.status, "ordered"), isNotNull(orderItems.labTestId), listed);
   const chosen = await tx
-    .selectDistinct({ orderId: orders.id, specimenType: orderItems.specimenType, urgent: urgentFirst, orderedAt: orders.orderedAt })
+    .selectDistinct({ orderId: orders.id, specimenType: orderItems.specimenType, here: hereFirst, urgent: urgentFirst, orderedAt: orders.orderedAt })
     .from(orderItems)
     .innerJoin(orders, eq(orders.id, orderItems.orderId))
     .innerJoin(encounters, eq(encounters.id, orders.encounterId))
     .where(waiting)
-    .orderBy(asc(urgentFirst), asc(orders.orderedAt), asc(orders.id), asc(orderItems.specimenType))
+    .orderBy(asc(hereFirst), asc(urgentFirst), asc(orders.orderedAt), asc(orders.id), asc(orderItems.specimenType))
     .limit(limit);
   const due = chosen.length === 0
     ? []
@@ -505,17 +520,18 @@ export async function viewWorklist(tx: AppDb, facilityId: string, actor: Patient
           encounterId: orders.encounterId,
           urgency: orders.urgency,
           orderedAt: orders.orderedAt,
+          visitEndedAt: encounters.endedAt,
           specimenType: orderItems.specimenType,
           ...patientColumns,
         })
         .from(orderItems)
         .innerJoin(orders, eq(orders.id, orderItems.orderId))
-        .innerJoin(encounters, and(eq(encounters.id, orders.encounterId), eq(encounters.status, "open")))
+        .innerJoin(encounters, eq(encounters.id, orders.encounterId))
         .innerJoin(patients, eq(patients.id, encounters.patientId))
         .leftJoin(patientNumbers, and(eq(patientNumbers.patientId, patients.id), eq(patientNumbers.kind, "outpatient")))
         .where(and(waiting, sql`(${orders.id}, ${orderItems.specimenType}) IN (${sql.join(chosen.map(g => sql`(${g.orderId}::uuid, ${g.specimenType})`), sql`, `)})`))
         // An order's specimen types in a fixed order, so its groups do not shuffle between views.
-        .orderBy(asc(urgentFirst), asc(orders.orderedAt), asc(orders.id), asc(orderItems.specimenType));
+        .orderBy(asc(hereFirst), asc(urgentFirst), asc(orders.orderedAt), asc(orders.id), asc(orderItems.specimenType));
   const tests = await testsOf(tx, due.map(d => d.orderItemId));
 
   const groups = new Map<string, CollectionDue>();
@@ -526,6 +542,7 @@ export async function viewWorklist(tx: AppDb, facilityId: string, actor: Patient
       encounterId: d.encounterId,
       urgency: d.urgency,
       orderedAt: d.orderedAt,
+      visitEndedAt: d.visitEndedAt,
       patient: patientOf(d, today),
       // A lab item always has one (`order_items_specimen_type_of_a_test`).
       specimenType: d.specimenType!,
