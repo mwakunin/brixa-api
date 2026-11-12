@@ -21,7 +21,10 @@
     "superadmin:create": "tsx src/cli/create-superadmin.ts",
     "outbox:drain": "tsx src/cli/drain-outbox.ts",
     "icd11:load": "tsx src/cli/load-icd11.ts",
-    "icd11:load:deploy": "node ./dist/src/cli/load-icd11.js"
+    "icd11:load:deploy": "node ./dist/src/cli/load-icd11.js",
+    "drugs:load": "tsx src/cli/load-drug-catalogue.ts",
+    "drugs:convert": "tsx src/cli/convert-ppb-generics.ts",
+    "drugs:load:deploy": "node ./dist/src/cli/load-drug-catalogue.js"
   },
   "dependencies": {
     "@google-cloud/storage": "^8.4.0",

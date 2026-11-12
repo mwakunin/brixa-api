@@ -32,6 +32,22 @@ export const FISCAL_SERIES = [
   ["refund", "RFD-"],
 ] as const satisfies readonly (readonly [SeriesKind, string])[];
 
+/**
+ * The clinical document series every facility gets at onboarding, yearly and
+ * six digits wide like the fiscal ones (`RX-2026-000123`). Migrations 0055
+ * and 0059 backfill the prescription and lab report series.
+ */
+export const CLINICAL_SERIES = [
+  ["prescription", "RX-"],
+  ["lab_report", "LR-"],
+] as const satisfies readonly (readonly [SeriesKind, string])[];
+
+/**
+ * Lab specimens' accession numbers, restarting each Kenyan day
+ * (`L-20261111-017`), registered at onboarding. Migration 0057 backfills it.
+ */
+export const ACCESSION_SERIES = { kind: "lab_accession", prefix: "L-", padding: 3, resetPeriod: "daily" } as const;
+
 /** A series kind this facility has not registered: a setup error, not a user one. */
 export class SeriesNotRegisteredError extends Error {
   constructor(kind: SeriesKind) {

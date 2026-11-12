@@ -6,7 +6,7 @@ import { createErrorSchema } from "stoker/openapi/schemas";
 import { CLINICAL_ROLES } from "@/lib/professions";
 import { VITAL_SIGN_CODES, VITAL_SIGNS } from "@/lib/vital-signs";
 import { requireClinicalRole, requireMembershipRole } from "@/middlewares/auth";
-import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
+import { clinicalResponses, facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
 /**
  * Vital signs on an encounter. Taking them is a clinical act, under a
@@ -81,7 +81,7 @@ export const recordVitals = createRoute({
     [HttpStatusCodes.CREATED]: jsonContent(z.object({ observations: z.array(ObservationSchema) }), "Recorded"),
     [HttpStatusCodes.CONFLICT]: jsonContent(RefusalSchema, "The encounter is not open"),
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(RecordBodySchema), "A reading that cannot be real, or a time outside the encounter"),
-    ...tenantResponses,
+    ...clinicalResponses,
   },
 });
 
@@ -112,7 +112,7 @@ export const markEnteredInError = createRoute({
     [HttpStatusCodes.OK]: jsonContent(z.object({ id: z.uuid(), enteredInError: z.object({ at: z.string(), reason: z.string() }) }), "Marked"),
     [HttpStatusCodes.CONFLICT]: jsonContent(RefusalSchema, "Already marked"),
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(ErrorBodySchema), "No reason, or not an id"),
-    ...tenantResponses,
+    ...clinicalResponses,
   },
 });
 

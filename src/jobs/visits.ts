@@ -1,4 +1,6 @@
-import { and, eq, isNull, lt, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, lt, sql } from "drizzle-orm";
+
+import type { AppDb } from "@/db";
 
 import db from "@/db";
 import { encounters, facilities, jobFailures } from "@/db/schema";
@@ -7,6 +9,7 @@ import { businessDate, startOfBusinessDay } from "@/lib/dates";
 import { closeStaleVisit } from "@/lib/encounters";
 import { errorLine } from "@/lib/error-summary";
 import { logger } from "@/lib/logger";
+import { closeFinishedVisit, finishedVisits } from "@/lib/visit-finish";
 
 /**
  * The nightly close of outpatient visits (CLAUDE.md §7): every OPD visit
@@ -35,36 +38,73 @@ export interface VisitCloseTally {
 }
 
 export async function closeStaleVisits(now = new Date()): Promise<VisitCloseTally> {
+  const dayStart = startOfBusinessDay(businessDate(now));
+  return perVisit(
+    "visit_close",
+    tx => tx
+      .select({ id: encounters.id })
+      .from(encounters)
+      .where(and(eq(encounters.kind, "opd"), eq(encounters.status, "open"), lt(encounters.startedAt, dayStart)))
+      .then(rows => rows.map(r => r.id)),
+    closeStaleVisit,
+  );
+}
+
+/** How many finished visits one 15-minute check closes; the next check takes the rest. */
+const FINISH_BATCH = 500;
+
+/**
+ * The check every 15 minutes (`POST /internal/jobs/finish-visits`): every
+ * open outpatient visit with nothing pending closes itself
+ * (`lib/visit-finish.ts`), each in its own transaction and re-checked once
+ * locked, with failures recorded as `visit_finish` exactly as the nightly
+ * close records its own. At most `limit` a run.
+ */
+export async function closeFinishedVisits(limit = FINISH_BATCH): Promise<VisitCloseTally> {
+  return perVisit("visit_finish", tx => finishedVisits(tx, limit), closeFinishedVisit, limit);
+}
+
+/**
+ * Facility by facility, lists the visits to close and closes each in its own
+ * tenant transaction. A visit that fails, or a facility whose visits cannot
+ * be listed, is recorded in `job_failures` (the visit as its subject) and
+ * logged; the run carries on. A facility's run with no failure resolves the
+ * failures recorded before it began, but not one met since. A list cut
+ * short at `limit` vouches only for the visits on it: their failures are
+ * resolved, the rest wait for a run that lists them all.
+ */
+async function perVisit(
+  job: "visit_close" | "visit_finish",
+  list: (tx: AppDb) => Promise<string[]>,
+  close: (tx: AppDb, facilityId: string, id: string) => Promise<boolean>,
+  limit = Infinity,
+): Promise<VisitCloseTally> {
   const tally: VisitCloseTally = { facilities: 0, closed: 0, failed: 0 };
   // From the clock that stamps job_failures.failed_at, so the two compare like for like.
   const [{ startedAt }] = (await db.execute<{ startedAt: Date | string }>(sql`SELECT now() AS "startedAt"`)).rows;
   const runStartedAt = new Date(startedAt);
-  const dayStart = startOfBusinessDay(businessDate(now));
   const all = await db.select({ id: facilities.id }).from(facilities);
 
   for (const facility of all) {
     tally.facilities += 1;
     const failed = async (err: unknown, subjectId?: string) => {
       const error = errorLine(err);
-      logger.error({ facilityId: facility.id, job: "visit_close", subjectId, error }, "job failed for a facility");
+      logger.error({ facilityId: facility.id, job, subjectId, error }, "job failed for a facility");
       // Met again, an open failure takes this run's time, never an earlier
       // one, so an overlapping clean run that began before now leaves it
       // open. The target is `job_failures_open_once`, expression and
       // predicate alike.
       await db.execute(sql`
         INSERT INTO ${jobFailures} (facility_id, job, subject_id, error)
-        VALUES (${facility.id}, 'visit_close', ${subjectId ?? null}, ${error})
+        VALUES (${facility.id}, ${job}, ${subjectId ?? null}, ${error})
         ON CONFLICT (facility_id, job, coalesce(subject_id, '00000000-0000-0000-0000-000000000000'::uuid), error)
           WHERE resolved_at IS NULL
         DO UPDATE SET failed_at = greatest(${jobFailures}.failed_at, excluded.failed_at)`);
     };
 
-    let stale: { id: string }[];
+    let ids: string[];
     try {
-      stale = await runAsFacility(facility.id, tx => tx
-        .select({ id: encounters.id })
-        .from(encounters)
-        .where(and(eq(encounters.kind, "opd"), eq(encounters.status, "open"), lt(encounters.startedAt, dayStart))));
+      ids = await runAsFacility(facility.id, list);
     }
     catch (err) {
       tally.failed += 1;
@@ -73,9 +113,9 @@ export async function closeStaleVisits(now = new Date()): Promise<VisitCloseTall
     }
 
     let visitFailures = 0;
-    for (const { id } of stale) {
+    for (const id of ids) {
       try {
-        if (await runAsFacility(facility.id, tx => closeStaleVisit(tx, facility.id, id)))
+        if (await runAsFacility(facility.id, tx => close(tx, facility.id, id)))
           tally.closed += 1;
       }
       catch (err) {
@@ -88,10 +128,11 @@ export async function closeStaleVisits(now = new Date()): Promise<VisitCloseTall
       tally.failed += 1;
       continue;
     }
+    const onlyListed = ids.length < limit ? undefined : inArray(jobFailures.subjectId, ids);
     try {
       await runAsFacility(facility.id, tx => tx.update(jobFailures)
         .set({ resolvedAt: new Date() })
-        .where(and(eq(jobFailures.job, "visit_close"), isNull(jobFailures.resolvedAt), lt(jobFailures.failedAt, runStartedAt))));
+        .where(and(eq(jobFailures.job, job), isNull(jobFailures.resolvedAt), lt(jobFailures.failedAt, runStartedAt), onlyListed)));
     }
     catch (err) {
       tally.failed += 1;

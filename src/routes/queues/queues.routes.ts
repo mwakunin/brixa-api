@@ -4,7 +4,7 @@ import { jsonContent, jsonContentRequired } from "stoker/openapi/helpers";
 import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { requireClinicalRole, requireMembershipRole } from "@/middlewares/auth";
-import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
+import { clinicalResponses, facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
 /**
  * Service points and their queues: triage and the clinics. The facility admin
@@ -193,7 +193,7 @@ export const serve = createRoute({
     [HttpStatusCodes.OK]: jsonContent(QueueEntrySchema, "Being seen"),
     ...refusals,
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(IdParamsSchema), "Invalid request"),
-    ...tenantResponses,
+    ...clinicalResponses,
   },
 });
 
@@ -209,7 +209,7 @@ export const finish = createRoute({
     [HttpStatusCodes.OK]: jsonContent(z.object({ finished: QueueEntrySchema, next: QueueEntrySchema.nullable() }), "Done"),
     ...refusals,
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(FinishBodySchema), "Invalid request"),
-    ...tenantResponses,
+    ...clinicalResponses,
   },
 });
 

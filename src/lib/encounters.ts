@@ -14,6 +14,7 @@ import { hasStandingDiagnoses } from "./diagnoses";
 import { hasStandingNotes } from "./notes";
 import { issueNumber } from "./number-series";
 import { hasStandingObservations } from "./observations";
+import { hasStandingOrders } from "./orders";
 import { attendingOfEach, defaultTriagePoint, endLiveEntry, joinLocked, liveEntryOf, liveEntryOfEach } from "./queues";
 import { bedOccupied, bedWithWard } from "./wards";
 
@@ -62,7 +63,7 @@ export class EncounterError extends Error {
       same_bed: "The patient is already in that bed",
       parent_mismatch: "That visit belongs to another patient",
       has_charges: "This encounter has charges; cancel them first",
-      has_clinical_records: "This encounter has vital signs, diagnoses or notes on record; mark them entered in error (and discard drafts) first if it was opened by mistake",
+      has_clinical_records: "This encounter has vital signs, diagnoses, notes or orders on record; mark them entered in error, discard drafts and cancel orders first if it was opened by mistake",
       still_queued: "The patient is still in a queue; finish with them or take them out of it first",
     }[code]);
     this.name = "EncounterError";
@@ -205,14 +206,18 @@ export async function closeEncounter(tx: AppDb, facilityId: string, id: string, 
  * admission leaves its bed at once, and a cancelled visit its queue. One with
  * charges still standing cannot be cancelled: the charges are cancelled
  * first, each for its own reason. Nor can one with clinical records still
- * standing (vital signs, diagnoses, notes and drafts): a visit with care
- * recorded was not simply a mistake, and the records are marked entered in
- * error (drafts discarded) first if it was.
+ * standing (vital signs, diagnoses, notes and drafts, orders not cancelled):
+ * a visit with care recorded was not simply a mistake, and the records are
+ * marked entered in error (drafts discarded, orders cancelled) first if it
+ * was. Orders are checked before charges, since cancelling an order item
+ * cancels the charge it raised.
  */
 export async function cancelEncounter(tx: AppDb, facilityId: string, id: string, reason: string, actor: PatientActor, at = new Date()): Promise<EncounterRow> {
   const encounter = await lockEncounter(tx, id);
   // Its queue first: cancelling the entry cancels the fee it raised, if unbilled.
   await endLiveEntry(tx, facilityId, id, actor, at);
+  if (await hasStandingOrders(tx, id))
+    throw new EncounterError("has_clinical_records");
   if (await liveChargeCount(tx, id) > 0)
     throw new EncounterError("has_charges");
   if (await hasStandingObservations(tx, id) || await hasStandingDiagnoses(tx, id) || await hasStandingNotes(tx, id))

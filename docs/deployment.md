@@ -37,6 +37,8 @@ Every external call is an outbox row, drained by `POST /internal/outbox/drain` (
 
 6. **Cloud Scheduler job**, the nightly close of outpatient visits, at 03:00 Africa/Nairobi: `POST {BETTER_AUTH_URL}/internal/jobs/close-visits`, same token and audience. It closes every outpatient visit opened before that day and still open, so yesterday's patients leave the queues; emergency attendances and admissions are left alone. A facility's failure stays in `job_failures` until a later run for it succeeds.
 
+   **Cloud Scheduler job**, the visit that closes itself, every 15 minutes (`*/15 * * * *`, Africa/Nairobi): `POST {BETTER_AUTH_URL}/internal/jobs/finish-visits`, same token and audience. It closes every open outpatient visit with nothing pending (no queue, every test resulted, every service done, nothing owed, and the patient seen or tested). It needs no retries: the next run comes in a quarter of an hour.
+
    The three nightly jobs (steps 4 to 6) need **retries**: Cloud Scheduler's default is none, so a run that fails as a whole (the database unreachable before any facility is checked) would wait for the next night. Set e.g. `--max-retry-attempts=3 --min-backoff=5m --max-backoff=30m`. All three are idempotent, so a retry repeats nothing.
 7. **IAM for the Cloud Run runtime service account:**
    - `roles/cloudtasks.enqueuer` on the queue
@@ -45,7 +47,7 @@ Every external call is an outbox row, drained by `POST /internal/outbox/drain` (
    - `jsonPayload.msg = "money identities drifted"`: the daily check found money that does not add up. The line names the facility and the ids; `job_failures` holds each finding until it is fixed.
    - `jsonPayload.msg = "outbox job failed permanently"`: a job will not be retried. The line carries `outboxId`, `facilityId` and `operation`; the row's `last_error` says why.
    - `jsonPayload.msg = "outbox nudge failed; the scheduled sweep will deliver"`: Cloud Tasks could not be reached. Worth a look if it persists.
-   - `jsonPayload.msg = "job failed for a facility"`: a nightly job (`job`: `bed_day_accrual`, `reconciliation` or `visit_close`) failed for one facility (`facilityId`). Nights the bed-day run could not price are listed in that facility's `job_failures` instead.
+   - `jsonPayload.msg = "job failed for a facility"`: a scheduled job (`job`: `bed_day_accrual`, `reconciliation`, `visit_close` or `visit_finish`) failed for one facility (`facilityId`). Nights the bed-day run could not price are listed in that facility's `job_failures` instead.
    - **A scheduled job that failed as a whole**: `resource.type = "cloud_scheduler_job"` with `severity >= ERROR`, i.e. the attempt got no 2xx from `/internal/jobs/…` even after its retries. Whether the run finished is unknown: a timeout or a lost response can come after the work committed, or while the handler is still running. Facilities whose transaction committed were checked or charged; any others were not. All three jobs are idempotent, so running the job again by hand completes the night without repeating anything.
 
 ## 3. Reference data
@@ -63,6 +65,28 @@ Every external call is an outbox row, drained by `POST /internal/outbox/drain` (
    It reports the release and how many codes it loaded and retired. An older release than one already loaded is refused. So is a file cut short (one that never reaches chapter X, which WHO prints last), and one that would retire more than 5% of the codes in use, since the codes missing from it would be taken out of use. A real release retires a few dozen.
 
 Until it has run, diagnoses cannot be recorded: the code search finds nothing. ICD-11 is © WHO 2019, licensed under CC BY-ND 3.0 IGO.
+
+**The drug catalogue**, which prescriptions are written from, is loaded once per environment and again whenever the list changes (`SCHEMA.md` §8, slice 4b). The full procedure, with the review a pharmacist does before production, is in [`docs/drug-catalogue.md`](drug-catalogue.md). The list to fill it is PPB's Generic Products list (`SPEC.md` §2), still to be obtained and converted, so the file is in this system's own CSV format, described in `src/lib/drug-catalogue-load.ts`:
+
+```csv
+code,generic_name,strength,form,dose_unit,route,controlled_schedule
+PCM-500-TAB,Paracetamol,500 mg,Tablet,tablet,oral,
+```
+
+PPB's list comes as a FHIR CodeSystem (`generic-products-cs.json`), naming each product in one string, e.g. `GE10002` "Metformin 500 mg Oral Tablet". `pnpm drugs:convert` (`src/lib/ppb-generics.ts`) turns it into this format and writes a review list beside it, touching no database:
+
+```sh
+pnpm drugs:convert generic-products-cs.json drugs.csv drugs-review.csv
+```
+
+The review list names what was left out (a route this system does not have, e.g. buccal or intravitreal, or a name it cannot read) and what was kept but needs a pharmacist's eye: an injection with no route (given IV), a vitamin dosed in mg, an inhaler given by mouth, a product listed twice. The guide's copy of 2026-08 converts to 3,004 drugs, 15 left out and 286 to check. Controlled schedules are not in PPB's list; fill them in from the Pharmacy and Poisons Act before loading. Then load the file:
+
+```sh
+docker run --rm --env-file .env.production -v "$PWD:/data:ro" <image> \
+  node ./dist/src/cli/load-drug-catalogue.js /data/drugs.csv
+```
+
+It reports how many drugs it loaded and retired. A drug the file no longer has is retired, never deleted. A file with a bad row is refused whole, and so is one that would retire more than a tenth of the drugs in use (or more than 20, whichever is larger). `src/test/fixtures/drug-catalogue-sample.csv` is a ten-drug sample for development and tests only, not a list to prescribe from. Until a list is loaded, nothing can be prescribed.
 
 ## 4. File storage
 

@@ -201,22 +201,96 @@ export async function cancelEntryFee(tx: AppDb, facilityId: string, queueEntryId
     .where(and(eq(charges.queueEntryId, queueEntryId), isNull(charges.cancelledAt)))
     .for("update")
     .limit(1);
-  if (!fee || (await assignedByCharge(tx, [fee.id])).has(fee.id))
+  return cancelUnbilled(tx, facilityId, fee, reason, actor, `Cancelled a consultation fee: ${reason}`, { queueEntryId });
+}
+
+/** Cancels a standing charge while no live invoice asks for it; returns whether it did. */
+async function cancelUnbilled(
+  tx: AppDb,
+  facilityId: string,
+  charge: ChargeRow | undefined,
+  reason: string,
+  actor: PatientActor | null,
+  summary: string,
+  source: Record<string, string>,
+): Promise<boolean> {
+  if (!charge || (await assignedByCharge(tx, [charge.id])).has(charge.id))
     return false;
 
   await tx.update(charges)
     .set({ cancelledAt: new Date(), cancelledBy: actor?.membershipId ?? null, cancellationReason: reason })
-    .where(eq(charges.id, fee.id));
+    .where(eq(charges.id, charge.id));
   await recordAudit(tx, {
     facilityId,
     actorId: actor?.userId ?? null,
     action: "charge.cancelled",
     entityType: "charge",
-    entityId: fee.id,
-    summary: `Cancelled a consultation fee: ${reason}`,
-    detail: { encounterId: fee.encounterId, queueEntryId, amountCents: fee.amountCents, reason },
+    entityId: charge.id,
+    summary,
+    detail: { encounterId: charge.encounterId, ...source, amountCents: charge.amountCents, reason },
   });
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Orders
+// ---------------------------------------------------------------------------
+
+/**
+ * Charges an order item as it is ordered (lab tests and services, decided
+ * 2026-11-10), priced from the cash list on the day. The caller holds the
+ * encounter's lock (M8) and has checked the item is in use. An item with no
+ * price is refused (`not_covered`), and the order with it (rule 21).
+ */
+export async function captureOrderItemCharge(
+  tx: AppDb,
+  facilityId: string,
+  input: { encounterId: string; orderItemId: string; billableItemId: string; code: string; at: Date },
+  actor: PatientActor,
+): Promise<ChargeRow> {
+  const serviceDate = businessDate(input.at);
+  const price = await resolvePrice(tx, { billableItemId: input.billableItemId, priceListId: await cashPriceList(tx), serviceDate });
+  if (!price)
+    throw new ChargeError("not_covered");
+
+  const [charge] = await tx.insert(charges).values({
+    facilityId,
+    encounterId: input.encounterId,
+    billableItemId: input.billableItemId,
+    quantity: "1",
+    unitPriceCents: price.unitPriceCents,
+    amountCents: chargeAmountCents("1", price.unitPriceCents),
+    priceListItemId: price.priceListItemId,
+    serviceDate,
+    orderItemId: input.orderItemId,
+    capturedBy: actor.membershipId,
+  }).returning();
+
+  await recordAudit(tx, {
+    facilityId,
+    actorId: actor.userId,
+    action: "charge.captured",
+    entityType: "charge",
+    entityId: charge.id,
+    summary: `Charged ${input.code} as it was ordered`,
+    detail: { encounterId: input.encounterId, orderItemId: input.orderItemId, code: input.code, amountCents: charge.amountCents },
+  });
+  return charge;
+}
+
+/**
+ * Cancels the charge an order item raised, as the item is cancelled, while
+ * no live invoice asks for it. One already billed stands: the bill is
+ * credited or the money refunded. The caller holds the encounter's lock.
+ */
+export async function cancelOrderItemCharge(tx: AppDb, facilityId: string, orderItemId: string, reason: string, actor: PatientActor): Promise<boolean> {
+  const [charge] = await tx
+    .select()
+    .from(charges)
+    .where(and(eq(charges.orderItemId, orderItemId), isNull(charges.cancelledAt)))
+    .for("update")
+    .limit(1);
+  return cancelUnbilled(tx, facilityId, charge, reason, actor, `Cancelled an order's charge: ${reason}`, { orderItemId });
 }
 
 /** Marks an encounter's bed-day failures resolved, except those still missing. */

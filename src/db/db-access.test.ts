@@ -73,6 +73,12 @@ const OWNER_ALLOWLIST = new Map([
     + "as the owner, from the command line",
   ],
   [
+    "lib/drug-catalogue-load.ts",
+    "the drug catalogue is shared reference data with no facility (CLAUDE.md "
+    + "rule 1); the app role may only read it, so the loader writes it as the "
+    + "owner, from the command line",
+  ],
+  [
     "jobs/visits.ts",
     "the nightly close serves every facility; it lists them, and records a "
     + "facility whose run failed, and closes each facility's visits as that tenant",

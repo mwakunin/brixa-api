@@ -46,6 +46,24 @@ export async function takenOffCents(tx: AppDb, invoiceId: string): Promise<{ adj
   return { adjustedCents: Number(rows[0].adjusted), allocatedCents: Number(rows[0].allocated) };
 }
 
+/** What is still owed on each of these finalised invoices, in one statement. */
+export async function balancesCents(tx: AppDb, invoices: { id: string; totalCents: number | null }[]): Promise<Map<string, number>> {
+  if (invoices.length === 0)
+    return new Map();
+  const ids = invoices.map(i => i.id);
+  const { rows } = await tx.execute<{ invoice_id: string; taken: string }>(sql`
+    SELECT i.id AS invoice_id,
+      coalesce((SELECT sum(${invoiceAdjustments.amountCents}) FROM ${invoiceAdjustments}
+        WHERE ${invoiceAdjustments.invoiceId} = i.id AND ${invoiceAdjustments.status} = 'approved' AND ${invoiceAdjustments.reversedAt} IS NULL), 0)
+      + coalesce((SELECT sum(${allocations.amountCents}) FROM ${allocations}
+        JOIN ${payments} ON ${payments.id} = ${allocations.paymentId}
+        WHERE ${allocations.invoiceId} = i.id AND ${allocations.reversedAt} IS NULL AND ${payments.reversedAt} IS NULL), 0) AS taken
+    FROM (VALUES ${sql.join(ids.map(id => sql`(${id}::uuid)`), sql`, `)}) AS i(id)
+  `);
+  const taken = new Map(rows.map(r => [r.invoice_id, Number(r.taken)]));
+  return new Map(invoices.map(i => [i.id, (i.totalCents ?? 0) - (taken.get(i.id) ?? 0)]));
+}
+
 /** What is still owed on a finalised invoice of `totalCents`. */
 export async function balanceCents(tx: AppDb, invoice: { id: string; totalCents: number | null }): Promise<number> {
   const taken = await takenOffCents(tx, invoice.id);

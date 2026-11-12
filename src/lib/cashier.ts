@@ -1,3 +1,5 @@
+import type { SQL } from "drizzle-orm";
+
 import { sql } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
@@ -50,13 +52,14 @@ interface DueRow extends Record<string, unknown> {
   owed_cents: string;
 }
 
-/** One page of the list, oldest visit first; `offset` skips that many for the next. */
-export async function dueNow(tx: AppDb, facilityId: string, actor: PatientActor, offset = 0): Promise<DueVisit[]> {
-  const { rows } = await tx.execute<DueRow>(sql`
-    WITH visits AS (
-      SELECT id, patient_id, kind, started_at FROM encounters
-      WHERE status = 'open' AND kind IN ('opd', 'emergency')
-    ),
+/**
+ * What each visit owes, as SQL over `visits` (rows of id, patient_id, kind,
+ * started_at): the WITH clause both the cashier's list and the visit's own
+ * close share, so "money due" means one thing.
+ */
+function dueClause(visits: SQL): SQL {
+  return sql`
+    WITH visits AS (${visits}),
     assigned AS (
       SELECT ca.charge_id, sum(ca.amount_cents) AS cents
       FROM charge_assignments ca
@@ -93,6 +96,15 @@ export async function dueNow(tx: AppDb, facilityId: string, actor: PatientActor,
       WHERE i.status = 'finalised' AND i.encounter_id IN (SELECT id FROM visits)
       GROUP BY i.encounter_id
     )
+  `;
+}
+
+/** One page of the list, oldest visit first; `offset` skips that many for the next. */
+export async function dueNow(tx: AppDb, facilityId: string, actor: PatientActor, offset = 0): Promise<DueVisit[]> {
+  const { rows } = await tx.execute<DueRow>(sql`
+    ${dueClause(sql`
+      SELECT id, patient_id, kind, started_at FROM encounters
+      WHERE status = 'open' AND kind IN ('opd', 'emergency')`)}
     SELECT v.id AS encounter_id, v.kind, v.started_at,
       p.id AS patient_id, p.given_name, p.middle_names, p.family_name, pn.number AS op_number,
       coalesce(u.cents, 0) AS unbilled_cents, coalesce(d.cents, 0) AS drafted_cents, coalesce(o.cents, 0) AS owed_cents
@@ -135,4 +147,22 @@ export async function dueNow(tx: AppDb, facilityId: string, actor: PatientActor,
       dueCents: unbilledCents + draftedCents + owedCents,
     };
   });
+}
+
+/** Which of these encounters have money due from the patient, as the cashier's list counts it. */
+export async function withMoneyDue(tx: AppDb, encounterIds: string[]): Promise<Set<string>> {
+  if (encounterIds.length === 0)
+    return new Set();
+  const { rows } = await tx.execute<{ encounter_id: string }>(sql`
+    ${dueClause(sql`
+      SELECT id, patient_id, kind, started_at FROM encounters
+      WHERE id IN (${sql.join(encounterIds.map(id => sql`${id}::uuid`), sql`, `)})`)}
+    SELECT v.id AS encounter_id
+    FROM visits v
+    LEFT JOIN unbilled u ON u.encounter_id = v.id
+    LEFT JOIN drafted d ON d.encounter_id = v.id
+    LEFT JOIN owed o ON o.encounter_id = v.id
+    WHERE coalesce(u.cents, 0) > 0 OR coalesce(d.cents, 0) > 0 OR coalesce(o.cents, 0) > 0
+  `);
+  return new Set(rows.map(r => r.encounter_id));
 }

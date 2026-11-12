@@ -23,6 +23,15 @@ export const tenantResponses = {
   [HttpStatusCodes.NOT_FOUND]: jsonContent(notFoundSchema, "No such facility, or no membership there"),
 };
 
+/** As `tenantResponses`, for a route behind `requireClinicalRole`: a lapsed licence answers 403 with a code. */
+export const clinicalResponses = {
+  ...tenantResponses,
+  [HttpStatusCodes.FORBIDDEN]: jsonContent(
+    z.union([z.object({ message: z.string(), code: z.literal("licence_expired") }), forbiddenSchema]),
+    "Facility suspended, role not allowed, or a lapsed licence (`licence_expired`)",
+  ),
+};
+
 export const getFacility = createRoute({
   tags,
   method: "get",

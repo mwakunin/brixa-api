@@ -78,7 +78,10 @@ describe("onboarding a facility", () => {
       ["credit_note", "CN-", "yearly", 6],
       ["inpatient", "IP", "never", 4],
       ["invoice", "INV-", "yearly", 6],
+      ["lab_accession", "L-", "daily", 3],
+      ["lab_report", "LR-", "yearly", 6],
       ["outpatient", "OPD", "never", 4],
+      ["prescription", "RX-", "yearly", 6],
       ["receipt", "RCT-", "yearly", 6],
       ["refund", "RFD-", "yearly", 6],
     ]);
@@ -92,7 +95,10 @@ describe("onboarding a facility", () => {
       { kind: "credit_note", next_value: 1 },
       { kind: "inpatient", next_value: 1 },
       { kind: "invoice", next_value: 1 },
+      { kind: "lab_accession", next_value: 1 },
+      { kind: "lab_report", next_value: 1 },
       { kind: "outpatient", next_value: 1201 },
+      { kind: "prescription", next_value: 1 },
       { kind: "receipt", next_value: 1 },
       { kind: "refund", next_value: 1 },
     ]);

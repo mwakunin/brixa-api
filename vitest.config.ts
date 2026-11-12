@@ -14,6 +14,8 @@ export default defineConfig({
     // Nothing here is a unit test: every file talks to a real Postgres, and a
     // busy machine misses a 5-second budget for reasons unrelated to the code.
     testTimeout: 20_000,
+    // The same for setup: a hospital built through the API in beforeEach.
+    hookTimeout: 20_000,
     globalSetup: ["./src/test/global-setup.ts"],
     env: {
       NODE_ENV: "test",

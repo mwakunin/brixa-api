@@ -181,7 +181,7 @@ describe("clinical notes", () => {
     );
     const discard = (who: Person, id: string) => at(c, who, "POST", `/notes/${id}/discard`);
 
-    // Someone else's draft, or a signed note, is not theirs to discard: as if it did not exist.
+    // Someone else's note, draft or signed, is not theirs to discard: as if it did not exist.
     expect((await discard(c.cashier, lapsedDraft.id)).status).toBe(404);
     expect((await discard(moved, signed.id)).status).toBe(404);
 
@@ -190,6 +190,22 @@ describe("clinical notes", () => {
     // With the drafts gone and the signed note marked, the visit opened in error can be cancelled.
     await at(c, c.officer, "POST", `/notes/${signed.id}/entered-in-error`, { reason: "Wrong patient" });
     expect((await at(c, c.clerk, "POST", `/encounters/${visit.id}/cancel`, { reason: "Wrong patient" })).status).toBe(200);
+  });
+
+  it("tell an author their own signed or discarded note is not a draft", async () => {
+    const c = await clinic();
+    const visit = await c.visit();
+    const signed = await start(c, c.officer, visit.id);
+    await at(c, c.officer, "POST", `/notes/${signed.id}/sign`);
+    const draft = await start(c, c.officer, visit.id);
+    await at(c, c.officer, "POST", `/notes/${draft.id}/discard`);
+
+    for (const note of [signed, draft]) {
+      const res = await at(c, c.officer, "POST", `/notes/${note.id}/discard`);
+      expect([res.status, (await res.json()).code]).toEqual([409, "not_a_draft"]);
+    }
+    const { rows } = await pool.query("SELECT status FROM clinical_notes WHERE id = ANY($1) ORDER BY status", [[signed.id, draft.id]]);
+    expect(rows).toEqual([{ status: "discarded" }, { status: "signed" }]);
   });
 
   it("are hidden from another facility's staff", async () => {

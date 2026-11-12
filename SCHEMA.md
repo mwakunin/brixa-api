@@ -188,6 +188,7 @@ The same counter issues every human-facing sequential number:
 | `admission` | `ADM-2026-0153` | yearly | yes |
 | `invoice`, `receipt`, `credit_note`, `refund` | `INV-2026-004211` | yearly | **yes: fiscal documents** |
 | `lab_accession` | `L-20261103-017` | daily | no (a rejected specimen keeps its number) |
+| `prescription`, `lab_report` | `RX-2026-000123`, `LR-2026-000045` | yearly | yes (a voided one keeps its number) |
 | `grn`, `transfer` | `GRN-2026-0091` | yearly | yes |
 
 - **As built (P1), the configuration and the count are separate tables.** `number_series` holds one row per `(facility_id, kind)` with `prefix`, `padding` and `reset_period` (`never` \| `yearly` \| `daily`). `number_series_counters` holds one row per `(series_id, period_key)` with its `next_value`, where `period_key` is `'all'`, `'2026'` or `'2026-11-03'`, computed in Africa/Nairobi (rule 26). So a prefix change applies going forward without touching a count, and a new period needs no configuration copied. The counter for a new period is created on first use with `INSERT … ON CONFLICT DO NOTHING`, then locked as above (`src/lib/number-series.ts`). The §5 sketch keeps the single-table form for readability.
@@ -510,7 +511,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - each visit is closed at the time the run locks it, not when the run began, so a patient called in meanwhile is never ended before being seen;
   - each visit is closed in its own transaction, so one that cannot be closed leaves the rest closed. It becomes a `job_failures` row (`visit_close`) naming the visit; a facility whose visits cannot even be listed becomes one with no subject. A later run for that facility with no failure resolves the failures recorded before it began, but not one an overlapping run recorded since.
 - **Not yet:**
-  - a visit closing itself once nothing is pending, which needs orders (4a);
+  - a visit closing itself once nothing is pending, which needs lab orders that can finish (5b);
   - a triage priority ordering the consultation queue (slice 2).
 
 **As built (P3, slice 1c): consultation fees and paying.** Decided 2026-11-10 (`ROADMAP.md` P3, `SPEC.md` §2):
@@ -550,7 +551,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - Recording an allergy ends a standing "no known allergies"; "no known allergies" is refused while an allergy stands.
   - An allergy is ended as entered in error or no longer applying, never edited or deleted (trigger `patient_allergies_end_only`).
   - Changes for one patient lock the patient's row.
-  - Drug allergies are free text until slice 4b links them to the drug catalogue for prescribing checks.
+  - Drug allergies are free text; slice 4b lets one name a catalogue drug, for prescribing checks.
 - **The triage priority** (`queue_entries.priority`: emergency, urgent, routine) is set as triage finishes with the patient.
   - The CHECK `queue_entries_priority_when_done` holds it to a finished entry, and the queue trigger to a triage point.
   - **Clinic queues order by it:** emergency, urgent, then routine or untriaged, each by arrival.
@@ -609,7 +610,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - a draft may be discarded, which keeps it on the record, unshown, and never deletes it;
   - a draft is started only on an open encounter, and may be signed after the visit closes, for notes finished the next morning.
 - **Corrections are addenda**, written signed by any note-writing clinician and shown under the note. An addendum is never added to another addendum.
-- **The author saves and signs a draft only while still holding a role that writes its kind** (a nurse moved to the wards no longer signs a consultation note). Discarding needs neither a clinical role nor a current licence, since it is not a clinical act: an author whose licence lapsed, or whose roles changed, can still clear a draft that would keep a visit from being cancelled. Any note that is not one of the actor's own drafts is answered as not found. A facility admin discarding someone else's draft waits for memberships that can end.
+- **The author saves and signs a draft only while still holding a role that writes its kind** (a nurse moved to the wards no longer signs a consultation note). Discarding needs neither a clinical role nor a current licence, since it is not a clinical act: an author whose licence lapsed, or whose roles changed, can still clear a draft that would keep a visit from being cancelled. Any note that is not the actor's own is answered as not found; their own signed or discarded note is refused as not a draft (`409 not_a_draft`), since the note is theirs to know about. A facility admin discarding someone else's draft waits for memberships that can end.
 - **A signed note written on the wrong patient's record is marked entered in error**, with a reason, and stays on the record; it then takes no addendum. An addendum may be marked too (one added to the wrong patient's note), and is shown marked under its note.
 - **The trigger `clinical_notes_lifecycle`** holds all of this for every role:
   - drafts are written as drafts, and addenda signed, to a signed note on the same encounter that is neither an addendum nor marked entered in error (locked while checked);
@@ -624,11 +625,123 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 - **Cancelling a visit** is refused while a draft, or a signed note or addendum not marked entered in error, stands (`has_clinical_records`), as for vital signs and diagnoses. An addendum counts even under a marked note: once the visit is cancelled it could no longer be marked.
 - **Not yet:** sensitive notes and break-glass (slice 7); note templates by clinic, which the frontend can offer over these sections.
 
+**As built (P3, slice 4a): orders and the lab catalogue.** Decided 2026-11-10 and 2026-11-11 (`ROADMAP.md` P3):
+
+- **The lab catalogue**, kept by the facility admin and the lab supervisor, read by every member (it holds no patient data):
+  - `lab_tests`: a `lab` billable item with lab details. The test goes by the item's code and name and is charged at its price, so the bill and the lab never disagree; one test per item. `specimen_type` (blood, urine, stool, sputum, swab, csf, body fluid, other). Retired (`is_active`) while, say, reagents are out, never removed.
+  - `lab_analytes`, in report order: `numeric` (a unit, critical low and high), `choice` (its answers, and those flagged abnormal) or `text`. `lab_analytes_shape` holds each type to its fields; the route refuses a field that does not fit rather than dropping it. The wording, unit, answers and critical limits change; the result type never does.
+  - `lab_reference_ranges`, for numeric analytes: a sex (`any`, male, female) and an age band in days, from (inclusive) and to (exclusive, none for every age after), so a newborn's range can differ from an infant's; a low, a high or both. Set as a whole list: the current ones are retired and the new ones written, never edited, so a result can keep the range it was judged by (5b). `lab_reference_ranges_no_overlap` (an exclusion constraint) lets no two current ranges cover the same patient, `any` overlapping both sexes. A trigger lets a range only be retired, once.
+  - Nothing is shipped: no test menu and no range is made up for a facility (decided 2026-11-11).
+- **`orders`** and **`order_items`**:
+  - An order is written once (trigger `orders_written_once`): its encounter, `urgency` (routine, urgent), an optional `indication`, who asked and who entered it. Its items carry the lifecycle.
+  - **Who asked, exactly one** (`orders_one_requester`): the clinician who ordered it (`ordered_by`, who also entered it); a walk-in's outside requester (name and facility, the licence number if given); or the client themselves (`self_requested`).
+  - An item is a lab test or a service's billable item (procedure, imaging or service; consumables wait for P4), by typed foreign key (rule 22), once per order.
+  - `status`: `ordered`, then `done` (`done_at`/`done_by`) or `cancelled` (with who and why). A lab test is done once its specimen is collected (5a); a service once a clinician marks it performed. The trigger `order_items_lifecycle` writes items ordered, never changes what they ask for, and freezes a done or cancelled item; nothing is deleted.
+- **Charged as ordered** (rule 16; lab at order, decided 2026-11-10): each item raises a charge from the cash list on the day, with the item as its source (`charges.order_item_id`, one per item, `charges_one_per_order_item`), captured by whoever entered the order. An item with no price refuses the whole order, and nothing of it is kept (rule 21).
+- **Cancelling an item** not yet done cancels its charge while no live invoice asks for it; one already billed stands, to be credited or refunded. Cancelled by whoever could have placed the order (the ordering roles for a clinician's order, records clerks and the lab for a walk-in's), or by the lab for a lab test. It is not a clinical act, so it needs no current licence.
+- **Walk-in lab clients** are registered as ordinary patients, on an outpatient visit that joins no queue. `POST /encounters/{id}/walk-in-orders` (records clerks and lab members) enters their lab tests, from an outside requester's form or self-requested.
+- **Who:**
+  - doctors, clinical officers and nurses order (`POST /encounters/{id}/orders`), under a current licence;
+  - doctors, clinical officers, nurses and ward nurses mark a service performed, under a current licence;
+  - clinical roles read orders, audited as `encounter.viewed`. An order's audit entry names its items and urgency, not its indication (rule 10).
+- **Cancelling a visit** is refused while an order item stands (`has_clinical_records`), checked before its charges, since cancelling the item cancels the charge it raised.
+- **Not yet:** the lab worklist, collection and the unpaid-test warning (5a); results and the visit closing itself once nothing is pending (5b); medicines (4b, below).
+
+**As built (P3, slice 4b): prescriptions.** Decided 2026-11-11 (`ROADMAP.md` P3):
+
+- **`drug_catalogue`**, the second shared reference table (CLAUDE.md rule 1): no `facility_id`, no row-level security, `SELECT` only for the app role.
+  - At generic level: `code`, `generic_name` (combinations joined with `/`), `strength` and `form` as printed, `dose_unit` (what a dose is counted in), the usual `route`, and `controlled_schedule` (I to IV, rule 12; null if not controlled). A code a later load lacks is retired (`retired_at`), never deleted.
+  - **Loaded per environment by `pnpm drugs:load <file>`** (`src/lib/drug-catalogue-load.ts`, on the owner connection; `docs/deployment.md` §3), from a CSV in this system's own format, until PPB's Generic Products list (decided 2026-11-12, `SPEC.md` §2) can be converted into it. One transaction; a bad row refuses the file, and so does one that would retire more than a tenth of the drugs in use (at least 20 may always go). `src/test/fixtures/drug-catalogue-sample.csv` holds ten drugs for development and tests.
+  - **PPB's Generic Products list** (decided 2026-11-12) converts into this file with `pnpm drugs:convert` (`src/lib/ppb-generics.ts`), which reads each product's name into generic name, strength, route and form, takes the dose unit from the form, and writes a review list of what it left out or cannot vouch for. It sets no controlled schedules: PPB's list has none.
+  - `GET /drugs?q=` (clinical roles, not audited): each word typed matches the start of a word in the generic name, or the text the start of a code; current drugs only, at most 20.
+- **A prescription is an order of medicines** (`order_items.drug_code`, the third typed source, `order_items_one_kind`), written by `POST /encounters/{id}/prescriptions`, with its printed document issued in the same transaction (`orders.document_id`, kind `prescription`, from the yearly `RX-` series registered at onboarding and backfilled by migration 0055).
+  - Each medicine copies the drug as prescribed (`drug_description`) and its `dose_unit` from the catalogue (rule 7), with `dose_amount`, `route` (the drug's own unless given), `frequency` (od, bd, tds, qid, nocte, prn, stat), `duration_days` (required at a regular frequency, none for stat, optional for prn), `quantity` in dose units (dose × doses a day × days, or the dose for stat, unless given; required for prn) and `instructions`. `order_items_medication_shape` holds the shape.
+  - **Not charged when prescribed**: the charge comes with dispensing (P4), which is when the units-of-sale question (`SPEC.md` §4, question 2) is answered.
+  - **What it prints:** the patient, their number, sex and age, a child's weight that day, the standing allergies (or "No known allergies", or "Not recorded"; a list longer than its 500-character field prints those that fit and says how many more to check on the patient's record), what it is for if given, the prescriber with their council and licence number (rule 25), the date, and each medicine (a controlled one marked with its schedule). A note names each drug prescribed despite an allergy, with the reason. Opened by prescribers, nurses and the pharmacy (`DOCUMENT_READERS`), audited.
+- **Refused, writing nothing:**
+  - a drug the patient is recorded as allergic to, unless `allergyOverride` gives a reason (`drug_allergy`, listing the allergies matched). The match is by generic name, any ingredient of a combination included, against the catalogue drug an allergy names or, for one recorded as text alone, its text. The reason is kept on the medicine and audited as `prescription.allergy_overridden`. Drug classes wait for a catalogue source that carries them;
+  - for a child under 12 (`CHILD_UNDER_YEARS`, to be confirmed by a clinician), any prescription without a weight taken that Kenyan day on any of their encounters (`weight_needed`);
+  - a controlled drug from anyone but a doctor or a clinical officer (`controlled_prescriber`, 403).
+  - The patient's row is share-locked while allergies are checked, so an allergy recorded at the same moment waits for the prescription.
+- **Changed by cancelling it** (`POST /prescriptions/{id}/cancel`, with a reason): what is left of it is cancelled and its document voided, keeping its number, so its verification code shows it withdrawn. A medicine is never cancelled on its own (`cancel_the_prescription`), since the paper would no longer say what stands; the prescriber writes a new one. `order_items_lifecycle` now compares every column but the lifecycle ones, so a medicine is frozen as prescribed.
+- **Drug allergies** may name the catalogue drug (`patient_allergies.drug_code`, a drug allergy only), still described as told.
+- **Who:** doctors, clinical officers and nurses prescribe, under a current licence (`requireClinicalRole`), and cancel; clinical roles read prescriptions with the encounter's orders (`GET /encounters/{id}/orders`).
+- **Not yet:** dispensing, stock and the charge (P4); the controlled-drug register (P4, rule 12); drug classes and interactions (no licensed source in v1).
+
+**As built (P3, slice 5a): specimens and the lab worklist.** Decided 2026-11-11 (`ROADMAP.md` P3):
+
+- **`specimens`:** one per sample taken, for lab tests on one order, of one `specimen_type`.
+  - Its `accession_number` comes from the facility's daily `lab_accession` series (`L-20261111-017`), registered at onboarding and backfilled by migration 0057. It is unique per facility, and a rejected specimen keeps its number.
+  - `status` is `collected`, `received` or `rejected`, with who and when for each (`specimens_lifecycle`). A rejection carries a reason from a fixed list, with a note for `other`. `recollection_of` names the rejected specimen it was taken again for, at most once.
+  - The trigger `specimens_lifecycle` writes a specimen collected (or received), moves it only forward, receives it once, freezes a rejected one, and never changes what it is, whose or when it was taken; nothing is deleted.
+- **`specimen_tests`** names the order items a specimen is for, written with it and never changed. A trigger keeps them lab tests on the specimen's own order.
+- **Taking a specimen** (`POST /orders/{id}/specimens`, lab members, nurses and ward nurses, under a current licence) covers the order's waiting tests of that type, or the ones named. It locks the encounter, then the items (M8), and marks them `done`: no longer cancellable, their charges standing. Taken by a lab member, the specimen is received at once; taken by a nurse, the lab receives it (`/specimens/{id}/receive`).
+- **Rejecting** (`/specimens/{id}/reject`, lab members) and **recollecting** (`/specimens/{id}/recollect`, collectors): a new specimen, with a new number, for the same tests.
+- **The worklist** (`GET /lab/worklist`, lab members, audited as `lab.worklist_viewed`) lists tests waiting to be collected, grouped by order and specimen type, then specimens to receive, then specimens in the lab. Each list is urgent first, then oldest, and names the patient with their number, sex and age. A test not collected by the time its visit ends stays listed for 7 days after it, after the open visits' tests and marked with `visitEndedAt`, since the patient may come back for the sample (decided 2026-11-12). Its charge stands, and it is collected from its order on the closed encounter, within the week or after it.
+- **The unpaid warning:** a test is `unpaid` at an outpatient visit unless its charge is assigned in full to finalised bills that owe nothing (`paidCharges`, derived, rule 4). Emergencies and admissions never show it, and it never blocks taking a specimen.
+- **Not yet:** results, verification and the lab report (5b, below).
+
+**As built (P3, slice 5b): results, the lab report, and the visit closing itself.** Decided 2026-11-11 (`ROADMAP.md` P3):
+
+- **`lab_results`:** one test's result on one specimen, in `version`s (`lab_results_version_key`), with one current version (`lab_results_one_current`, not superseded).
+  - `status`: `entered` (in the lab only), `released` (unverified, with who, when and why), `verified` (by another lab member: `lab_results_verified_by_another`), or `superseded`.
+  - `has_critical` is set at entry. A critical result is not released or verified until who was told, how and when is recorded (`lab_results_told`).
+  - A correction is a new version with a `correction_reason`. It supersedes the one before at once, so a wrong value is withdrawn at once and the right one reaches the clinician once released or verified.
+  - The trigger `lab_results_lifecycle` writes a result entered, moves it only forward, records release, verification and who was told once each, freezes a superseded result, and never changes what it is for, who entered it or when; nothing is deleted.
+- **`lab_result_values`:** one per analyte, frozen as judged (rule 7). Each copies the analyte's code, name and unit, the reference range and critical limits applied, and the flag:
+  - `critical_low` and `critical_high` beyond the critical limits;
+  - `low` and `high` outside the range;
+  - `abnormal` for an abnormal choice.
+  - The range is chosen for the patient's sex and age in days on the collection date. A patient who is intersex, or whose sex is not recorded, is judged against `any` ranges only. A later change to the catalogue leaves past values as they were judged.
+  - Written once (`lab_result_values_written_once`).
+- **Entering** (`POST /specimens/{id}/results`, lab members) needs a received specimen and every number and choice of the test; text is optional. A specimen with results cannot be rejected (`has_results`). **Releasing** (`/lab-results/{id}/release`, with a reason) and **verifying** (`/lab-results/{id}/verify`) are lab acts under a current licence.
+- **The lab report** (`lab_reports`, document kind `lab_report`, from the yearly `LR-` series registered at onboarding and backfilled by migration 0059):
+  - It is issued once every lab test on the order is resulted (released or verified) or cancelled, and is issued again, the old one voided, whenever a result on it is released, verified or corrected, or a test on the order is cancelled. A transaction-scoped advisory lock on the order serializes this, since an order row takes no row lock.
+  - It prints the patient, who requested the tests (the clinician, an outside requester or "Self-requested"), the specimens, each value with its unit, range and flag, a cancelled test as not done, and notes on what was released unverified, who verified, who was told of a critical value, and what was corrected.
+  - Opened by clinicians and the lab (`DOCUMENT_READERS`), audited.
+- **Reading:** `GET /encounters/{id}/lab-results` (clinical roles, audited) shows released and verified results and each order's current report. The lab's worklist adds the results to verify, and keeps a specimen "in the lab" until each of its tests has a result.
+- **A visit closes itself** (`src/lib/visit-finish.ts`; `POST /internal/jobs/finish-visits`, Cloud Scheduler every 15 minutes) once all of these hold:
+  - the open outpatient visit's patient is in no queue;
+  - every lab test is resulted or cancelled, and every service done or cancelled. A medicine is not waited for until dispensing exists (P4);
+  - no money is due, as the cashier's list counts it (the same SQL, `lib/cashier.ts`);
+  - the patient was seen or tested.
+  - It is closed by nobody, re-checked under the encounter's lock. Failures are recorded as `visit_finish` by the runner the nightly close shares (`src/jobs/visits.ts`).
+- **Not yet:** the results-to-review list for the ordering clinician (still proposed); analyser interfaces (out of v1).
+
+**Hardened in review (PR #15, 2026-11-12)**, across slices 4a–5b:
+
+- **Frozen at the moment of the act:**
+  - A lab order item keeps its test's specimen type (`order_items.specimen_type`).
+  - A specimen keeps each test's analytes as they stood when it was taken (`specimen_tests.analyte_ids`). A result must give every number and choice in that panel, retired since or not, and may give an analyte added since. A test with no analyte in use is not collected.
+  - A result's values are written only while it is entered (0061).
+  - A verified result's record of who was told never changes (0063).
+  - An issued prescription takes no new medicine: its items are written in the transaction that wrote its order, which the trigger tells from the order row's `xmin` (0064).
+  - A specimen's tests are linked only in the transaction that takes it, and only tests ordered on its specimen type. The database stamps each specimen with its taking transaction (`taken_in_xact`, 0066), which never changes. A result's specimen and test must be one of those links (`lab_results_specimen_test_fk`, 0065), and its values are for analytes of its own test (0066).
+- **Refusals:**
+  - An order item whose charge waits on a draft bill is not cancelled (`on_draft_invoice`): void the draft first.
+  - A stat medicine takes no separate quantity.
+  - Request bodies refuse unknown fields, nested objects included.
+  - Result values that do not fit answer 422, as do a drug not in the catalogue (on a prescription or an allergy) and an injected route (iv, im, sc, intradermal) for a product not made for injection.
+  - A lab number (a result, a range or a critical limit) has at most 6 decimal places and is below 10^15, so the report prints it exactly as entered.
+  - Who was told of a critical value cannot be later than now.
+- **Printed whole:**
+  - Allergy-override notes and the report's notes are packed whole into up to 50 notes (`packNotes`). A prescription that cannot print every override is refused.
+  - A text result prints whole (cells up to 2,000 characters), and a long allergy list says how many more there are.
+  - A test has at most 60 analytes, so a report of 30 tests fits its 2,000 rows.
+  - A report's specimens move to its notes when they do not fit their field.
+- **The unpaid warning** never shows for a test priced at nothing.
+- **The allergy check** also matches a drug allergy told as text that names the drug anywhere ("Amoxicillin 500 mg caps"). Brands and drug classes are still not caught.
+- **Lists:**
+  - An encounter's results page by `offset`.
+  - The worklist limits whole order-and-type groups.
+  - The visit-finish check pages candidates on a full-precision cursor. A run that stops at its 500 visits resolves only those visits' failures; the facility's own wait for a run that lists every visit.
+  - Invoice balances for the unpaid warning are read in one statement.
+
 **Clinical record.** `observations` (vitals and charted values, with `entered_in_error` instead of deletion), `diagnoses` (ICD code, provisional \| final \| secondary), `clinical_notes` (`signed_at`, `addendum_of`: a signed note is corrected only by an addendum), `orders` and `order_items` (lab, imaging, procedure, medication, service; medication items carry dose, route, frequency and duration). Every clinical act records the acting membership, whose licence details live on `memberships` (rule 25).
 
 **Inpatient.** `admissions` is 1:1 with an ipd encounter and carries the admission number. `bed_stays` holds a `tstzrange` with two `EXCLUDE` constraints: no bed holds two patients at once, and no admission is in two beds at once. A transfer ends one stay and starts the next. `medication_administrations` records each dose against its order item (given \| held \| refused \| missed). `discharge_summaries` are immutable once signed.
 
-**Lab.** `lab_tests` is the facility's catalogue (specimen type, reference ranges by sex and age, billable item). `specimens` carry the accession number (§6.1), collection and receipt times, and a rejection reason. `lab_results` are versioned with `supersedes_id`. `verified_by` must differ from the person who entered the result, and a result reaches the clinician only once verified.
+**Lab.** `lab_tests` is the facility's catalogue (specimen type, reference ranges by sex and age, billable item). `specimens` carry the accession number (§6.1), collection and receipt times, and a rejection reason. `lab_results` are versioned. `verified_by` must differ from the person who entered the result, and a result reaches the clinician once verified, or released unverified by the one lab member on night duty (decided 2026-11-11; as built in slice 5b, above).
 
 **Pharmacy and stores.** `inventory_items` reference the shared `drug_catalogue` (or describe a non-drug consumable) and a billable item. `stores` covers the main store, the pharmacy, wards and other sub-stores. `stock_batches` hold batch number, expiry and cost. `stock_movements` are append-only signed quantities (opening balance, receipt, dispense, transfer out/in, adjustment, write-off, return) with typed source FKs. An opening balance loads counted stock at go-live; it is its own kind so it never reads as a purchase. Each item has a reorder level per store, which drives the low-stock alert. **On hand per store and batch = Σ movements, never stored, never negative** (checked under a batch lock). `dispenses` take stock first-expiry-first-out and raise the charge. `controlled_drug_register` is append-only with a running balance per item and store. `goods_received` records the supplier as text in v1, since supplier payables come later. Units of sale are still open (`SPEC.md` §4).
 

@@ -3,6 +3,7 @@ import type { CheckBuilder, PgTimestampBuilderInitial } from "drizzle-orm/pg-cor
 
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   boolean,
   check,
   date,
@@ -68,7 +69,7 @@ function userRef(name: string) {
  */
 function assertDdlSafe(name: string, values: readonly string[]) {
   for (const value of values) {
-    if (!/^[a-z0-9_.]+$/.test(value))
+    if (!/^[\w.]+$/.test(value))
       throw new Error(`${name}: unexpected value ${JSON.stringify(value)}`);
   }
 }
@@ -380,6 +381,25 @@ export const auditLog = pgTable("audit_log", {
     | "note.discarded"
     | "note.addendum_added"
     | "note.entered_in_error"
+    | "lab_test.created"
+    | "lab_test.updated"
+    | "lab_analyte.added"
+    | "lab_analyte.updated"
+    | "lab_analyte.ranges_set"
+    | "order.placed"
+    | "order_item.cancelled"
+    | "order_item.done"
+    | "prescription.issued"
+    | "prescription.cancelled"
+    | "prescription.allergy_overridden"
+    | "specimen.collected"
+    | "specimen.received"
+    | "specimen.rejected"
+    | "lab.worklist_viewed"
+    | "lab_result.entered"
+    | "lab_result.released"
+    | "lab_result.verified"
+    | "lab_report.issued"
   >().notNull(),
   /** What it happened to. Not a foreign key: the log outlives what it names. */
   entityType: text().notNull(),
@@ -485,6 +505,25 @@ export const auditLog = pgTable("audit_log", {
     "note.discarded",
     "note.addendum_added",
     "note.entered_in_error",
+    "lab_test.created",
+    "lab_test.updated",
+    "lab_analyte.added",
+    "lab_analyte.updated",
+    "lab_analyte.ranges_set",
+    "order.placed",
+    "order_item.cancelled",
+    "order_item.done",
+    "prescription.issued",
+    "prescription.cancelled",
+    "prescription.allergy_overridden",
+    "specimen.collected",
+    "specimen.received",
+    "specimen.rejected",
+    "lab.worklist_viewed",
+    "lab_result.entered",
+    "lab_result.released",
+    "lab_result.verified",
+    "lab_report.issued",
   ]),
 ]);
 
@@ -505,7 +544,7 @@ export const auditLog = pgTable("audit_log", {
 export const numberSeries = pgTable("number_series", {
   id: uuid().primaryKey().defaultRandom(),
   facilityId: uuid().notNull().references(() => facilities.id),
-  kind: text().$type<"outpatient" | "inpatient" | "admission" | "receipt" | "invoice" | "credit_note" | "refund">().notNull(),
+  kind: text().$type<"outpatient" | "inpatient" | "admission" | "receipt" | "invoice" | "credit_note" | "refund" | "prescription" | "lab_accession" | "lab_report">().notNull(),
   /** Facility-chosen, e.g. `OP`. Applies to numbers issued from now on. */
   prefix: text().notNull(),
   /** Zero-padded width: 4 gives OP0001. A number grows past it, never truncates. */
@@ -516,7 +555,7 @@ export const numberSeries = pgTable("number_series", {
 }, t => [
   unique("number_series_facility_id_kind_key").on(t.facilityId, t.kind),
   unique("number_series_facility_id_id_key").on(t.facilityId, t.id),
-  oneOf("number_series_kind_known", t.kind, ["outpatient", "inpatient", "admission", "receipt", "invoice", "credit_note", "refund"]),
+  oneOf("number_series_kind_known", t.kind, ["outpatient", "inpatient", "admission", "receipt", "invoice", "credit_note", "refund", "prescription", "lab_accession", "lab_report"]),
   oneOf("number_series_reset_period_known", t.resetPeriod, ["never", "yearly", "daily"]),
   check("number_series_prefix_shape", sql`${t.prefix} ~ '^[A-Za-z0-9/-]{1,12}$'`),
   check("number_series_padding_range", sql`${t.padding} BETWEEN 1 AND 12`),
@@ -694,7 +733,7 @@ export const invitations = pgTable("invitations", {
 export const documents = pgTable("documents", {
   id: uuid().primaryKey().defaultRandom(),
   facilityId: uuid().notNull().references(() => facilities.id),
-  kind: text().$type<"receipt" | "invoice" | "credit_note" | "refund">().notNull(),
+  kind: text().$type<"receipt" | "invoice" | "credit_note" | "refund" | "prescription" | "lab_report">().notNull(),
   /** From this facility's number series of the same kind. */
   number: text().notNull(),
   /**
@@ -720,7 +759,7 @@ export const documents = pgTable("documents", {
     columns: [t.facilityId, t.issuedBy],
     foreignColumns: [memberships.facilityId, memberships.id],
   }),
-  oneOf("documents_kind_known", t.kind, ["receipt", "invoice", "credit_note", "refund"]),
+  oneOf("documents_kind_known", t.kind, ["receipt", "invoice", "credit_note", "refund", "prescription", "lab_report"]),
   // 20 bytes of base64url: a shorter code typed in by hand would be guessable.
   check("documents_verification_code_shape", sql`${t.verificationCode} ~ '^[A-Za-z0-9_-]{27}$'`),
   // Voided means at some time, for a stated reason; otherwise neither. The
@@ -1327,14 +1366,53 @@ export const observations = pgTable("observations", {
 ]);
 
 /**
+ * The medicines a prescription may name, at generic level (P3 slice 4b): a
+ * shared reference table (CLAUDE.md rule 1), with no facility_id, read-only
+ * to the app role and loaded by `pnpm drugs:load` from a file in this
+ * system's own format (`lib/drug-catalogue-load.ts`), to be filled from
+ * PPB's Generic Products list (SPEC.md §2); a code a later load lacks is retired,
+ * never deleted, since past prescriptions name it.
+ */
+export const drugCatalogue = pgTable("drug_catalogue", {
+  /** e.g. `PCM-500-TAB`. */
+  code: text().primaryKey(),
+  /** The generic name, combinations joined with `/`: `Amoxicillin/Clavulanic acid`. */
+  genericName: text().notNull(),
+  /** As printed, e.g. `500 mg` or `125 mg/5 mL`. */
+  strength: text().notNull(),
+  /** As printed, e.g. `Tablet`, `Oral suspension`. */
+  form: text().notNull(),
+  /** What a dose is counted in, e.g. `tablet`, `mL`: prescribed quantities are in it. */
+  doseUnit: text().notNull(),
+  /** The usual route; a prescription may give another. */
+  route: text().$type<
+    "oral" | "sublingual" | "iv" | "im" | "sc" | "intradermal" | "topical" | "rectal" | "vaginal" | "inhaled" | "nasal" | "ophthalmic" | "otic"
+  >().notNull(),
+  /** A controlled drug's schedule (rule 12); null for one that is not. */
+  controlledSchedule: text().$type<"I" | "II" | "III" | "IV">(),
+  loadedAt: timestamp({ withTimezone: true }).notNull(),
+  retiredAt: timestamp({ withTimezone: true }),
+}, t => [
+  check("drug_catalogue_code_shape", sql`${t.code} ~ '^[A-Z0-9][A-Z0-9._/-]{0,31}$'`),
+  check(
+    "drug_catalogue_text_present",
+    sql`length(btrim(${t.genericName})) > 0 AND length(btrim(${t.strength})) > 0
+      AND length(btrim(${t.form})) > 0 AND length(btrim(${t.doseUnit})) > 0`,
+  ),
+  oneOf("drug_catalogue_route_known", t.route, ["oral", "sublingual", "iv", "im", "sc", "intradermal", "topical", "rectal", "vaginal", "inhaled", "nasal", "ophthalmic", "otic"]),
+  oneOf("drug_catalogue_controlled_schedule_known", t.controlledSchedule, ["I", "II", "III", "IV"]),
+]);
+
+/**
  * What a patient is allergic to, or a recorded "no known allergies", which
  * is not the same as nobody having asked. Kept per patient, not per visit,
  * and shown wherever a drug is prescribed or given.
  *
  * Ended, never deleted: entered in error, or no longer applying (recording an
- * allergy ends a standing "no known allergies"). Drug allergies are free text
- * for now; slice 4b links them to the drug catalogue so prescribing can check
- * them. Other alerts get their own table when one is needed.
+ * allergy ends a standing "no known allergies"). A drug allergy may name a
+ * catalogue drug (P3 slice 4b), which prescribing checks by generic name; it
+ * is still described as told. Other alerts get their own table when one is
+ * needed.
  */
 export const patientAllergies = pgTable("patient_allergies", {
   id: uuid().primaryKey().defaultRandom(),
@@ -1343,6 +1421,8 @@ export const patientAllergies = pgTable("patient_allergies", {
   category: text().$type<"drug" | "food" | "environment" | "other" | "none_known">().notNull(),
   /** What the patient reacts to, as told; null for "no known allergies". */
   allergen: text(),
+  /** The catalogue drug a drug allergy is to, when one fits; prescribing checks it. */
+  drugCode: text().references(() => drugCatalogue.code),
   reaction: text(),
   severity: text().$type<"mild" | "moderate" | "severe">(),
   recordedAt: timestamp({ withTimezone: true }).notNull(),
@@ -1362,6 +1442,7 @@ export const patientAllergies = pgTable("patient_allergies", {
   oneOf("patient_allergies_category_known", t.category, ["drug", "food", "environment", "other", "none_known"]),
   oneOf("patient_allergies_severity_known", t.severity, ["mild", "moderate", "severe"]),
   oneOf("patient_allergies_removal_reason_known", t.removalReason, ["entered_in_error", "no_longer_applies"]),
+  check("patient_allergies_drug_is_a_drug_allergy", sql`${t.drugCode} IS NULL OR ${t.category} = 'drug'`),
   check(
     "patient_allergies_allergen_unless_none_known",
     sql`(${t.category} = 'none_known' AND ${t.allergen} IS NULL AND ${t.reaction} IS NULL AND ${t.severity} IS NULL)
@@ -1545,6 +1626,485 @@ export const clinicalNotes = pgTable("clinical_notes", {
 ]);
 
 // ---------------------------------------------------------------------------
+// Orders and the lab catalogue (SCHEMA.md §8, P3 slice 4a)
+// ---------------------------------------------------------------------------
+
+/**
+ * A test the facility's lab does: the specimen it takes and the `lab`
+ * billable item it is charged as, whose code and name it goes by. Kept by
+ * the facility admin and the lab supervisor; retired, never removed.
+ */
+export const labTests = pgTable("lab_tests", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  billableItemId: uuid().notNull(),
+  specimenType: text().$type<"blood" | "urine" | "stool" | "sputum" | "swab" | "csf" | "body_fluid" | "other">().notNull(),
+  /** Offered for ordering; a test whose reagents run out is retired for a while. */
+  isActive: boolean().default(true).notNull(),
+  createdAt: createdAt(),
+}, t => [
+  unique("lab_tests_facility_id_id_key").on(t.facilityId, t.id),
+  // One test per item, so a lab charge names the test it was for.
+  unique("lab_tests_billable_item_key").on(t.facilityId, t.billableItemId),
+  foreignKey({ name: "lab_tests_billable_item_fk", columns: [t.facilityId, t.billableItemId], foreignColumns: [billableItems.facilityId, billableItems.id] }),
+  oneOf("lab_tests_specimen_type_known", t.specimenType, ["blood", "urine", "stool", "sputum", "swab", "csf", "body_fluid", "other"]),
+]);
+
+/**
+ * One value a test reports, e.g. haemoglobin in a full blood count: a number
+ * with a unit, a choice from a list, or free text. A number's reference
+ * ranges are in `lab_reference_ranges`; a choice's abnormal answers here.
+ */
+export const labAnalytes = pgTable("lab_analytes", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  labTestId: uuid().notNull(),
+  /** Unique within its test, e.g. `HGB` (rule 8). */
+  code: text().notNull(),
+  name: text().notNull(),
+  /** Its place in the test's report, from 0. */
+  position: integer().notNull(),
+  resultType: text().$type<"numeric" | "choice" | "text">().notNull(),
+  /** A number's unit, e.g. `g/dL`; none for a ratio or a count without one. */
+  unit: text(),
+  /** A choice's answers, in the order offered. */
+  choices: text().array(),
+  /** The answers flagged abnormal, among `choices`; may be none. */
+  abnormalChoices: text().array(),
+  /** A number below or above these is critical: someone is told at once (5b). */
+  criticalLow: numeric({ mode: "number" }),
+  criticalHigh: numeric({ mode: "number" }),
+  isActive: boolean().default(true).notNull(),
+  createdAt: createdAt(),
+}, t => [
+  unique("lab_analytes_facility_id_id_key").on(t.facilityId, t.id),
+  unique("lab_analytes_test_code_key").on(t.labTestId, t.code),
+  foreignKey({ name: "lab_analytes_test_fk", columns: [t.facilityId, t.labTestId], foreignColumns: [labTests.facilityId, labTests.id] }),
+  oneOf("lab_analytes_result_type_known", t.resultType, ["numeric", "choice", "text"]),
+  check("lab_analytes_code_shape", sql`${t.code} ~ '^[A-Z0-9][A-Z0-9._%#-]{0,15}$'`),
+  check("lab_analytes_name_present", sql`length(btrim(${t.name})) > 0`),
+  check("lab_analytes_position_nonnegative", sql`${t.position} >= 0`),
+  check(
+    "lab_analytes_shape",
+    sql`(${t.resultType} = 'numeric' AND ${t.choices} IS NULL AND ${t.abnormalChoices} IS NULL
+          AND (${t.unit} IS NULL OR length(btrim(${t.unit})) > 0)
+          AND (${t.criticalLow} IS NULL OR ${t.criticalHigh} IS NULL OR ${t.criticalLow} < ${t.criticalHigh}))
+      OR (${t.resultType} = 'choice' AND ${t.unit} IS NULL AND ${t.criticalLow} IS NULL AND ${t.criticalHigh} IS NULL
+          AND ${t.choices} IS NOT NULL AND cardinality(${t.choices}) >= 2
+          AND ${t.abnormalChoices} IS NOT NULL AND ${t.abnormalChoices} <@ ${t.choices})
+      OR (${t.resultType} = 'text' AND ${t.unit} IS NULL AND ${t.choices} IS NULL AND ${t.abnormalChoices} IS NULL
+          AND ${t.criticalLow} IS NULL AND ${t.criticalHigh} IS NULL)`,
+  ),
+]);
+
+/**
+ * A numeric analyte's normal range for one sex and age band. Ages are in
+ * days, from (inclusive) and to (exclusive; none for every age after), so a
+ * newborn's range can differ from an infant's. Replaced as a set: the old
+ * rows are retired, never edited, and a result keeps the range it was
+ * judged by (5b). Current ranges never overlap (`lab_reference_ranges_no_overlap`).
+ */
+export const labReferenceRanges = pgTable("lab_reference_ranges", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  analyteId: uuid().notNull(),
+  sex: text().$type<"any" | "male" | "female">().notNull(),
+  ageFromDays: integer().notNull(),
+  ageToDays: integer(),
+  low: numeric({ mode: "number" }),
+  high: numeric({ mode: "number" }),
+  createdAt: createdAt(),
+  retiredAt: timestamp({ withTimezone: true }),
+}, t => [
+  unique("lab_reference_ranges_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({ name: "lab_reference_ranges_analyte_fk", columns: [t.facilityId, t.analyteId], foreignColumns: [labAnalytes.facilityId, labAnalytes.id] }),
+  index("lab_reference_ranges_current_index").on(t.facilityId, t.analyteId).where(sql`${t.retiredAt} IS NULL`),
+  oneOf("lab_reference_ranges_sex_known", t.sex, ["any", "male", "female"]),
+  check("lab_reference_ranges_ages", sql`${t.ageFromDays} >= 0 AND (${t.ageToDays} IS NULL OR ${t.ageToDays} > ${t.ageFromDays})`),
+  check(
+    "lab_reference_ranges_bounds",
+    sql`num_nonnulls(${t.low}, ${t.high}) >= 1 AND (${t.low} IS NULL OR ${t.high} IS NULL OR ${t.low} < ${t.high})`,
+  ),
+]);
+
+/**
+ * Work asked for on an encounter, at one time: lab tests and services
+ * (P3 slice 4a; medicines in 4b). Ordered by a clinician (rule 25), or, for
+ * a walk-in lab client, entered from an outside requester's form or asked
+ * for by the client. Written once, never changed: its items carry the
+ * lifecycle.
+ */
+export const orders = pgTable("orders", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  encounterId: uuid().notNull(),
+  urgency: text().$type<"routine" | "urgent">().notNull(),
+  /** Why it is asked for, for whoever does it, e.g. "fever for 3 days". */
+  indication: text(),
+  /** The clinician who ordered it; null for a walk-in's request. */
+  orderedBy: uuid(),
+  /** A walk-in's outside requester, as the request form names them. */
+  requesterName: text(),
+  requesterFacility: text(),
+  requesterLicence: text(),
+  /** A walk-in asking for a test themselves, with no requester. */
+  selfRequested: boolean().default(false).notNull(),
+  /** Who put it in: the ordering clinician, or the clerk or lab member for a walk-in. */
+  enteredBy: uuid().notNull(),
+  orderedAt: timestamp({ withTimezone: true }).notNull(),
+  /** A prescription's printed `RX-` document, issued as it is signed. */
+  documentId: uuid(),
+}, t => [
+  unique("orders_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({ name: "orders_encounter_fk", columns: [t.facilityId, t.encounterId], foreignColumns: [encounters.facilityId, encounters.id] }),
+  foreignKey({ name: "orders_ordered_by_fk", columns: [t.facilityId, t.orderedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "orders_entered_by_fk", columns: [t.facilityId, t.enteredBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "orders_document_fk", columns: [t.facilityId, t.documentId], foreignColumns: [documents.facilityId, documents.id] }),
+  uniqueIndex("orders_one_per_document").on(t.documentId).where(sql`${t.documentId} IS NOT NULL`),
+  index("orders_encounter_index").on(t.facilityId, t.encounterId, t.orderedAt),
+  oneOf("orders_urgency_known", t.urgency, ["routine", "urgent"]),
+  // A prescription is a clinician's.
+  check("orders_prescription_prescribed", sql`${t.documentId} IS NULL OR ${t.orderedBy} IS NOT NULL`),
+  // Exactly one of: a clinician here, an outside requester, the client themselves.
+  check(
+    "orders_one_requester",
+    sql`num_nonnulls(${t.orderedBy}, ${t.requesterName}) + ${t.selfRequested}::int = 1
+      AND (${t.requesterName} IS NULL) = (${t.requesterFacility} IS NULL)
+      AND (${t.requesterLicence} IS NULL OR ${t.requesterName} IS NOT NULL)
+      AND (${t.orderedBy} IS NULL OR ${t.orderedBy} = ${t.enteredBy})`,
+  ),
+  check(
+    "orders_text_present",
+    sql`(${t.indication} IS NULL OR length(btrim(${t.indication})) > 0)
+      AND (${t.requesterName} IS NULL OR length(btrim(${t.requesterName})) > 0)
+      AND (${t.requesterFacility} IS NULL OR length(btrim(${t.requesterFacility})) > 0)
+      AND (${t.requesterLicence} IS NULL OR length(btrim(${t.requesterLicence})) > 0)`,
+  ),
+]);
+
+/**
+ * One thing an order asks for: a lab test or a billable service, by typed
+ * foreign key (rule 22). Charged as it is ordered (`charges.order_item_id`).
+ * `ordered` until done (a lab test once its specimen is collected, in 5a; a
+ * service once a clinician marks it performed) or cancelled, which cancels
+ * its charge while unbilled.
+ */
+export const orderItems = pgTable("order_items", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  orderId: uuid().notNull(),
+  labTestId: uuid(),
+  /** A lab test's specimen type as ordered, frozen with it: the catalogue may change since. */
+  specimenType: text().$type<"blood" | "urine" | "stool" | "sputum" | "swab" | "csf" | "body_fluid" | "other">(),
+  /** A service's item: a procedure, imaging or other service. */
+  billableItemId: uuid(),
+  /** A medicine (P3 slice 4b), charged when dispensed (P4), not when prescribed. */
+  drugCode: text(),
+  /** The drug as prescribed, copied from the catalogue (rule 7): `Paracetamol 500 mg Tablet`. */
+  drugDescription: text(),
+  /** Each dose, in `doseUnit` (copied from the catalogue): 1 tablet, 5 mL. */
+  doseAmount: numeric({ precision: 11, scale: 3, mode: "string" }),
+  doseUnit: text(),
+  route: text().$type<
+    "oral" | "sublingual" | "iv" | "im" | "sc" | "intradermal" | "topical" | "rectal" | "vaginal" | "inhaled" | "nasal" | "ophthalmic" | "otic"
+  >(),
+  frequency: text().$type<"od" | "bd" | "tds" | "qid" | "nocte" | "prn" | "stat">(),
+  /** Days to take it: none for a single dose (stat), optional when needed (prn). */
+  durationDays: integer(),
+  /** In dose units: worked out from a regular frequency unless the prescriber gave it. */
+  quantity: numeric({ precision: 11, scale: 3, mode: "string" }),
+  instructions: text(),
+  /** Why it is prescribed despite a recorded allergy to it (audited). */
+  allergyOverrideReason: text(),
+  status: text().$type<"ordered" | "done" | "cancelled">().notNull(),
+  doneAt: timestamp({ withTimezone: true }),
+  doneBy: uuid(),
+  cancelledAt: timestamp({ withTimezone: true }),
+  cancelledBy: uuid(),
+  cancellationReason: text(),
+}, t => [
+  unique("order_items_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({ name: "order_items_order_fk", columns: [t.facilityId, t.orderId], foreignColumns: [orders.facilityId, orders.id] }),
+  foreignKey({ name: "order_items_lab_test_fk", columns: [t.facilityId, t.labTestId], foreignColumns: [labTests.facilityId, labTests.id] }),
+  foreignKey({ name: "order_items_billable_item_fk", columns: [t.facilityId, t.billableItemId], foreignColumns: [billableItems.facilityId, billableItems.id] }),
+  foreignKey({ name: "order_items_drug_fk", columns: [t.drugCode], foreignColumns: [drugCatalogue.code] }),
+  foreignKey({ name: "order_items_done_by_fk", columns: [t.facilityId, t.doneBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "order_items_cancelled_by_fk", columns: [t.facilityId, t.cancelledBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  index("order_items_order_index").on(t.facilityId, t.orderId),
+  // The same test or service once per order; a repeat is a later order.
+  uniqueIndex("order_items_lab_test_once").on(t.orderId, t.labTestId).where(sql`${t.labTestId} IS NOT NULL`),
+  uniqueIndex("order_items_service_once").on(t.orderId, t.billableItemId).where(sql`${t.billableItemId} IS NOT NULL`),
+  uniqueIndex("order_items_drug_once").on(t.orderId, t.drugCode).where(sql`${t.drugCode} IS NOT NULL`),
+  oneOf("order_items_status_known", t.status, ["ordered", "done", "cancelled"]),
+  oneOf("order_items_specimen_type_known", t.specimenType, ["blood", "urine", "stool", "sputum", "swab", "csf", "body_fluid", "other"]),
+  check("order_items_specimen_type_of_a_test", sql`(${t.labTestId} IS NULL) = (${t.specimenType} IS NULL)`),
+  oneOf("order_items_route_known", t.route, ["oral", "sublingual", "iv", "im", "sc", "intradermal", "topical", "rectal", "vaginal", "inhaled", "nasal", "ophthalmic", "otic"]),
+  oneOf("order_items_frequency_known", t.frequency, ["od", "bd", "tds", "qid", "nocte", "prn", "stat"]),
+  check("order_items_one_kind", sql`num_nonnulls(${t.labTestId}, ${t.billableItemId}, ${t.drugCode}) = 1`),
+  // A medicine's columns exactly when it is one: the drug as prescribed, a
+  // dose, a route, a frequency and a quantity; a duration for a regular
+  // frequency, none for a single dose.
+  check(
+    "order_items_medication_shape",
+    sql`(${t.drugCode} IS NULL AND num_nonnulls(${t.drugDescription}, ${t.doseAmount}, ${t.doseUnit}, ${t.route}, ${t.frequency},
+          ${t.durationDays}, ${t.quantity}, ${t.instructions}, ${t.allergyOverrideReason}) = 0)
+      OR (${t.drugCode} IS NOT NULL AND ${t.drugDescription} IS NOT NULL AND ${t.doseUnit} IS NOT NULL
+          AND ${t.route} IS NOT NULL AND ${t.frequency} IS NOT NULL
+          AND ${t.doseAmount} IS NOT NULL AND ${t.doseAmount} > 0 AND ${t.quantity} IS NOT NULL AND ${t.quantity} > 0
+          AND CASE ${t.frequency}
+                WHEN 'stat' THEN ${t.durationDays} IS NULL
+                WHEN 'prn' THEN ${t.durationDays} IS NULL OR ${t.durationDays} > 0
+                ELSE ${t.durationDays} IS NOT NULL AND ${t.durationDays} > 0
+              END
+          AND (${t.instructions} IS NULL OR length(btrim(${t.instructions})) > 0)
+          AND (${t.allergyOverrideReason} IS NULL OR length(btrim(${t.allergyOverrideReason})) > 0))`,
+  ),
+  check(
+    "order_items_lifecycle",
+    sql`(${t.status} = 'ordered' AND num_nonnulls(${t.doneAt}, ${t.doneBy}, ${t.cancelledAt}, ${t.cancelledBy}, ${t.cancellationReason}) = 0)
+      OR (${t.status} = 'done' AND ${t.doneAt} IS NOT NULL AND ${t.doneBy} IS NOT NULL
+          AND num_nonnulls(${t.cancelledAt}, ${t.cancelledBy}, ${t.cancellationReason}) = 0)
+      OR (${t.status} = 'cancelled' AND ${t.cancelledAt} IS NOT NULL AND ${t.cancelledBy} IS NOT NULL
+          AND ${t.cancellationReason} IS NOT NULL AND length(btrim(${t.cancellationReason})) > 0
+          AND num_nonnulls(${t.doneAt}, ${t.doneBy}) = 0)`,
+  ),
+]);
+
+/**
+ * A specimen taken for ordered lab tests (P3 slice 5a), with its accession
+ * number from the facility's daily `L-` series. It covers the tests its
+ * collector picked from one order, all of one specimen type, and taking it
+ * marks them done (decided 2026-11-11). Collected, then received by the lab
+ * (at once when the lab collected it), or rejected for a stated reason; a
+ * rejected specimen keeps its number, and its tests are recollected on a
+ * new one.
+ */
+export const specimens = pgTable("specimens", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  orderId: uuid().notNull(),
+  /** `L-20261111-017`. */
+  accessionNumber: text().notNull(),
+  specimenType: text().$type<"blood" | "urine" | "stool" | "sputum" | "swab" | "csf" | "body_fluid" | "other">().notNull(),
+  status: text().$type<"collected" | "received" | "rejected">().notNull(),
+  collectedAt: timestamp({ withTimezone: true }).notNull(),
+  /** Who took it (rule 25). */
+  collectedBy: uuid().notNull(),
+  receivedAt: timestamp({ withTimezone: true }),
+  receivedBy: uuid(),
+  rejectedAt: timestamp({ withTimezone: true }),
+  rejectedBy: uuid(),
+  rejectionReason: text().$type<"haemolysed" | "clotted" | "insufficient" | "wrong_container" | "mislabelled" | "leaked" | "too_old" | "other">(),
+  rejectionNote: text(),
+  /** The rejected specimen this one was taken again for. */
+  recollectionOf: uuid(),
+  /**
+   * The transaction that took it, set by the database and never changed:
+   * only that transaction links tests to it (0066).
+   */
+  takenInXact: bigint({ mode: "number" }).notNull().default(sql`txid_current()`),
+}, t => [
+  unique("specimens_facility_id_id_key").on(t.facilityId, t.id),
+  unique("specimens_facility_id_accession_number_key").on(t.facilityId, t.accessionNumber),
+  foreignKey({ name: "specimens_order_fk", columns: [t.facilityId, t.orderId], foreignColumns: [orders.facilityId, orders.id] }),
+  foreignKey({ name: "specimens_collected_by_fk", columns: [t.facilityId, t.collectedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "specimens_received_by_fk", columns: [t.facilityId, t.receivedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "specimens_rejected_by_fk", columns: [t.facilityId, t.rejectedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "specimens_recollection_of_fk", columns: [t.facilityId, t.recollectionOf], foreignColumns: [t.facilityId, t.id] }),
+  // Taken again once: a second recollection is of the new specimen.
+  uniqueIndex("specimens_recollected_once").on(t.recollectionOf).where(sql`${t.recollectionOf} IS NOT NULL`),
+  index("specimens_order_index").on(t.facilityId, t.orderId),
+  index("specimens_in_lab_index").on(t.facilityId, t.collectedAt).where(sql`${t.status} IN ('collected', 'received')`),
+  oneOf("specimens_specimen_type_known", t.specimenType, ["blood", "urine", "stool", "sputum", "swab", "csf", "body_fluid", "other"]),
+  oneOf("specimens_status_known", t.status, ["collected", "received", "rejected"]),
+  oneOf("specimens_rejection_reason_known", t.rejectionReason, [
+    "haemolysed",
+    "clotted",
+    "insufficient",
+    "wrong_container",
+    "mislabelled",
+    "leaked",
+    "too_old",
+    "other",
+  ]),
+  check(
+    "specimens_lifecycle",
+    sql`(${t.status} = 'collected' AND num_nonnulls(${t.receivedAt}, ${t.receivedBy}, ${t.rejectedAt}, ${t.rejectedBy}, ${t.rejectionReason}, ${t.rejectionNote}) = 0)
+      OR (${t.status} = 'received' AND ${t.receivedAt} IS NOT NULL AND ${t.receivedBy} IS NOT NULL
+          AND num_nonnulls(${t.rejectedAt}, ${t.rejectedBy}, ${t.rejectionReason}, ${t.rejectionNote}) = 0)
+      OR (${t.status} = 'rejected' AND ${t.rejectedAt} IS NOT NULL AND ${t.rejectedBy} IS NOT NULL AND ${t.rejectionReason} IS NOT NULL
+          AND (${t.receivedAt} IS NULL) = (${t.receivedBy} IS NULL))`,
+  ),
+  check(
+    "specimens_rejection_note",
+    sql`(${t.rejectionNote} IS NULL OR length(btrim(${t.rejectionNote})) > 0)
+      AND (${t.rejectionReason} IS DISTINCT FROM 'other' OR ${t.rejectionNote} IS NOT NULL)`,
+  ),
+  check(
+    "specimens_in_order",
+    sql`(${t.receivedAt} IS NULL OR ${t.receivedAt} >= ${t.collectedAt})
+      AND (${t.rejectedAt} IS NULL OR ${t.rejectedAt} >= ${t.collectedAt})`,
+  ),
+]);
+
+/**
+ * Which ordered lab tests a specimen was taken for, each with its analytes
+ * as the test had them then. Written with the specimen, never changed.
+ */
+export const specimenTests = pgTable("specimen_tests", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  specimenId: uuid().notNull(),
+  orderItemId: uuid().notNull(),
+  /**
+   * The test's analytes in use when the specimen was taken: its numbers and
+   * choices are what a result must give, whatever the catalogue says since.
+   */
+  analyteIds: uuid().array().notNull(),
+}, t => [
+  unique("specimen_tests_specimen_item_key").on(t.specimenId, t.orderItemId),
+  // The target of a result's link to its test on the specimen (lab_results_specimen_test_fk).
+  unique("specimen_tests_facility_specimen_item_key").on(t.facilityId, t.specimenId, t.orderItemId),
+  foreignKey({ name: "specimen_tests_specimen_fk", columns: [t.facilityId, t.specimenId], foreignColumns: [specimens.facilityId, specimens.id] }),
+  foreignKey({ name: "specimen_tests_order_item_fk", columns: [t.facilityId, t.orderItemId], foreignColumns: [orderItems.facilityId, orderItems.id] }),
+  index("specimen_tests_order_item_index").on(t.facilityId, t.orderItemId),
+]);
+
+/**
+ * One test's result on one specimen (P3 slice 5b): its analytes' values,
+ * entered together and verified together by another lab member (decided
+ * 2026-11-10). Entered results stay in the lab; a released or verified one
+ * reaches the clinician. One lab member on night duty may release it
+ * unverified, with a reason, for the next to verify (decided 2026-11-11). A
+ * critical value needs who was told, how and when before it is released or
+ * verified. A correction is a new version: the one it corrects is superseded
+ * at once and stays on record.
+ */
+export const labResults = pgTable("lab_results", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  specimenId: uuid().notNull(),
+  orderItemId: uuid().notNull(),
+  /** 1, then one more for each correction. */
+  version: integer().notNull(),
+  /** Why a later version corrects the one before. */
+  correctionReason: text(),
+  status: text().$type<"entered" | "released" | "verified" | "superseded">().notNull(),
+  enteredAt: timestamp({ withTimezone: true }).notNull(),
+  enteredBy: uuid().notNull(),
+  /** Any value outside its critical limits: someone must be told. */
+  hasCritical: boolean().notNull(),
+  releasedAt: timestamp({ withTimezone: true }),
+  releasedBy: uuid(),
+  releaseReason: text(),
+  verifiedAt: timestamp({ withTimezone: true }),
+  verifiedBy: uuid(),
+  /** Who was told of a critical value, how and when, and who recorded it. */
+  toldName: text(),
+  toldHow: text().$type<"in_person" | "phone">(),
+  toldAt: timestamp({ withTimezone: true }),
+  toldRecordedBy: uuid(),
+  supersededAt: timestamp({ withTimezone: true }),
+}, t => [
+  unique("lab_results_facility_id_id_key").on(t.facilityId, t.id),
+  unique("lab_results_version_key").on(t.specimenId, t.orderItemId, t.version),
+  foreignKey({ name: "lab_results_specimen_fk", columns: [t.facilityId, t.specimenId], foreignColumns: [specimens.facilityId, specimens.id] }),
+  foreignKey({ name: "lab_results_order_item_fk", columns: [t.facilityId, t.orderItemId], foreignColumns: [orderItems.facilityId, orderItems.id] }),
+  // A result is for a test the specimen was taken for, never another order's or another type's.
+  foreignKey({ name: "lab_results_specimen_test_fk", columns: [t.facilityId, t.specimenId, t.orderItemId], foreignColumns: [specimenTests.facilityId, specimenTests.specimenId, specimenTests.orderItemId] }),
+  foreignKey({ name: "lab_results_entered_by_fk", columns: [t.facilityId, t.enteredBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "lab_results_released_by_fk", columns: [t.facilityId, t.releasedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "lab_results_verified_by_fk", columns: [t.facilityId, t.verifiedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "lab_results_told_recorded_by_fk", columns: [t.facilityId, t.toldRecordedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  // One current version of a test's result on a specimen.
+  uniqueIndex("lab_results_one_current").on(t.specimenId, t.orderItemId).where(sql`${t.status} <> 'superseded'`),
+  index("lab_results_order_item_index").on(t.facilityId, t.orderItemId),
+  oneOf("lab_results_status_known", t.status, ["entered", "released", "verified", "superseded"]),
+  oneOf("lab_results_told_how_known", t.toldHow, ["in_person", "phone"]),
+  check("lab_results_version_positive", sql`${t.version} >= 1`),
+  check(
+    "lab_results_correction_reason",
+    sql`(${t.version} = 1) = (${t.correctionReason} IS NULL)
+      AND (${t.correctionReason} IS NULL OR length(btrim(${t.correctionReason})) > 0)`,
+  ),
+  check(
+    "lab_results_lifecycle",
+    sql`num_nonnulls(${t.releasedAt}, ${t.releasedBy}, ${t.releaseReason}) IN (0, 3)
+      AND num_nonnulls(${t.verifiedAt}, ${t.verifiedBy}) IN (0, 2)
+      AND (${t.releaseReason} IS NULL OR length(btrim(${t.releaseReason})) > 0)
+      AND CASE ${t.status}
+            WHEN 'entered' THEN num_nonnulls(${t.releasedAt}, ${t.verifiedAt}, ${t.supersededAt}) = 0
+            WHEN 'released' THEN ${t.releasedAt} IS NOT NULL AND num_nonnulls(${t.verifiedAt}, ${t.supersededAt}) = 0
+            WHEN 'verified' THEN ${t.verifiedAt} IS NOT NULL AND ${t.supersededAt} IS NULL
+            ELSE ${t.supersededAt} IS NOT NULL
+          END`,
+  ),
+  // Another lab member verifies (decided 2026-11-10), as rule 24 has it for money.
+  check("lab_results_verified_by_another", sql`${t.verifiedBy} IS NULL OR ${t.verifiedBy} <> ${t.enteredBy}`),
+  check(
+    "lab_results_told",
+    sql`num_nonnulls(${t.toldName}, ${t.toldHow}, ${t.toldAt}, ${t.toldRecordedBy}) IN (0, 4)
+      AND (${t.toldName} IS NULL OR length(btrim(${t.toldName})) > 0)
+      AND (NOT ${t.hasCritical} OR ${t.releasedAt} IS NULL AND ${t.verifiedAt} IS NULL OR ${t.toldName} IS NOT NULL)`,
+  ),
+]);
+
+/**
+ * One analyte's value in a result, frozen as judged: the analyte's code,
+ * name and unit, the reference range and critical limits applied for the
+ * patient's sex and age at collection, and the flag (rule 7). Written with
+ * its result and never changed.
+ */
+export const labResultValues = pgTable("lab_result_values", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  resultId: uuid().notNull(),
+  analyteId: uuid().notNull(),
+  analyteCode: text().notNull(),
+  analyteName: text().notNull(),
+  resultType: text().$type<"numeric" | "choice" | "text">().notNull(),
+  unit: text(),
+  valueNumeric: numeric({ mode: "number" }),
+  /** A choice's answer, or free text. */
+  valueText: text(),
+  rangeLow: numeric({ mode: "number" }),
+  rangeHigh: numeric({ mode: "number" }),
+  criticalLow: numeric({ mode: "number" }),
+  criticalHigh: numeric({ mode: "number" }),
+  flag: text().$type<"low" | "high" | "critical_low" | "critical_high" | "abnormal">(),
+}, t => [
+  unique("lab_result_values_result_analyte_key").on(t.resultId, t.analyteId),
+  foreignKey({ name: "lab_result_values_result_fk", columns: [t.facilityId, t.resultId], foreignColumns: [labResults.facilityId, labResults.id] }),
+  foreignKey({ name: "lab_result_values_analyte_fk", columns: [t.facilityId, t.analyteId], foreignColumns: [labAnalytes.facilityId, labAnalytes.id] }),
+  oneOf("lab_result_values_result_type_known", t.resultType, ["numeric", "choice", "text"]),
+  oneOf("lab_result_values_flag_known", t.flag, ["low", "high", "critical_low", "critical_high", "abnormal"]),
+  check(
+    "lab_result_values_shape",
+    sql`(${t.resultType} = 'numeric' AND ${t.valueNumeric} IS NOT NULL AND ${t.valueText} IS NULL)
+      OR (${t.resultType} <> 'numeric' AND ${t.valueText} IS NOT NULL AND length(btrim(${t.valueText})) > 0
+          AND num_nonnulls(${t.valueNumeric}, ${t.unit}, ${t.rangeLow}, ${t.rangeHigh}, ${t.criticalLow}, ${t.criticalHigh}) = 0
+          AND (${t.flag} IS NULL OR ${t.flag} = 'abnormal'))`,
+  ),
+]);
+
+/**
+ * The printed lab report of an order (P3 slice 5b), from the yearly `LR-`
+ * series: issued once every lab test on it is resulted or cancelled, and
+ * issued again (the old one voided) whenever a result on it changes.
+ */
+export const labReports = pgTable("lab_reports", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  orderId: uuid().notNull(),
+  documentId: uuid().notNull(),
+}, t => [
+  unique("lab_reports_document_key").on(t.documentId),
+  foreignKey({ name: "lab_reports_order_fk", columns: [t.facilityId, t.orderId], foreignColumns: [orders.facilityId, orders.id] }),
+  foreignKey({ name: "lab_reports_document_fk", columns: [t.facilityId, t.documentId], foreignColumns: [documents.facilityId, documents.id] }),
+  index("lab_reports_order_index").on(t.facilityId, t.orderId),
+]);
+
+// ---------------------------------------------------------------------------
 // Charges (SCHEMA.md §7.2)
 // ---------------------------------------------------------------------------
 
@@ -1573,6 +2133,8 @@ export const charges = pgTable("charges", {
   bedStayId: uuid(),
   /** The consultation fee for being seen at a clinic (P3): its queue entry. */
   queueEntryId: uuid(),
+  /** A lab test or service, charged as it is ordered (P3). */
+  orderItemId: uuid(),
   /** Why it was posted by hand, when it has no source. */
   manualReason: text(),
   /** Who posted it; null when the system captured it (a bed-day). */
@@ -1589,6 +2151,7 @@ export const charges = pgTable("charges", {
   foreignKey({ name: "charges_price_fk", columns: [t.facilityId, t.priceListItemId], foreignColumns: [priceListItems.facilityId, priceListItems.id] }),
   foreignKey({ name: "charges_bed_stay_fk", columns: [t.facilityId, t.bedStayId], foreignColumns: [bedStays.facilityId, bedStays.id] }),
   foreignKey({ name: "charges_queue_entry_fk", columns: [t.facilityId, t.queueEntryId], foreignColumns: [queueEntries.facilityId, queueEntries.id] }),
+  foreignKey({ name: "charges_order_item_fk", columns: [t.facilityId, t.orderItemId], foreignColumns: [orderItems.facilityId, orderItems.id] }),
   foreignKey({ name: "charges_captured_by_fk", columns: [t.facilityId, t.capturedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
   foreignKey({ name: "charges_cancelled_by_fk", columns: [t.facilityId, t.cancelledBy], foreignColumns: [memberships.facilityId, memberships.id] }),
   index("charges_encounter_index").on(t.facilityId, t.encounterId, t.serviceDate),
@@ -1596,6 +2159,8 @@ export const charges = pgTable("charges", {
   uniqueIndex("charges_one_bed_day_per_night").on(t.encounterId, t.serviceDate).where(sql`${t.bedStayId} IS NOT NULL`),
   // One fee per turn at a clinic; once per visit per clinic is the service's, under the encounter's lock.
   uniqueIndex("charges_one_per_queue_entry").on(t.queueEntryId).where(sql`${t.queueEntryId} IS NOT NULL`),
+  // An order item is charged once.
+  uniqueIndex("charges_one_per_order_item").on(t.orderItemId).where(sql`${t.orderItemId} IS NOT NULL`),
   check("charges_quantity_positive", sql`${t.quantity} > 0`),
   check("charges_unit_price_nonnegative", sql`${t.unitPriceCents} >= 0`),
   // Whole shillings: neither cash nor M-Pesa carries cents (SPEC.md D2).
@@ -1603,8 +2168,8 @@ export const charges = pgTable("charges", {
   // At most one source; none means a manual posting, which needs a reason and a person.
   check(
     "charges_source_or_reason",
-    sql`num_nonnulls(${t.bedStayId}, ${t.queueEntryId}) <= 1
-      AND ((num_nonnulls(${t.bedStayId}, ${t.queueEntryId}) = 0) = (${t.manualReason} IS NOT NULL AND length(btrim(${t.manualReason})) > 0))`,
+    sql`num_nonnulls(${t.bedStayId}, ${t.queueEntryId}, ${t.orderItemId}) <= 1
+      AND ((num_nonnulls(${t.bedStayId}, ${t.queueEntryId}, ${t.orderItemId}) = 0) = (${t.manualReason} IS NOT NULL AND length(btrim(${t.manualReason})) > 0))`,
   ),
   check("charges_manual_has_person", sql`${t.manualReason} IS NULL OR ${t.capturedBy} IS NOT NULL`),
   check(
@@ -1624,7 +2189,7 @@ export const charges = pgTable("charges", {
 export const jobFailures = pgTable("job_failures", {
   id: uuid().primaryKey().defaultRandom(),
   facilityId: uuid().notNull().references(() => facilities.id),
-  job: text().$type<"bed_day_accrual" | "reconciliation" | "visit_close">().notNull(),
+  job: text().$type<"bed_day_accrual" | "reconciliation" | "visit_close" | "visit_finish">().notNull(),
   /** What it was working on, e.g. the encounter. Not a foreign key: the log outlives it. */
   subjectId: uuid(),
   /** What is wrong, for whoever fixes it. Ids and codes only (rule 10). */
@@ -1636,7 +2201,7 @@ export const jobFailures = pgTable("job_failures", {
   uniqueIndex("job_failures_open_once")
     .on(t.facilityId, t.job, sql`coalesce(${t.subjectId}, '00000000-0000-0000-0000-000000000000'::uuid)`, t.error)
     .where(sql`${t.resolvedAt} IS NULL`),
-  oneOf("job_failures_job_known", t.job, ["bed_day_accrual", "reconciliation", "visit_close"]),
+  oneOf("job_failures_job_known", t.job, ["bed_day_accrual", "reconciliation", "visit_close", "visit_finish"]),
 ]);
 
 // ---------------------------------------------------------------------------
@@ -2295,6 +2860,16 @@ export const TENANT_TABLES = [
   "patient_allergies",
   "diagnoses",
   "clinical_notes",
+  "lab_tests",
+  "lab_analytes",
+  "lab_reference_ranges",
+  "orders",
+  "order_items",
+  "specimens",
+  "specimen_tests",
+  "lab_results",
+  "lab_result_values",
+  "lab_reports",
   "billable_items",
   "price_lists",
   "price_changes",

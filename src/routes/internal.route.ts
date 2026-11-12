@@ -9,7 +9,7 @@ import env from "@/env";
 import { accrueAllBedDays } from "@/jobs/bed-days";
 import { drainOutbox } from "@/jobs/outbox-worker";
 import { reconcileAll } from "@/jobs/reconciliation";
-import { closeStaleVisits } from "@/jobs/visits";
+import { closeFinishedVisits, closeStaleVisits } from "@/jobs/visits";
 import { DRAIN_PATH, INVOKER_AUDIENCE } from "@/lib/cloud-tasks";
 import { createRouter } from "@/lib/create-app";
 import { googleInvokerVerifier } from "@/lib/invoker-auth";
@@ -32,6 +32,9 @@ import { googleInvokerVerifier } from "@/lib/invoker-auth";
  *                                 after their day. Cloud Scheduler, early
  *                                 each morning in Nairobi.
  *
+ *   POST /internal/jobs/finish-visits  closes outpatient visits with nothing
+ *                                 pending. Cloud Scheduler, every 15 minutes.
+ *
  * Delivery is at least once and both are idempotent, so a duplicate
  * call does nothing harmful. A 500 makes Cloud Tasks retry; a job that
  * failed is already recorded for backoff, so the drain still answers 200.
@@ -41,6 +44,8 @@ export const BED_DAYS_PATH = "/internal/jobs/bed-days";
 export const RECONCILIATION_PATH = "/internal/jobs/reconciliation";
 /** The nightly close of outpatient visits left open. */
 export const CLOSE_VISITS_PATH = "/internal/jobs/close-visits";
+/** The check every 15 minutes that closes outpatient visits with nothing pending. */
+export const FINISH_VISITS_PATH = "/internal/jobs/finish-visits";
 
 export function createInternalRouter(verifier: InvokerVerifier): AppOpenAPI {
   const router = createRouter();
@@ -57,6 +62,7 @@ export function createInternalRouter(verifier: InvokerVerifier): AppOpenAPI {
   router.post(BED_DAYS_PATH, async c => c.json(await accrueAllBedDays(), HttpStatusCodes.OK));
   router.post(RECONCILIATION_PATH, async c => c.json(await reconcileAll(), HttpStatusCodes.OK));
   router.post(CLOSE_VISITS_PATH, async c => c.json(await closeStaleVisits(), HttpStatusCodes.OK));
+  router.post(FINISH_VISITS_PATH, async c => c.json(await closeFinishedVisits(), HttpStatusCodes.OK));
 
   return router;
 }

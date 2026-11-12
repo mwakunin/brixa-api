@@ -5,7 +5,7 @@ import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { CLINICAL_ROLES } from "@/lib/professions";
 import { requireClinicalRole, requireMembershipRole } from "@/middlewares/auth";
-import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
+import { clinicalResponses, facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
 /**
  * A patient's allergies, or "no known allergies". Recorded by licensed
@@ -28,6 +28,8 @@ const AllergySchema = z.object({
   category: z.enum(["drug", "food", "environment", "other", "none_known"]),
   /** Null for "no known allergies". */
   allergen: z.string().nullable(),
+  /** The catalogue drug a drug allergy is to, when one was named. */
+  drugCode: z.string().nullable(),
   reaction: z.string().nullable(),
   severity: z.enum(["mild", "moderate", "severe"]).nullable(),
   recordedAt: z.string(),
@@ -36,16 +38,19 @@ const AllergySchema = z.object({
   removalReason: z.enum(["entered_in_error", "no_longer_applies"]).nullable(),
 });
 
+// Strict, so a misspelt `drugCode` is refused rather than the allergy recorded with no drug to check.
 const RecordBodySchema = z.union([
-  z.object({
+  z.strictObject({
     category: z.enum(["drug", "food", "environment", "other"]),
     /** As the patient or their record says it, e.g. "Penicillin", "Groundnuts". */
     allergen: oneLine(100),
+    /** For a drug allergy, the catalogue drug when one fits: prescribing it is then checked. */
+    drugCode: z.string().trim().toUpperCase().regex(/^[A-Z0-9][A-Z0-9._/-]{0,31}$/, "A drug catalogue code").optional(),
     reaction: oneLine(200).optional(),
     severity: z.enum(["mild", "moderate", "severe"]).optional(),
-  }),
+  }).refine(b => b.drugCode === undefined || b.category === "drug", { message: "Only a drug allergy names a drug", path: ["drugCode"] }),
   /** Asked, and the patient has none. Refused while an allergy stands. */
-  z.object({ noKnownAllergies: z.literal(true) }),
+  z.strictObject({ noKnownAllergies: z.literal(true) }),
 ]);
 
 const ListQuerySchema = z.object({
@@ -81,8 +86,8 @@ export const recordAllergy = createRoute({
   responses: {
     [HttpStatusCodes.CREATED]: jsonContent(AllergySchema, "Recorded"),
     [HttpStatusCodes.CONFLICT]: jsonContent(RefusalSchema, "\"No known allergies\" while an allergy stands"),
-    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(RecordBodySchema), "Invalid allergy"),
-    ...tenantResponses,
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(RecordBodySchema), "Invalid allergy, or a `drugCode` not in the catalogue"),
+    ...clinicalResponses,
   },
 });
 
@@ -98,7 +103,7 @@ export const removeAllergy = createRoute({
     [HttpStatusCodes.OK]: jsonContent(AllergySchema, "Removed"),
     [HttpStatusCodes.CONFLICT]: jsonContent(RefusalSchema, "Already removed"),
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(RemoveBodySchema), "No such reason, or not an id"),
-    ...tenantResponses,
+    ...clinicalResponses,
   },
 });
 

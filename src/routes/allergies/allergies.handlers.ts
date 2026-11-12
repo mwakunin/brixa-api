@@ -18,6 +18,13 @@ function refusal(c: Context, err: unknown) {
     return null;
   if (err.code === "patient_not_found" || err.code === "not_found")
     return c.json({ message: HttpStatusPhrases.NOT_FOUND }, HttpStatusCodes.NOT_FOUND);
+  // About the field sent, not the record's state.
+  if (err.code === "drug_not_found") {
+    return c.json({
+      success: false as const,
+      error: { name: "ValidationError", issues: [{ code: "custom" as const, path: ["drugCode"], message: err.message }] },
+    }, HttpStatusCodes.UNPROCESSABLE_ENTITY);
+  }
   return c.json({ message: err.message, code: err.code }, HttpStatusCodes.CONFLICT);
 }
 
