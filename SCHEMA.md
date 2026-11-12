@@ -677,7 +677,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 - **`specimen_tests`** names the order items a specimen is for, written with it and never changed. A trigger keeps them lab tests on the specimen's own order.
 - **Taking a specimen** (`POST /orders/{id}/specimens`, lab members, nurses and ward nurses, under a current licence) covers the order's waiting tests of that type, or the ones named. It locks the encounter, then the items (M8), and marks them `done`: no longer cancellable, their charges standing. Taken by a lab member, the specimen is received at once; taken by a nurse, the lab receives it (`/specimens/{id}/receive`).
 - **Rejecting** (`/specimens/{id}/reject`, lab members) and **recollecting** (`/specimens/{id}/recollect`, collectors): a new specimen, with a new number, for the same tests.
-- **The worklist** (`GET /lab/worklist`, lab members, audited as `lab.worklist_viewed`) lists tests waiting to be collected, grouped by order and specimen type, then specimens to receive, then specimens in the lab. Each list is urgent first, then oldest, and names the patient with their number, sex and age. A test not collected by the time its visit ends stays listed for 7 days after it, after the open visits' tests and marked with `visitEndedAt`, since the patient may come back for the sample (decided 2026-11-12). Its charge stands, and it is collected from its order on the closed encounter, within the week or after it.
+- **The worklist** (`GET /lab/worklist`, lab members, audited as `lab.worklist_viewed`) lists tests waiting to be collected, grouped by order and specimen type, then rejected specimens not yet taken again (`toRecollect`, with the rejection reason), then specimens to receive, then specimens in the lab, then results to verify. Each list is urgent first, then oldest, and names the patient with their number, sex and age. A test not collected by the time its visit ends stays listed for 7 days after it, after the open visits' tests and marked with `visitEndedAt`, since the patient may come back for the sample (decided 2026-11-12). A rejected specimen is listed to take again within the same window. Its charge stands, and it is collected from its order on the closed encounter, within the week or after it.
 - **The unpaid warning:** a test is `unpaid` at an outpatient visit unless its charge is assigned in full to finalised bills that owe nothing (`paidCharges`, derived, rule 4). Emergencies and admissions never show it, and it never blocks taking a specimen.
 - **Not yet:** results, verification and the lab report (5b, below).
 
@@ -714,14 +714,15 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - A lab order item keeps its test's specimen type (`order_items.specimen_type`).
   - A specimen keeps each test's analytes as they stood when it was taken (`specimen_tests.analyte_ids`). A result must give every number and choice in that panel, retired since or not, and may give an analyte added since. A test with no analyte in use is not collected.
   - A result's values are written only while it is entered (0061).
-  - A verified result's record of who was told never changes (0063).
+  - A verified result's record of who was told never changes (0063), nor its release, even when it was verified without one (0067).
   - An issued prescription takes no new medicine: its items are written in the transaction that wrote its order, which the trigger tells from the order row's `xmin` (0064).
   - A specimen's tests are linked only in the transaction that takes it, and only tests ordered on its specimen type. The database stamps each specimen with its taking transaction (`taken_in_xact`, 0066), which never changes. A result's specimen and test must be one of those links (`lab_results_specimen_test_fk`, 0065), and its values are for analytes of its own test (0066).
 - **Refusals:**
   - An order item whose charge waits on a draft bill is not cancelled (`on_draft_invoice`): void the draft first.
   - A stat medicine takes no separate quantity.
   - Request bodies refuse unknown fields, nested objects included.
-  - Result values that do not fit answer 422, as do a drug not in the catalogue (on a prescription or an allergy) and an injected route (iv, im, sc, intradermal) for a product not made for injection.
+  - Result values that do not fit answer 422, as do a drug not in the catalogue (on a prescription or an allergy), an injected route (iv, im, sc, intradermal) for a product not made for injection, and a quantity past what `order_items.quantity` holds.
+  - An offered test keeps an analyte in use: its last one is not retired (`last_analyte`), a test with none is not offered again (`no_analytes`), and one left that way is not ordered. An answer is not removed from a choice analyte while a specimen waiting for its result may be given it (`answer_in_use`).
   - A lab number (a result, a range or a critical limit) has at most 6 decimal places and is below 10^15, so the report prints it exactly as entered.
   - Who was told of a critical value cannot be later than now.
 - **Printed whole:**

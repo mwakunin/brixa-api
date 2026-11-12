@@ -105,6 +105,9 @@ const ValueSchema = z.object({
 const ResultSchema = z.object({
   id: z.uuid(),
   orderId: z.uuid(),
+  encounterId: z.uuid(),
+  /** Whose result it is. */
+  patient: PatientSchema,
   orderItemId: z.uuid(),
   specimenId: z.uuid(),
   accessionNumber: z.string(),
@@ -158,9 +161,10 @@ export const viewWorklist = createRoute({
   path: "/lab/worklist",
   summary: "The lab's worklist",
   description:
-    "Tests waiting to be collected (by order and specimen type), specimens "
-    + "a nurse took that the lab has not received, specimens in the lab with "
-    + "a test still to result, and results to verify. Urgent first, then "
+    "Tests waiting to be collected (by order and specimen type), rejected "
+    + "specimens not yet taken again, specimens a nurse took that the lab has "
+    + "not received, specimens in the lab with a test still to result, and "
+    + "results to verify, each naming its patient. Urgent first, then "
     + "oldest. Tests to collect come from open encounters first, then from "
     + "visits that ended in the last 7 days (`visitEndedAt`), since the "
     + "patient may come back for the sample. A test not yet paid for at an "
@@ -170,6 +174,8 @@ export const viewWorklist = createRoute({
   responses: {
     [HttpStatusCodes.OK]: jsonContent(z.object({
       toCollect: z.array(CollectionDueSchema),
+      /** Rejected and not yet taken again, from open visits and those ended in the last 7 days. */
+      toRecollect: z.array(SpecimenSchema),
       toReceive: z.array(SpecimenSchema),
       inLab: z.array(SpecimenSchema),
       toVerify: z.array(ResultSchema),

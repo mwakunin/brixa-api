@@ -1,4 +1,4 @@
-import { and, asc, count, eq, inArray, isNull, max } from "drizzle-orm";
+import { and, asc, count, eq, inArray, isNull, max, ne, sql } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 
@@ -44,7 +44,10 @@ export type LabCatalogueErrorCode
     | "abnormal_not_a_choice"
     | "critical_limits_invalid"
     | "ranges_overlap"
-    | "too_many_analytes";
+    | "too_many_analytes"
+    | "last_analyte"
+    | "no_analytes"
+    | "answer_in_use";
 
 export class LabCatalogueError extends Error {
   constructor(readonly code: LabCatalogueErrorCode) {
@@ -60,6 +63,9 @@ export class LabCatalogueError extends Error {
       critical_limits_invalid: "The critical low must be below the critical high",
       ranges_overlap: "Two of these ranges cover the same patients; each sex and age may have one range",
       too_many_analytes: `A test has at most ${MAX_ANALYTES} analytes`,
+      last_analyte: "This is the test's last analyte in use; retire the test first, or add another analyte",
+      no_analytes: "This test has no analyte in use, so it could never be resulted; bring one back or add one first",
+      answer_in_use: "A specimen still waiting for its result may be given this answer; remove it once those specimens are resulted",
     }[code]);
     this.name = "LabCatalogueError";
   }
@@ -162,6 +168,9 @@ export async function updateLabTest(
   const [current] = await tx.select().from(labTests).where(eq(labTests.id, id)).for("update").limit(1);
   if (!current)
     throw new LabCatalogueError("not_found");
+  // Offered for ordering only with something to result (the lock on the test serializes this with retiring analytes).
+  if (input.isActive && !current.isActive && await activeAnalytes(tx, id) === 0)
+    throw new LabCatalogueError("no_analytes");
   const [test] = await tx.update(labTests).set(input).where(eq(labTests.id, id)).returning();
 
   await recordAudit(tx, {
@@ -212,6 +221,37 @@ export interface AnalyteChange {
   isActive?: boolean;
 }
 
+async function activeAnalytes(tx: AppDb, labTestId: string, except?: string): Promise<number> {
+  const [{ n }] = await tx
+    .select({ n: count() })
+    .from(labAnalytes)
+    .where(and(eq(labAnalytes.labTestId, labTestId), eq(labAnalytes.isActive, true), except ? ne(labAnalytes.id, except) : undefined));
+  return n;
+}
+
+/**
+ * Refuses retiring an offered test's last analyte in use: the test would be
+ * ordered and charged, but never collected (lib/specimens.ts). The test is
+ * locked, so two analytes retired at once cannot both pass for the other.
+ */
+async function keepsAnAnalyte(tx: AppDb, analyte: AnalyteRow): Promise<void> {
+  const [test] = await tx.select({ isActive: labTests.isActive }).from(labTests).where(eq(labTests.id, analyte.labTestId)).for("update").limit(1);
+  if (test.isActive && await activeAnalytes(tx, analyte.labTestId, analyte.id) === 0)
+    throw new LabCatalogueError("last_analyte");
+}
+
+/** Whether a specimen taken with this analyte in its panel still waits for its test's result. */
+async function awaitedOnASpecimen(tx: AppDb, analyteId: string): Promise<boolean> {
+  const { rows } = await tx.execute(sql`
+    SELECT 1 FROM specimen_tests st
+      JOIN specimens s ON s.facility_id = st.facility_id AND s.id = st.specimen_id
+    WHERE ${analyteId}::uuid = ANY(st.analyte_ids) AND s.status <> 'rejected'
+      AND NOT EXISTS (SELECT 1 FROM lab_results r
+        WHERE r.specimen_id = st.specimen_id AND r.order_item_id = st.order_item_id AND r.status <> 'superseded')
+    LIMIT 1`);
+  return rows.length > 0;
+}
+
 /** Edits an analyte's wording, unit, answers or critical limits, or retires it. Its result type never changes. */
 export async function updateAnalyte(tx: AppDb, facilityId: string, id: string, input: AnalyteChange, actor: PatientActor): Promise<AnalyteRow> {
   const [current] = await tx.select().from(labAnalytes).where(eq(labAnalytes.id, id)).for("update").limit(1);
@@ -230,6 +270,10 @@ export async function updateAnalyte(tx: AppDb, facilityId: string, id: string, i
   const high = input.criticalHigh === undefined ? current.criticalHigh : input.criticalHigh;
   if (low !== null && high !== null && low >= high)
     throw new LabCatalogueError("critical_limits_invalid");
+  if (input.isActive === false && current.isActive)
+    await keepsAnAnalyte(tx, current);
+  if (input.choices && (current.choices ?? []).some(c => !input.choices!.includes(c)) && await awaitedOnASpecimen(tx, id))
+    throw new LabCatalogueError("answer_in_use");
 
   const [analyte] = await tx.update(labAnalytes).set(input).where(eq(labAnalytes.id, id)).returning();
   const shown = (a: AnalyteRow) => ({

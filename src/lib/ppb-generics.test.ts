@@ -99,6 +99,13 @@ describe("converting PPB's Generic Products", () => {
     expect(review.map(r => [r.code, r.issue.split(":")[0]])).toEqual([["GE10001", "A form not made for injection, with an injected route"]]);
   });
 
+  it("flags a number that may belong to the name", () => {
+    const { rows, review } = convertGenericProducts(codeSystem("Omega 3 1000 mg Oral Capsule"));
+
+    expect(rows.map(r => [r.genericName, r.strength])).toEqual([["Omega", "3 1000 mg"]]);
+    expect(review.map(r => r.issue.split(":")[0])).toEqual(["A number that may belong to the name (as in Omega 3)"]);
+  });
+
   it("leaves out a code the catalogue cannot take", () => {
     const { rows, review } = convertGenericProducts({ ...codeSystem("Paracetamol 500 mg Oral Tablet"), concept: [{ code: "bad code", display: "Paracetamol 500 mg Oral Tablet" }] });
 

@@ -111,8 +111,9 @@ export const prescribe = createRoute({
     + "`allergyOverride` gives a reason (`drug_allergy`, listing the "
     + "allergies), for a child under 12 without a weight taken today "
     + "(`weight_needed`), and for a controlled drug from a nurse. A drug "
-    + "not in the catalogue, or an injected route for a product not made for "
-    + "injection, is refused as invalid (422) on that medicine's field.",
+    + "not in the catalogue, an injected route for a product not made for "
+    + "injection, or a quantity past what a prescription holds, is refused "
+    + "as invalid (422) on that medicine's field.",
   middleware: [prescribers] as const,
   request: { headers: facilityHeaders, params: IdParamsSchema, body: jsonContentRequired(PrescribeBodySchema, "The prescription") },
   responses: {

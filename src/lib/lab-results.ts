@@ -27,11 +27,13 @@ import {
 
 import type { PrintedContent } from "./document-content";
 import type { PatientActor } from "./patients";
+import type { WorklistPatient } from "./worklist-patient";
 
 import { recordAudit } from "./audit";
 import { businessDate, printedAge, printedDateTime } from "./dates";
 import { FIELD_LENGTH, NOTE_LENGTH, packNotes } from "./document-content";
 import { issueDocument, voidDocument } from "./documents";
+import { patientColumns, patientOf } from "./worklist-patient";
 
 /**
  * Lab results and the lab report (SCHEMA.md §8, P3 slice 5b).
@@ -366,6 +368,9 @@ export interface ShownValue {
 export interface ShownResult {
   id: string;
   orderId: string;
+  encounterId: string;
+  /** Whose result it is, so whoever verifies it from the worklist can tell. */
+  patient: WorklistPatient;
   orderItemId: string;
   specimenId: string;
   accessionNumber: string;
@@ -399,7 +404,9 @@ export async function resultsWhere(tx: AppDb, where: SQL | undefined, offset = 0
     .select({
       result: labResults,
       orderId: specimens.orderId,
+      encounterId: orders.encounterId,
       accessionNumber: specimens.accessionNumber,
+      ...patientColumns,
       code: billableItems.code,
       name: billableItems.name,
       enteredByName: enterer.name,
@@ -408,6 +415,9 @@ export async function resultsWhere(tx: AppDb, where: SQL | undefined, offset = 0
     .from(labResults)
     .innerJoin(specimens, eq(specimens.id, labResults.specimenId))
     .innerJoin(orders, eq(orders.id, specimens.orderId))
+    .innerJoin(encounters, eq(encounters.id, orders.encounterId))
+    .innerJoin(patients, eq(patients.id, encounters.patientId))
+    .leftJoin(patientNumbers, and(eq(patientNumbers.patientId, patients.id), eq(patientNumbers.kind, "outpatient")))
     .innerJoin(orderItems, eq(orderItems.id, labResults.orderItemId))
     .innerJoin(labTests, eq(labTests.id, orderItems.labTestId))
     .innerJoin(billableItems, eq(billableItems.id, labTests.billableItemId))
@@ -433,6 +443,8 @@ export async function resultsWhere(tx: AppDb, where: SQL | undefined, offset = 0
   return rows.map(({ result: r, ...row }) => ({
     id: r.id,
     orderId: row.orderId,
+    encounterId: row.encounterId,
+    patient: patientOf(row),
     orderItemId: r.orderItemId,
     specimenId: r.specimenId,
     accessionNumber: row.accessionNumber,

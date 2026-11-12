@@ -4,7 +4,7 @@ import { alias } from "drizzle-orm/pg-core";
 import type { AppDb } from "@/db";
 import type { MembershipRole } from "@/db/schema";
 
-import { billableItems, chargeAssignments, charges, documents, encounters, invoiceLines, invoices, labTests, memberships, orderItems, orders, user } from "@/db/schema";
+import { billableItems, chargeAssignments, charges, documents, encounters, invoiceLines, invoices, labAnalytes, labTests, memberships, orderItems, orders, user } from "@/db/schema";
 
 import type { PatientActor } from "./patients";
 
@@ -122,14 +122,22 @@ async function resolveItems(tx: AppDb, items: ItemInput[]): Promise<Resolved[]> 
   for (const input of items) {
     if ("labTestId" in input) {
       const [test] = await tx
-        .select({ isActive: labTests.isActive, itemActive: billableItems.isActive, billableItemId: billableItems.id, code: billableItems.code, specimenType: labTests.specimenType })
+        .select({
+          isActive: labTests.isActive,
+          itemActive: billableItems.isActive,
+          billableItemId: billableItems.id,
+          code: billableItems.code,
+          specimenType: labTests.specimenType,
+          // With nothing to result, it would be charged but never collected (lib/specimens.ts).
+          resultable: sql<boolean>`EXISTS (SELECT 1 FROM ${labAnalytes} WHERE ${labAnalytes.labTestId} = ${labTests.id} AND ${labAnalytes.isActive})`,
+        })
         .from(labTests)
         .innerJoin(billableItems, eq(billableItems.id, labTests.billableItemId))
         .where(eq(labTests.id, input.labTestId))
         .limit(1);
       if (!test)
         throw new OrderError("test_not_found");
-      if (!test.isActive || !test.itemActive)
+      if (!test.isActive || !test.itemActive || !test.resultable)
         throw new OrderError("test_inactive");
       resolved.push({ input, billableItemId: test.billableItemId, code: test.code, specimenType: test.specimenType });
       continue;

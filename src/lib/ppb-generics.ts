@@ -94,14 +94,19 @@ function nameAndStrength(part: string): { name: string; strength: string } | nul
   return at < 0 ? null : { name: tokens.slice(0, at).join(" "), strength: tokens.slice(at).join(" ") };
 }
 
-/** "Amoxicillin 125 mg/Sulbactam 125 mg per 5ml" → names and strengths, or null if a part does not read. */
-function namesAndStrengths(text: string): { genericName: string; strength: string } | null {
+/**
+ * "Amoxicillin 125 mg/Sulbactam 125 mg per 5ml" → names and strengths, or
+ * null if a part does not read. `ambiguous` when a strength starts with two
+ * numbers ("Omega 3 1000 mg"): the first may belong to the name.
+ */
+function namesAndStrengths(text: string): { genericName: string; strength: string; ambiguous: boolean } | null {
   const parts = text.split(/\s*\/\s*(?=[A-Z])/).map(nameAndStrength);
   if (parts.some(p => !p))
     return null;
   return {
     genericName: parts.map(p => p!.name).join("/"),
     strength: parts.map(p => p!.strength).join("/"),
+    ambiguous: parts.some(p => NUMBER.test(p!.strength.split(" ")[1] ?? "")),
   };
 }
 
@@ -143,14 +148,17 @@ function read(code: string, display: string): { row: DrugRow; issues: string[] }
     route = "iv";
     issues.push("An injection with no route: given IV here; check whether it is IV, IM or either");
   }
-  const parsed = namesAndStrengths(tokens.slice(0, at).join(" "));
-  if (!parsed)
+  const read_ = namesAndStrengths(tokens.slice(0, at).join(" "));
+  if (!read_)
     return { reason: "The generic name and strength could not be told apart" };
+  const { ambiguous, ...parsed } = read_;
   const form = tokens.slice(at + 1).join(" ").split(",").map(p => p.trim()).join(", ");
   const doseUnit = doseUnitOf(form, route);
   if (!doseUnit)
     return { reason: `No dose unit for the form "${form}"` };
 
+  if (ambiguous)
+    issues.push("A number that may belong to the name (as in Omega 3): check the generic name and strength");
   if (/calciferol|cobalamin/i.test(parsed.genericName) && /\bmg\b/.test(parsed.strength))
     issues.push("A vitamin dosed in mg: usually IU or mcg; check the strength");
   if (route === "oral" && /^(?:Inhaler|Aerosol)/i.test(form))

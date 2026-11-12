@@ -28,13 +28,14 @@ import {
 import type { ShownResult } from "./lab-results";
 import type { OrderActor } from "./orders";
 import type { PatientActor } from "./patients";
+import type { WorklistPatient } from "./worklist-patient";
 
 import { recordAudit } from "./audit";
-import { ageInYears } from "./dates";
 import { isUniqueViolation } from "./db-errors";
 import { balancesCents } from "./invoice-balance";
 import { hasResults, pendingResults } from "./lab-results";
 import { issueNumber } from "./number-series";
+import { patientColumns, patientOf } from "./worklist-patient";
 
 /**
  * Specimens (SCHEMA.md §8, P3 slice 5a), decided 2026-11-11: a specimen is
@@ -331,14 +332,6 @@ export async function paidCharges(tx: AppDb, chargeIds: string[]): Promise<Set<s
   return paid;
 }
 
-export interface WorklistPatient {
-  id: string;
-  name: string;
-  opNumber: string | null;
-  sex: (typeof patients.$inferSelect)["sex"];
-  ageYears: number;
-}
-
 export interface WorklistTest {
   orderItemId: string;
   code: string;
@@ -381,32 +374,14 @@ export interface ShownSpecimen {
 
 export interface Worklist {
   toCollect: CollectionDue[];
+  /** Rejected and not yet taken again: until then its tests have no sample. */
+  toRecollect: ShownSpecimen[];
   /** Taken by a nurse, not yet in the lab. */
   toReceive: ShownSpecimen[];
   /** In the lab, with a test still to be resulted. */
   inLab: ShownSpecimen[];
   /** Results entered or released unverified, for another lab member to verify. */
   toVerify: ShownResult[];
-}
-
-const patientColumns = {
-  patientId: patients.id,
-  givenName: patients.givenName,
-  middleNames: patients.middleNames,
-  familyName: patients.familyName,
-  sex: patients.sex,
-  dateOfBirth: patients.dateOfBirth,
-  opNumber: patientNumbers.number,
-};
-
-function patientOf(r: { patientId: string; givenName: string; middleNames: string | null; familyName: string; sex: WorklistPatient["sex"]; dateOfBirth: string; opNumber: string | null }, today?: string): WorklistPatient {
-  return {
-    id: r.patientId,
-    name: [r.givenName, r.middleNames, r.familyName].filter(Boolean).join(" "),
-    opNumber: r.opNumber,
-    sex: r.sex,
-    ageYears: ageInYears(r.dateOfBirth, today),
-  };
 }
 
 /** Each item's test code and name, and whether it is unpaid at an outpatient visit. */
@@ -487,10 +462,18 @@ export async function specimenShown(tx: AppDb, id: string): Promise<ShownSpecime
   return shown;
 }
 
+/** Whose visit is open, or ended in the last `AFTER_VISIT_DAYS`: the patient may come back for the sample. */
+function visitListed(): SQL | undefined {
+  return or(
+    eq(encounters.status, "open"),
+    and(eq(encounters.status, "closed"), sql`${encounters.endedAt} > now() - make_interval(days => ${AFTER_VISIT_DAYS})`),
+  );
+}
+
 /**
  * The lab's worklist: tests waiting to be collected, on open encounters and
- * for a week after a visit ends, then specimens waiting to be received, then
- * those in the lab. Audited, since it names patients and what they are
+ * for a week after a visit ends, and rejected specimens to take again (in the
+ * same window), then specimens waiting to be received, then those in the lab. Audited, since it names patients and what they are
  * tested for (rule 9).
  */
 export async function viewWorklist(tx: AppDb, facilityId: string, actor: PatientActor, today?: string, limit = WORKLIST_LIMIT): Promise<Worklist> {
@@ -499,11 +482,7 @@ export async function viewWorklist(tx: AppDb, facilityId: string, actor: Patient
   // first; then each part urgent first, then oldest.
   const hereFirst = sql`CASE ${encounters.status} WHEN 'open' THEN 0 ELSE 1 END`;
   const urgentFirst = sql`CASE ${orders.urgency} WHEN 'urgent' THEN 0 ELSE 1 END`;
-  const listed = or(
-    eq(encounters.status, "open"),
-    and(eq(encounters.status, "closed"), sql`${encounters.endedAt} > now() - make_interval(days => ${AFTER_VISIT_DAYS})`),
-  );
-  const waiting = and(eq(orderItems.status, "ordered"), isNotNull(orderItems.labTestId), listed);
+  const waiting = and(eq(orderItems.status, "ordered"), isNotNull(orderItems.labTestId), visitListed());
   const chosen = await tx
     .selectDistinct({ orderId: orders.id, specimenType: orderItems.specimenType, here: hereFirst, urgent: urgentFirst, orderedAt: orders.orderedAt })
     .from(orderItems)
@@ -556,6 +535,11 @@ export async function viewWorklist(tx: AppDb, facilityId: string, actor: Patient
   for (const group of toCollect)
     group.tests.sort((a, b) => a.code.localeCompare(b.code));
 
+  const toRecollect = await specimensWhere(tx, and(
+    eq(specimens.status, "rejected"),
+    sql`NOT EXISTS (SELECT 1 FROM ${specimens} again WHERE again.recollection_of = ${specimens.id})`,
+    visitListed(),
+  ), today);
   const toReceive = await specimensWhere(tx, eq(specimens.status, "collected"), today);
   const inLab = await specimensWhere(tx, and(eq(specimens.status, "received"), sql`EXISTS (
     SELECT 1 FROM ${specimenTests} st WHERE st.specimen_id = ${specimens.id}
@@ -570,7 +554,7 @@ export async function viewWorklist(tx: AppDb, facilityId: string, actor: Patient
     action: "lab.worklist_viewed",
     entityType: "facility",
     entityId: facilityId,
-    summary: `Viewed the lab worklist (${toCollect.length} to collect, ${toReceive.length} to receive, ${inLab.length} in the lab, ${toVerify.length} to verify)`,
+    summary: `Viewed the lab worklist (${toCollect.length} to collect, ${toRecollect.length} to recollect, ${toReceive.length} to receive, ${inLab.length} in the lab, ${toVerify.length} to verify)`,
   });
-  return { toCollect, toReceive, inLab, toVerify };
+  return { toCollect, toRecollect, toReceive, inLab, toVerify };
 }

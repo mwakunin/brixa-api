@@ -251,6 +251,18 @@ describe("a result", () => {
     }
   });
 
+  it("keeps every answer a specimen waiting for its result may be given", async () => {
+    const t = await tested([tests.mrdt]);
+    const answers = (choices: string[]) => call("PATCH", `/lab-analytes/${analytes.mps}`, h.facility.id, supervisor, { choices, abnormalChoices: [] });
+
+    expect((await (await answers(["Negative", "Reactive"])).json()).code).toBe("answer_in_use");
+    // Adding one is fine.
+    expect((await answers(["Negative", "Positive", "Invalid"])).status).toBe(200);
+    expect((await enter(t.specimenId, { orderItemId: t.item("MRDT"), values: [{ analyteId: analytes.mps, value: "Positive" }] })).status).toBe(201);
+    // Resulted, the answer may go.
+    expect((await answers(["Negative", "Invalid"])).status).toBe(200);
+  });
+
   it("records who was told of a critical value no later than now", async () => {
     const t = await tested([tests.hb]);
     const result = await (await enter(t.specimenId, hb(t, 6.1))).json();
@@ -372,6 +384,8 @@ describe("the lab's worklist with results", () => {
 
     const { toVerify } = await (await call("GET", "/lab/worklist", h.facility.id, labTech)).json();
     expect(toVerify.map((r: { orderId: string }) => r.orderId)).toEqual([order.id, routine.orderId]);
+    // Each names whose result it is.
+    expect(toVerify[0]).toMatchObject({ encounterId, patient: { id: urgentPatient, name: "Test Patient", opNumber: expect.any(String) } });
   });
 
   it("keeps a specimen in the lab until each of its tests is resulted, and lists results to verify", async () => {
@@ -417,6 +431,8 @@ describe("the database's result guards", () => {
       "INSERT INTO lab_result_values (facility_id, result_id, analyte_id, analyte_code, analyte_name, result_type, value_text) SELECT facility_id, id, $2, 'COMMENT', 'Comment', 'text', 'Added later' FROM lab_results WHERE id = $1",
       [result.id, analytes.comment],
     )).toMatch(/entered/);
+    // Nor, verified without a release, a release set afterwards.
+    expect(await refusal("UPDATE lab_results SET released_at = now(), released_by = entered_by, release_reason = 'Late' WHERE id = $1")).toMatch(/once/);
     // Nor, verified with no critical value, a record of someone told.
     expect(await refusal("UPDATE lab_results SET told_name = 'Late', told_how = 'phone', told_at = now(), told_recorded_by = entered_by WHERE id = $1")).toMatch(/once/);
   });

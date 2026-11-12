@@ -154,6 +154,29 @@ describe("the lab catalogue", () => {
     expect((await (await call("POST", `/lab-tests/${test.id}/analytes`, h.facility.id, supervisor, { code: "ONEMORE", name: "One more", resultType: "text" })).json()).code).toBe("too_many_analytes");
   });
 
+  it("keeps an offered test resultable: its last analyte is not retired, nor a test with none offered or ordered", async () => {
+    const test = await fbc();
+    const [hgb, comment] = test.analytes;
+    const change = (id: string, body: Record<string, unknown>) => call("PATCH", `/lab-analytes/${id}`, h.facility.id, supervisor, body);
+    const offer = async (isActive: boolean) => call("PATCH", `/lab-tests/${test.id}`, h.facility.id, h.admin, { isActive });
+
+    expect((await change(hgb.id, { isActive: false })).status).toBe(200);
+    expect((await (await change(comment.id, { isActive: false })).json()).code).toBe("last_analyte");
+    // Retired from ordering first, it may lose them all, and is not offered again until it has one.
+    expect((await offer(false)).status).toBe(200);
+    expect((await change(comment.id, { isActive: false })).status).toBe(200);
+    expect((await (await offer(true)).json()).code).toBe("no_analytes");
+
+    // Left that way before this rule, it is not ordered (nor charged).
+    await pool.query("UPDATE lab_tests SET is_active = true WHERE id = $1", [test.id]);
+    const user = await signedInUser();
+    const membership = await addMembership(user.id, h.facility.id, ["doctor"]);
+    const doctor = { ...user, actor: { userId: user.id, membershipId: membership.id } };
+    const encounterId = (await (await call("POST", "/encounters", h.facility.id, h.nurse, { patientId: await h.patient(), kind: "opd", queueAt: null })).json()).id;
+    const res = await call("POST", `/encounters/${encounterId}/orders`, h.facility.id, doctor, { items: [{ labTestId: test.id }] });
+    expect([res.status, (await res.json()).code]).toEqual([409, "test_inactive"]);
+  });
+
   it("only ever retires a reference range, for every role", async () => {
     await fbc();
     const refusal = (query: string) => pool.query(query).then(() => "accepted", (err: { message: string }) => err.message);
