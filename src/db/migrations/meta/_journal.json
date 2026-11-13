@@ -477,6 +477,20 @@
       "when": 1794516682645,
       "tag": "0067_verified_release_frozen",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "7",
+      "when": 1794544575992,
+      "tag": "0068_appointments",
+      "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1794544590952,
+      "tag": "0069_appointments_rls",
+      "breakpoints": true
     }
   ]
 }

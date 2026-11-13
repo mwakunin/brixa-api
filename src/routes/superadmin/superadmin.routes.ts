@@ -45,6 +45,11 @@ export const CreateFacilitySchema = z.object({
   }),
 });
 
+/** Matches the `facilities_sms_sender_id_shape` CHECK: an alphanumeric sender is at most 11 characters. */
+const SmsSenderBodySchema = z.strictObject({
+  senderId: z.string().trim().regex(/^[A-Z0-9][A-Z0-9 ]{0,10}$/i, "At most 11 letters, digits or spaces").nullable(),
+});
+
 const FacilitySummarySchema = z.object({
   id: z.uuid(),
   name: z.string(),
@@ -96,5 +101,29 @@ export const listFacilities = createRoute({
   },
 });
 
+export const setSmsSender = createRoute({
+  tags,
+  method: "put",
+  path: "/superadmin/facilities/{id}/sms-sender",
+  summary: "Set a facility's SMS sender",
+  description:
+    "The sender name its reminders go out under, once Africa's Talking has "
+    + "registered it on the platform's account; null for the account's default. "
+    + "Audited in the facility's log.",
+  middleware: superadminOnly,
+  request: {
+    params: z.object({ id: z.uuid() }),
+    body: jsonContentRequired(SmsSenderBodySchema, "The sender"),
+  },
+  responses: {
+    [HttpStatusCodes.OK]: jsonContent(z.object({ id: z.uuid(), smsSenderId: z.string().nullable() }), "Set"),
+    [HttpStatusCodes.UNAUTHORIZED]: jsonContent(unauthorizedSchema, "Not signed in"),
+    [HttpStatusCodes.FORBIDDEN]: jsonContent(forbiddenSchema, "Not platform staff"),
+    [HttpStatusCodes.NOT_FOUND]: jsonContent(createMessageObjectSchema("Not Found"), "No such facility"),
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(SmsSenderBodySchema), "Invalid request"),
+  },
+});
+
 export type CreateFacilityRoute = typeof createFacility;
 export type ListFacilitiesRoute = typeof listFacilities;
+export type SetSmsSenderRoute = typeof setSmsSender;

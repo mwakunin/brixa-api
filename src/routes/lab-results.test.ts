@@ -5,7 +5,7 @@ import type { Hospital, StaffMember } from "@/test/hospital";
 
 import db, { pool } from "@/db";
 import { auditLog, documents } from "@/db/schema";
-import { addMembership, resetDb, signedInUser } from "@/test/helpers";
+import { addMembership, resetDb, signedInUser, waitForBlockedBackend } from "@/test/helpers";
 import { call, hospital, TODAY } from "@/test/hospital";
 
 /** P3 slice 5b: results, flagged and verified, and the printed lab report. */
@@ -261,6 +261,29 @@ describe("a result", () => {
     expect((await enter(t.specimenId, { orderItemId: t.item("MRDT"), values: [{ analyteId: analytes.mps, value: "Positive" }] })).status).toBe(201);
     // Resulted, the answer may go.
     expect((await answers(["Negative", "Invalid"])).status).toBe(200);
+  });
+
+  it("takes a specimen only once an answer being removed from its test has settled", async () => {
+    const patientId = await h.patient();
+    const encounterId = (await (await call("POST", "/encounters", h.facility.id, h.nurse, { patientId, kind: "opd", queueAt: null })).json()).id;
+    const order = await (await call("POST", `/encounters/${encounterId}/orders`, h.facility.id, doctor, { items: [{ labTestId: tests.mrdt }] })).json();
+    // The removal locks the analyte, as `updateAnalyte` does before it checks for waiting specimens.
+    const removing = await pool.connect();
+    try {
+      await removing.query("BEGIN");
+      await removing.query("SELECT id FROM lab_analytes WHERE id = $1 FOR UPDATE", [analytes.mps]);
+      const holderPid = Number((await removing.query("SELECT pg_backend_pid() AS pid")).rows[0].pid);
+      const collecting = call("POST", `/orders/${order.id}/specimens`, h.facility.id, labTech, { specimenType: "blood" });
+
+      // Not past it: the removal's check could not have seen this specimen.
+      expect(await waitForBlockedBackend(holderPid)).toBe(true);
+      await removing.query("COMMIT");
+      expect((await collecting).status).toBe(201);
+    }
+    finally {
+      await removing.query("ROLLBACK").catch(() => {});
+      removing.release();
+    }
   });
 
   it("records who was told of a critical value no later than now", async () => {

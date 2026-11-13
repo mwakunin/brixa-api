@@ -1,4 +1,4 @@
-import { asc } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import * as HttpStatusCodes from "stoker/http-status-codes";
 
 import type { AppRouteHandler } from "@/lib/types";
@@ -11,7 +11,7 @@ import { createInvitation } from "@/lib/invitations";
 import { ACCESSION_SERIES, CLINICAL_SERIES, FISCAL_SERIES, registerSeries } from "@/lib/number-series";
 import { nudgingAfterCommit } from "@/lib/outbox-nudge";
 
-import type { CreateFacilityRoute, ListFacilitiesRoute } from "./superadmin.routes";
+import type { CreateFacilityRoute, ListFacilitiesRoute, SetSmsSenderRoute } from "./superadmin.routes";
 
 /**
  * The superadmin plane runs on the OWNER connection, by design: creating a
@@ -128,4 +128,32 @@ export const listFacilities: AppRouteHandler<ListFacilitiesRoute> = async (c) =>
   return c.json({
     facilities: rows.map(r => ({ ...r, createdAt: r.createdAt.toISOString() })),
   }, HttpStatusCodes.OK);
+};
+
+/** Sets the sender a facility's SMS go out under, audited in its own log. */
+export const setSmsSender: AppRouteHandler<SetSmsSenderRoute> = async (c) => {
+  const { id } = c.req.valid("param");
+  const { senderId } = c.req.valid("json");
+  const superadmin = c.var.user!;
+
+  const updated = await db.transaction(async (tx) => {
+    const [current] = await tx.select({ smsSenderId: facilities.smsSenderId }).from(facilities).where(eq(facilities.id, id)).for("update").limit(1);
+    if (!current)
+      return null;
+    const [facility] = await tx.update(facilities).set({ smsSenderId: senderId }).where(eq(facilities.id, id)).returning();
+    await recordAudit(tx, {
+      facilityId: id,
+      actorId: superadmin.id,
+      action: "facility.updated",
+      entityType: "facility",
+      entityId: id,
+      summary: senderId ? `Set the SMS sender to ${senderId}` : "Cleared the SMS sender",
+      detail: { smsSenderId: { from: current.smsSenderId, to: senderId } },
+    });
+    return facility;
+  });
+
+  if (!updated)
+    return c.json({ message: "Not Found" }, HttpStatusCodes.NOT_FOUND);
+  return c.json({ id: updated.id, smsSenderId: updated.smsSenderId }, HttpStatusCodes.OK);
 };

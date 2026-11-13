@@ -1,14 +1,14 @@
-import { and, asc, count, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gte, inArray, isNotNull, sql } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 
-import { billableItems, encounters, memberships, patientNumbers, patients, queueEntries, servicePoints, user } from "@/db/schema";
+import { appointments, billableItems, encounters, memberships, patientNumbers, patients, queueEntries, servicePoints, user } from "@/db/schema";
 
 import type { PatientActor } from "./patients";
 
 import { recordAudit } from "./audit";
 import { cancelEntryFee, captureConsultationFee, ChargeError } from "./charges";
-import { ageInYears } from "./dates";
+import { ageInYears, businessDate } from "./dates";
 import { isUniqueViolation, pgConstraintName } from "./db-errors";
 
 /**
@@ -45,6 +45,7 @@ export type QueueErrorCode
     | "name_taken"
     | "service_point_retired"
     | "still_waiting"
+    | "has_appointments"
     | "encounter_not_found"
     | "not_open"
     | "not_a_visit"
@@ -67,6 +68,7 @@ export class QueueError extends Error {
       name_taken: "A service point already has that name",
       service_point_retired: "That service point is out of use",
       still_waiting: "Patients are still waiting there; see them or take them out of the queue first",
+      has_appointments: "Patients are booked at this clinic from today on; move or cancel their appointments first",
       encounter_not_found: "No such visit",
       not_open: "This visit is no longer open",
       not_a_visit: "Only an outpatient visit or emergency attendance joins a queue",
@@ -132,6 +134,9 @@ export async function updateServicePoint(
     throw new QueueError("service_point_not_found");
   if (input.isActive === false && current.isActive && await liveCount(tx, id) > 0)
     throw new QueueError("still_waiting");
+  // A booking share-locks the clinic, so this count waits for one in flight.
+  if (input.isActive === false && current.isActive && await bookedFromToday(tx, id))
+    throw new QueueError("has_appointments");
   if (input.consultationItemId) {
     if (current.kind !== "consultation")
       throw new QueueError("not_a_clinic");
@@ -163,6 +168,15 @@ export async function updateServicePoint(
     },
   });
   return point;
+}
+
+async function bookedFromToday(tx: AppDb, servicePointId: string): Promise<boolean> {
+  const [booked] = await tx
+    .select({ id: appointments.id })
+    .from(appointments)
+    .where(and(eq(appointments.servicePointId, servicePointId), eq(appointments.status, "booked"), gte(appointments.scheduledOn, businessDate())))
+    .limit(1);
+  return booked !== undefined;
 }
 
 async function liveCount(tx: AppDb, servicePointId: string): Promise<number> {
