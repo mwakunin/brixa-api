@@ -133,7 +133,7 @@ export const updateServicePoint = createRoute({
   method: "patch",
   path: "/service-points/{id}",
   summary: "Change a service point",
-  description: "Rename it, retire it, or set a clinic's consultation fee. A point with patients still in its queue cannot be retired.",
+  description: "Rename it, retire it, or set a clinic's consultation fee. A point with patients still in its queue, or a clinic with appointments booked from today on, cannot be retired.",
   middleware: [adminOnly] as const,
   request: { headers: facilityHeaders, params: IdParamsSchema, body: jsonContentRequired(UpdateBodySchema, "The change") },
   responses: {

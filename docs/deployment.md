@@ -22,6 +22,9 @@ What the API needs from Google Cloud before it can run in production. The code r
 | `CREDENTIALS_ENCRYPTION_KEY` | Base64 of 32 random bytes, from Secret Manager: encrypts each facility's Daraja credentials. Losing it means every facility re-enters them |
 | `MPESA_ENV` | `sandbox` until the first facility goes live, then `production`. It is one setting for the whole deployment: once it is `production`, every facility's prompts and URL registrations go to Safaricom's live host, so a facility still testing on sandbox credentials stops working. Switch it once, when the first facility goes live, and onboard every later facility with live credentials; test on staging, which keeps `sandbox` |
 | `MPESA_CALLBACK_ALLOWED_IPS` | Optional: Safaricom's published callback addresses. Advisory, never used to refuse |
+| `AT_USERNAME`, `AT_API_KEY` | Africa's Talking: the platform's one account, both or neither. Until they are set, appointment reminders are skipped as they fall due (`outcome_note` "SMS is not configured"), so set them before the first facility relies on reminders |
+| `AT_ENV` | `sandbox` until the account is live, then `production` |
+| `AT_SENDER_ID` | Optional: the account's registered sender for facilities without their own (`PUT /superadmin/facilities/{id}/sms-sender`). Unset, Africa's Talking's default sender |
 
 **M-Pesa callback URLs carry a secret.** Each facility's `/webhooks/mpesa/{token}/…` path holds the token that lets a caller post payment confirmations for it. The API never writes it to its own logs (`loggedPath`) or to `gateway_exchanges`, but **Cloud Run's request logs record every request URL**. Add a Cloud Logging exclusion for `httpRequest.requestUrl =~ "/webhooks/mpesa/"` on the `run.googleapis.com/requests` log, or restrict who may read it.
 

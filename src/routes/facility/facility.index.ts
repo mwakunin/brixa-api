@@ -9,5 +9,6 @@ const router = createTenantRouter();
 router.use(withFacility);
 
 router.openapi(routes.getFacility, handlers.getFacility);
+router.openapi(routes.updateFacility, handlers.updateFacility);
 
 export default router;
