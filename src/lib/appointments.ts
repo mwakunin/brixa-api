@@ -1,4 +1,6 @@
-import { and, asc, desc, eq, ne, sql } from "drizzle-orm";
+import type { SQL } from "drizzle-orm";
+
+import { and, asc, count, desc, eq, ne, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 
 import type { AppDb } from "@/db";
@@ -26,9 +28,10 @@ import { patientColumns, patientOf } from "./worklist-patient";
  * stored. Booking and moving schedule the SMS reminder for the day before
  * (lib/appointment-reminders.ts), sent only to a patient who said yes.
  *
- * Locks: the appointment first, then the encounter (M8 continues from there),
- * so a check-in and a cancellation of one appointment queue behind each
- * other. The clinic is share-locked while booked at, so retiring it (which
+ * Locks: the appointment first, then (checking in) the patient, then the
+ * encounter (M8 continues from there), so a check-in and a cancellation of
+ * one appointment queue behind each other, and so do two check-ins of one
+ * patient. The clinic is share-locked while booked at, so retiring it (which
  * locks it, then counts what is booked there) waits for a booking, and a
  * booking for a retirement.
  */
@@ -328,6 +331,10 @@ export async function checkIn(
     throw new AppointmentError("not_booked");
   if (current.scheduledOn !== businessDate(at))
     throw new AppointmentError("not_today");
+  // Two of the patient's appointments checked in at once queue here, so the
+  // second finds the visit the first opened rather than opening another. Not
+  // FOR UPDATE, which would block every row inserted for the patient meanwhile.
+  await tx.select({ id: patients.id }).from(patients).where(eq(patients.id, current.patientId)).for("no key update");
 
   const [open] = await tx
     .select({ id: encounters.id, kind: encounters.kind, status: encounters.status })
@@ -444,13 +451,14 @@ export async function listDay(
   actor: PatientActor,
   at = new Date(),
 ): Promise<{ appointments: ListedAppointment[]; total: number }> {
+  const matching = and(
+    eq(appointments.scheduledOn, filter.date),
+    ne(appointments.status, "cancelled"),
+    filter.servicePointId ? eq(appointments.servicePointId, filter.servicePointId) : undefined,
+    filter.clinicianId ? eq(appointments.clinicianId, filter.clinicianId) : undefined,
+  );
   const rows = await listQuery(tx)
-    .where(and(
-      eq(appointments.scheduledOn, filter.date),
-      ne(appointments.status, "cancelled"),
-      filter.servicePointId ? eq(appointments.servicePointId, filter.servicePointId) : undefined,
-      filter.clinicianId ? eq(appointments.clinicianId, filter.clinicianId) : undefined,
-    ))
+    .where(matching)
     .orderBy(sql`${appointments.scheduledTime} ASC NULLS LAST`, asc(appointments.bookedAt), asc(appointments.id))
     .limit(DAY_LIST_LIMIT)
     .offset(filter.offset ?? 0);
@@ -464,7 +472,15 @@ export async function listDay(
     detail: { date: filter.date, servicePointId: filter.servicePointId ?? null, clinicianId: filter.clinicianId ?? null, shown: rows.length },
   });
   const today = businessDate(at);
-  return { appointments: rows.map(r => listed(r, today)), total: rows[0]?.total ?? 0 };
+  return { appointments: rows.map(r => listed(r, today)), total: await totalOf(tx, rows, matching) };
+}
+
+/** How many match: the window count on a page, counted afresh past the last one. */
+async function totalOf(tx: AppDb, rows: { total: number }[], matching: SQL | undefined): Promise<number> {
+  if (rows.length > 0)
+    return rows[0].total;
+  const [counted] = await tx.select({ n: count() }).from(appointments).where(matching);
+  return counted.n;
 }
 
 /** A patient's appointments, latest day first, cancelled ones included. Audited. */
@@ -479,8 +495,9 @@ export async function patientAppointments(
   const [patient] = await tx.select({ id: patients.id }).from(patients).where(eq(patients.id, patientId)).limit(1);
   if (!patient)
     throw new AppointmentError("patient_not_found");
+  const matching = eq(appointments.patientId, patientId);
   const rows = await listQuery(tx)
-    .where(eq(appointments.patientId, patientId))
+    .where(matching)
     .orderBy(desc(appointments.scheduledOn), sql`${appointments.scheduledTime} DESC NULLS LAST`, desc(appointments.bookedAt))
     .limit(PATIENT_LIST_LIMIT)
     .offset(offset);
@@ -495,5 +512,5 @@ export async function patientAppointments(
     detail: { shown: rows.length },
   });
   const today = businessDate(at);
-  return { appointments: rows.map(r => listed(r, today)), total: rows[0]?.total ?? 0 };
+  return { appointments: rows.map(r => listed(r, today)), total: await totalOf(tx, rows, matching) };
 }

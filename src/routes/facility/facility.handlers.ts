@@ -44,7 +44,8 @@ export const getFacility: TenantRouteHandler<GetFacilityRoute> = async (c) => {
 export const updateFacility: TenantRouteHandler<UpdateFacilityRoute> = async (c) => {
   const { phone } = c.req.valid("json");
   const next = phone === null ? null : normalizePhone(phone);
-  const current = await facilityRow(c.var.db);
+  // Locked, so a change in flight commits first and the audit names the number it left.
+  const [current] = await c.var.db.select({ phone: facilities.phone }).from(facilities).where(eq(facilities.id, c.var.facility.id)).for("update");
   if (current.phone !== next) {
     await c.var.db.update(facilities).set({ phone: next }).where(eq(facilities.id, c.var.facility.id));
     await recordAudit(c.var.db, {

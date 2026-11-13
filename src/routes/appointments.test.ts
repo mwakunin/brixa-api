@@ -6,11 +6,13 @@ import type { StaffMember } from "@/test/hospital";
 import app from "@/app";
 import db, { pool } from "@/db";
 import { appointmentReminders, appointments, auditLog, charges, outbox, queueEntries } from "@/db/schema";
+import { runAsFacility } from "@/db/tenant-transaction";
 import { drainOutbox } from "@/jobs/outbox-worker";
 import { abandonAppointmentReminder, reminderDueAt, sendAppointmentReminder } from "@/lib/appointment-reminders";
-import { addDays, businessDate, printedDayAndDate } from "@/lib/dates";
+import { bookAppointment, checkIn } from "@/lib/appointments";
+import { addDays, businessDate, printedDayAndDate, startOfBusinessDay } from "@/lib/dates";
 import { sentSms, SmsError } from "@/lib/sms";
-import { addMembership, nextIp, resetDb, signedInUser } from "@/test/helpers";
+import { addMembership, backendPid, nextIp, resetDb, signedInUser, waitForBlockedBackend } from "@/test/helpers";
 import { call, hospital } from "@/test/hospital";
 
 /** P3 slice 6: appointments, checking in, and the SMS reminder the day before. */
@@ -144,7 +146,10 @@ describe("booking", () => {
     expect(await code(await book(c, { patientId, servicePointId: retired }))).toEqual([409, "service_point_retired"]);
     expect(await code(await book(c, { patientId, clinicianId: c.cashier.actor.membershipId }))).toEqual([409, "not_a_clinician"]);
     expect(await code(await book(c, { patientId, date: IN(-1) }))).toEqual([409, "in_the_past"]);
-    expect(await code(await book(c, { patientId, date: TODAY(), time: "00:00" }))).toEqual([409, "in_the_past"]);
+    // A time gone earlier today, judged at noon whatever the clock says now.
+    const noon = new Date(startOfBusinessDay(TODAY()).getTime() + 12 * 3_600_000);
+    await expect(runAsFacility(c.facility.id, tx =>
+      bookAppointment(tx, c.facility.id, { patientId, servicePointId: c.gopd, date: TODAY(), time: "11:59" }, c.clerk.actor, noon))).rejects.toMatchObject({ code: "in_the_past" });
     expect(await code(await book(c, { patientId, date: IN(366) }))).toEqual([409, "too_far_ahead"]);
     await booked(c, { patientId });
     expect(await code(await book(c, { patientId }))).toEqual([409, "already_booked"]);
@@ -246,6 +251,47 @@ describe("checking in", () => {
     expect(fee).toMatchObject({ billableItemId: c.items.consultation, amountCents: 50_000 });
   });
 
+  it("checks in two of a patient's appointments at once into one visit", async () => {
+    const c = await clinic();
+    const patientId = await c.patient();
+    const gopd = await booked(c, { patientId, date: TODAY() });
+    const mch = await booked(c, { patientId, date: TODAY(), servicePointId: await c.point("MCH", "consultation") });
+    let release!: () => void;
+    let ready!: () => void;
+    const mayCommit = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    let holderPid = 0;
+    const first = runAsFacility(c.facility.id, async (tx) => {
+      try {
+        const done = await checkIn(tx, c.facility.id, gopd.id, {}, c.clerk.actor);
+        holderPid = await backendPid(tx);
+        return done;
+      }
+      finally {
+        ready();
+        await mayCommit;
+      }
+    });
+    await started;
+
+    const second = runAsFacility(c.facility.id, tx => checkIn(tx, c.facility.id, mch.id, { queueAt: null }, c.clerk.actor));
+    try {
+      expect(await waitForBlockedBackend(holderPid)).toBe(true);
+    }
+    finally {
+      release();
+      await Promise.allSettled([first, second]);
+    }
+
+    const [one, other] = [await first, await second];
+    expect(one.openedVisit).toBe(true);
+    expect(other).toMatchObject({ openedVisit: false, encounterId: one.encounterId });
+  });
+
   it("uses the visit already open, leaving a patient in the queue they are in", async () => {
     const c = await clinic();
     const patientId = await c.patient();
@@ -294,6 +340,12 @@ describe("lists", () => {
     await db.insert(appointments).values({ facilityId: c.facility.id, patientId, servicePointId: c.gopd, scheduledOn: IN(-1), bookedAt: new Date(Date.now() - 172_800_000), bookedBy: c.clerk.actor.membershipId });
     const yesterday = await (await call("GET", `/appointments?date=${IN(-1)}`, c.facility.id, c.clerk)).json();
     expect(yesterday.appointments[0]).toMatchObject({ status: "booked", missed: true });
+
+    // Past the last page, still how many there are.
+    const beyond = await (await call("GET", `/appointments?date=${IN(2)}&offset=3`, c.facility.id, c.clerk)).json();
+    expect(beyond).toEqual({ appointments: [], total: 3 });
+    const theirs = await (await call("GET", `/patients/${patientId}/appointments?offset=1`, c.facility.id, c.clerk)).json();
+    expect(theirs).toEqual({ appointments: [], total: 1 });
   });
 
   it("lists a patient's appointments latest first, cancelled ones too, and records their answer to reminders", async () => {
@@ -315,6 +367,26 @@ describe("lists", () => {
 });
 
 describe("the reminder", () => {
+  it("audits a phone change against the number a change in flight left", async () => {
+    const c = await clinic();
+    const holder = await pool.connect();
+    try {
+      await holder.query("BEGIN");
+      await holder.query("UPDATE facilities SET phone = '+254700000001' WHERE id = $1", [c.facility.id]);
+      const holderPid = Number((await holder.query("SELECT pg_backend_pid() AS pid")).rows[0].pid);
+      const change = call("PATCH", "/facility", c.facility.id, c.admin, { phone: "0722000111" });
+      expect(await waitForBlockedBackend(holderPid)).toBe(true);
+      await holder.query("COMMIT");
+      expect((await change).status).toBe(200);
+    }
+    finally {
+      await holder.query("ROLLBACK").catch(() => {});
+      holder.release();
+    }
+
+    expect((await audits(c, "facility.updated"))[0].detail).toEqual({ phone: { from: "+254700000001", to: "+254722000111" } });
+  });
+
   it("names the patient, the facility, the day and time and the number to call, never the clinic", async () => {
     const c = await clinic();
     expect((await call("PATCH", "/facility", c.facility.id, c.clerk, { phone: "0722 000 111" })).status).toBe(403);
@@ -355,22 +427,28 @@ describe("the reminder", () => {
     expect((await reminderOf(appointment.id, IN(2))).status).toBe("sent");
   });
 
-  it("is retried as first written when Africa's Talking cannot be reached, and failed once the outbox gives up", async () => {
+  it("is retried to the number and time that stand now when Africa's Talking cannot be reached, and failed once the outbox gives up", async () => {
     const c = await clinic();
     await call("PATCH", "/facility", c.facility.id, c.admin, { phone: "0722000111" });
-    const first = await booked(c, { patientId: await c.patient({ phone: "0712345678" }), smsReminders: true });
+    const patientId = await c.patient({ phone: "0712345678" });
+    const first = await booked(c, { patientId, time: "09:00", smsReminders: true });
     const reminder = await reminderOf(first.id, IN(2));
     const down = async () => {
       throw new SmsError("Could not reach Africa's Talking");
     };
 
     await expect(remind(c, reminder.id, down)).rejects.toThrow(SmsError);
-    const sending = await reminderOf(first.id, IN(2));
-    expect(sending.status).toBe("sending");
-    // The retry sends what was first written, whatever has changed since.
-    await call("PATCH", "/facility", c.facility.id, c.admin, { phone: null });
+    expect(await reminderOf(first.id, IN(2))).toMatchObject({ status: "sending", toPhone: "+254712345678" });
+    // Before the retry, the patient's number changes and the appointment moves to 11:00 the same day.
+    await call("PATCH", `/patients/${patientId}`, c.facility.id, c.clerk, { phone: "0733 111 222" });
+    await post(c, `/appointments/${first.id}/move`, { date: IN(2), time: "11:00" });
+    const sent = sentSms.length;
+
     expect(await remind(c, reminder.id)).toBe("done");
-    expect(sentSms.at(-1)?.body).toBe(sending.body);
+
+    // Never to the old number, and never the old time; the row keeps what went.
+    expect(sentSms.slice(sent)).toEqual([expect.objectContaining({ to: "+254733111222", body: expect.stringContaining("at 11:00 am") })]);
+    expect(await reminderOf(first.id, IN(2))).toMatchObject({ status: "sent", toPhone: "+254733111222", body: sentSms.at(-1)?.body });
 
     const second = await booked(c, { patientId: await c.patient({ givenName: "Baraka", phone: "0722345678" }), smsReminders: true });
     const another = await reminderOf(second.id, IN(2));
@@ -423,5 +501,13 @@ describe("the database's appointment guards", () => {
     expect(await remind(c, reminder.id)).toBe("done");
     expect(await state(pool.query("UPDATE appointment_reminders SET status = 'skipped', outcome_note = 'x' WHERE id = $1", [reminder.id]))).toBe("23001");
     expect(await state(pool.query("DELETE FROM appointment_reminders WHERE id = $1", [reminder.id]))).toBe("23001");
+    // An attempt may copy a new message while sending; a finished one keeps what went.
+    const other = await booked(c, { patientId, date: IN(3) });
+    const sending = await reminderOf(other.id, IN(3));
+    await remind(c, sending.id, async () => {
+      throw new SmsError("down");
+    }).catch(() => {});
+    expect(await state(pool.query("UPDATE appointment_reminders SET body = 'Again' WHERE id = $1", [sending.id]))).toBe("ok");
+    expect(await state(pool.query("UPDATE appointment_reminders SET status = 'sent', completed_at = now(), body = 'Other' WHERE id = $1", [sending.id]))).toBe("23001");
   });
 });

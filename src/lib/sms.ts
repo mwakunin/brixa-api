@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 import env from "@/env";
 
 /**
@@ -70,28 +72,40 @@ export function parseCostCents(raw: unknown): number | null {
 /** 100 Processed, 101 Sent and 102 Queued all mean Africa's Talking took the message. */
 const ACCEPTED = new Set([100, 101, 102]);
 
-interface Recipient {
-  statusCode?: unknown;
-  status?: unknown;
-  messageId?: unknown;
-  cost?: unknown;
-}
+/** The answer as Africa's Talking documents it; anything else is not an answer this code can trust. */
+const AnswerSchema = z.object({
+  SMSMessageData: z.object({
+    Message: z.string().optional(),
+    Recipients: z.array(z.object({
+      statusCode: z.number().int(),
+      status: z.string().optional(),
+      messageId: z.string().optional(),
+      cost: z.union([z.string(), z.number()]).optional(),
+    })),
+  }),
+});
 
-/** Reads Africa's Talking's answer for the one recipient. */
+/**
+ * Reads Africa's Talking's answer for the one recipient. One that does not
+ * have the documented shape throws, so the send is retried rather than
+ * recorded as refused.
+ */
 export function resultOf(payload: unknown): SmsResult {
-  const data = (payload as { SMSMessageData?: { Recipients?: Recipient[]; Message?: unknown } } | null)?.SMSMessageData;
-  const recipient = data?.Recipients?.[0];
+  const parsed = AnswerSchema.safeParse(payload);
+  if (!parsed.success)
+    throw new SmsError("Africa's Talking's answer was not in the expected shape");
+  const data = parsed.data.SMSMessageData;
+  const recipient = data.Recipients[0];
   // No recipient entry: the request was refused outright (a sender not
   // registered, no balance, a malformed number).
   if (!recipient)
-    return { accepted: false, providerMessageId: null, costCents: null, reason: String(data?.Message ?? "Refused with no recipient detail").slice(0, 200) };
-  const statusCode = Number(recipient.statusCode);
-  const accepted = ACCEPTED.has(statusCode);
+    return { accepted: false, providerMessageId: null, costCents: null, reason: (data.Message || "Refused with no recipient detail").slice(0, 200) };
+  const accepted = ACCEPTED.has(recipient.statusCode);
   return {
     accepted,
-    providerMessageId: typeof recipient.messageId === "string" ? recipient.messageId : null,
+    providerMessageId: recipient.messageId ?? null,
     costCents: parseCostCents(recipient.cost),
-    reason: accepted ? null : String(recipient.status ?? `Status ${statusCode}`).slice(0, 200),
+    reason: accepted ? null : (recipient.status || `Status ${recipient.statusCode}`).slice(0, 200),
   };
 }
 

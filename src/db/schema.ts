@@ -1417,10 +1417,12 @@ export const appointments = pgTable("appointments", {
  *
  * Each job serves one row, so a moved appointment's old reminder and its new
  * one never race each other: the old finds the appointment on another day and
- * is skipped. The job re-reads everything when it runs, and copies what it
- * sends (`to_phone`, `body`) as it starts sending. A send that may have
- * reached Africa's Talking and is retried can arrive twice; that is accepted
- * for a reminder. Migration 0069's trigger moves a row only forward.
+ * is skipped. Each attempt re-reads everything and copies what it sends
+ * (`to_phone`, `body`), so a retry goes to the patient's number and time as
+ * they stand then; a finished row keeps what its last attempt sent. A send
+ * that may have reached Africa's Talking and is retried can arrive twice;
+ * that is accepted for a reminder. Migration 0069's trigger moves a row only
+ * forward.
  */
 export const appointmentReminders = pgTable("appointment_reminders", {
   id: uuid().primaryKey().defaultRandom(),

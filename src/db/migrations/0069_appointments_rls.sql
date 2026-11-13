@@ -115,10 +115,10 @@ CREATE TRIGGER appointments_lifecycle
 --> statement-breakpoint
 
 -- For every role: a reminder is written scheduled; scheduled moves to sending,
--- failed or skipped, and sending to sent, rejected, failed or skipped; what it
--- sends is copied once, as it starts sending; which appointment and day it is
--- for, and when it is due, never change; a finished reminder never changes;
--- nothing is deleted.
+-- failed or skipped, and sending to sent, rejected, failed or skipped; each
+-- attempt copies what it sends, so the row holds the last attempt's message,
+-- and finishing keeps it; which appointment and day it is for, and when it is
+-- due, never change; a finished reminder never changes; nothing is deleted.
 CREATE FUNCTION appointment_reminders_lifecycle() RETURNS trigger
   LANGUAGE plpgsql
   AS $$
@@ -149,9 +149,9 @@ BEGIN
     RAISE EXCEPTION 'a reminder moves scheduled -> sending -> sent, rejected, failed or skipped, never back'
       USING ERRCODE = 'restrict_violation';
   END IF;
-  IF OLD.status = 'sending'
+  IF OLD.status = 'sending' AND NEW.status <> 'sending'
     AND (NEW.to_phone, NEW.body, NEW.sending_at) IS DISTINCT FROM (OLD.to_phone, OLD.body, OLD.sending_at) THEN
-    RAISE EXCEPTION 'what a reminder sends is copied once'
+    RAISE EXCEPTION 'a finished reminder keeps what its last attempt sent'
       USING ERRCODE = 'restrict_violation';
   END IF;
   IF (to_jsonb(NEW) - lifecycle) IS DISTINCT FROM (to_jsonb(OLD) - lifecycle) THEN

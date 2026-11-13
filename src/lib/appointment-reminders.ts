@@ -127,8 +127,10 @@ interface Message {
 
 /**
  * Locks the reminder and decides, from what stands now, whether it goes. One
- * that goes is marked sending with what it says, copied once; a retry sends
- * that again. One that does not is skipped with the reason.
+ * that goes is marked sending with what it says now. A retry composes it
+ * again, so it never goes to a number the patient has since replaced, nor
+ * gives a time since moved; the row keeps what the last attempt sent. One
+ * that does not go is skipped with the reason.
  */
 async function startSending(tx: AppDb, reminderId: string, now: Date): Promise<Message | null> {
   const [reminder] = await tx.select().from(appointmentReminders).where(eq(appointmentReminders.id, reminderId)).for("update").limit(1);
@@ -161,9 +163,6 @@ async function startSending(tx: AppDb, reminderId: string, now: Date): Promise<M
   }
 
   const from = due.senderId ?? env.AT_SENDER_ID;
-  if (reminder.status === "sending")
-    return { to: reminder.toPhone!, body: reminder.body!, ...(from ? { from } : {}) };
-
   const body = reminderText({ ...due, date: due.scheduledOn, time: due.scheduledTime });
   await tx
     .update(appointmentReminders)
