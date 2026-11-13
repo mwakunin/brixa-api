@@ -144,12 +144,15 @@ async function writeSpecimen(
     throw err;
   }
   // Each test's analytes as they stand now: what its result must give (lib/lab-results.ts).
+  // Share-locked, so a change `updateAnalyte` is making (an answer removed, the
+  // analyte retired) settles first, and one it makes later sees this specimen.
   const panels = await tx
     .select({ orderItemId: orderItems.id, analyteId: labAnalytes.id })
     .from(orderItems)
     .innerJoin(labAnalytes, and(eq(labAnalytes.labTestId, orderItems.labTestId), eq(labAnalytes.isActive, true)))
     .where(inArray(orderItems.id, input.itemIds))
-    .orderBy(asc(labAnalytes.position));
+    .orderBy(asc(labAnalytes.position))
+    .for("share", { of: labAnalytes });
   // A test with nothing in use could never be resulted: refused, so nothing is collected in vain.
   if (input.itemIds.some(id => !panels.some(p => p.orderItemId === id)))
     throw new SpecimenError("test_has_no_analytes");
