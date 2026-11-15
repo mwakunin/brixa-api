@@ -3,7 +3,7 @@ import * as HttpStatusCodes from "stoker/http-status-codes";
 import { jsonContent, jsonContentRequired } from "stoker/openapi/helpers";
 import { createErrorSchema } from "stoker/openapi/schemas";
 
-import { SHORTFALL_APPROVERS, TRANSFER_READERS, TRANSFER_STAFF, WARD_STAFF } from "@/lib/transfers";
+import { MAX_TRANSFER_BATCHES, SHORTFALL_APPROVERS, TRANSFER_READERS, TRANSFER_STAFF, WARD_STAFF } from "@/lib/transfers";
 import { requireMembershipRole } from "@/middlewares/auth";
 import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
@@ -40,8 +40,8 @@ const SendBodySchema = z.strictObject({ lines: SendLinesSchema });
 const DirectBodySchema = z.strictObject({ fromStoreId: z.uuid(), toStoreId: z.uuid(), lines: SendLinesSchema });
 const ReceiveBodySchema = z.strictObject({
   /** What arrived of each batch; one not named arrived whole. */
-  // As many as a send can carry: 200 lines of up to 20 batches.
-  received: z.array(z.strictObject({ batchId: z.uuid(), quantity: z.number().int().min(0).max(100_000_000) })).max(4000).refine(r => new Set(r.map(x => lower(x.batchId))).size === r.length, "Each batch once").optional(),
+  // As many as a transfer carries (`MAX_TRANSFER_BATCHES`), so each batch's loss can be recorded.
+  received: z.array(z.strictObject({ batchId: z.uuid(), quantity: z.number().int().min(0).max(100_000_000) })).max(MAX_TRANSFER_BATCHES).refine(r => new Set(r.map(x => lower(x.batchId))).size === r.length, "Each batch once").optional(),
   /** Needed when less arrived than was sent. */
   shortfallReason: ReasonSchema.optional(),
 });

@@ -25,6 +25,12 @@ import { allocate } from "./stock-allocation";
 
 type TransferRow = typeof stockTransfers.$inferSelect;
 
+/**
+ * The most batches one transfer carries: as many as its receipt can name,
+ * so a loss can be recorded for each (CodeRabbit on #20).
+ */
+export const MAX_TRANSFER_BATCHES = 4000;
+
 /** Who requests, sends and receives, for any store. */
 export const TRANSFER_STAFF = ["pharmacist", "pharm_tech", "storekeeper"] as const satisfies readonly MembershipRole[];
 /** Who requests for and receives into a ward's store, and no other. */
@@ -55,7 +61,8 @@ export type TransferErrorCode
     | "shortfall_reason_needed"
     | "no_shortfall"
     | "not_requested"
-    | "more_than_requested";
+    | "more_than_requested"
+    | "too_many_batches";
 
 export class TransferError extends Error {
   constructor(readonly code: TransferErrorCode) {
@@ -77,6 +84,7 @@ export class TransferError extends Error {
       no_shortfall: "Nothing on this transfer is waiting to be accepted",
       not_requested: "That item was not asked for: send it without a request instead",
       more_than_requested: "More than was asked for: less may be sent, never more",
+      too_many_batches: `One transfer carries at most ${MAX_TRANSFER_BATCHES.toLocaleString("en")} batches, as many as a receipt can name; split it`,
     }[code]);
     this.name = "TransferError";
   }
@@ -156,6 +164,9 @@ async function moveOut(tx: AppDb, transfer: TransferRow, lines: TakeLine[], acto
   for (const t of taken)
     perBatch.set(t.batchId, (perBatch.get(t.batchId) ?? 0) + t.quantity);
   const batches = [...perBatch].map(([batchId, quantity]) => ({ batchId, quantity }));
+  // Earliest expiry first may draw on many small batches: never more than a receipt can name.
+  if (batches.length > MAX_TRANSFER_BATCHES)
+    throw new TransferError("too_many_batches");
 
   await tx.insert(stockTransferBatches).values(batches.map(b => ({ facilityId: transfer.facilityId, transferId: transfer.id, batchId: b.batchId, quantitySent: b.quantity })));
   await tx.insert(stockMovements).values(batches.map(b => ({
