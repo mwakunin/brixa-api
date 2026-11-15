@@ -519,6 +519,48 @@
       "when": 1794748286624,
       "tag": "0073_audit_actions_outbox_claim",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1794750056723,
+      "tag": "0074_stores",
+      "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1794750059946,
+      "tag": "0075_stores_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1794751435568,
+      "tag": "0076_goods_received",
+      "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1794751441682,
+      "tag": "0077_goods_received_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "7",
+      "when": 1794753302490,
+      "tag": "0078_item_import",
+      "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1794755996468,
+      "tag": "0079_stock_written_once",
+      "breakpoints": true
     }
   ]
 }

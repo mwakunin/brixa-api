@@ -477,7 +477,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 - **Not yet:**
   - ending a membership;
   - a check against the health worker registry (AfyaConnect);
-  - whether a nurse's pharmacy role may also dispense controlled drugs, which P4 decides with the register (rule 12).
+  - ~~whether a nurse's pharmacy role may also dispense controlled drugs~~: no. P4 decided (2026-11-15, `ROADMAP.md` P4, question 4) that a controlled drug needs the pharmacist role and a pharmacy licence.
 
 **As built (P3, slice 1b): service points and queues.** Decided 2026-11-10 (`ROADMAP.md` P3):
 
@@ -790,7 +790,80 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 
 **Lab.** `lab_tests` is the facility's catalogue (specimen type, reference ranges by sex and age, billable item). `specimens` carry the accession number (§6.1), collection and receipt times, and a rejection reason. `lab_results` are versioned. `verified_by` must differ from the person who entered the result, and a result reaches the clinician once verified, or released unverified by the one lab member on night duty (decided 2026-11-11; as built in slice 5b, above).
 
-**Pharmacy and stores.** `inventory_items` reference the shared `drug_catalogue` (or describe a non-drug consumable) and a billable item. `stores` covers the main store, the pharmacy, wards and other sub-stores. `stock_batches` hold batch number, expiry and cost. `stock_movements` are append-only signed quantities (opening balance, receipt, dispense, transfer out/in, adjustment, write-off, return) with typed source FKs. An opening balance loads counted stock at go-live; it is its own kind so it never reads as a purchase. Each item has a reorder level per store, which drives the low-stock alert. **On hand per store and batch = Σ movements, never stored, never negative** (checked under a batch lock). `dispenses` take stock first-expiry-first-out and raise the charge. `controlled_drug_register` is append-only with a running balance per item and store. `goods_received` records the supplier as text in v1, since supplier payables come later. Units of sale: loose units (decided 2026-11-15, `SPEC.md` §4, question 2): each item has a base unit and a pack size, and stock is counted in the base unit.
+**Pharmacy and stores.** `inventory_items` reference the shared `drug_catalogue` (or describe a non-drug consumable) and a billable item. `stores` covers the main store, the pharmacy, wards and other sub-stores. `stock_batches` hold batch number and expiry; a batch's cost is its goods-received line's total, with the unit cost derived (`ROADMAP.md` P4, question 2). `stock_movements` are append-only signed quantities (opening balance, receipt, dispense, transfer out/in, adjustment, write-off, return) with typed source FKs. An opening balance loads counted stock at go-live; it is its own kind so it never reads as a purchase. Each item has a reorder level per store, which drives the low-stock alert. **On hand per store and batch = Σ movements, never stored, never negative** (checked under a batch lock). `dispenses` take stock first-expiry-first-out and raise the charge. `controlled_drug_register` is append-only with a running balance per catalogue drug and store, so two brands of one drug share a page, as on paper (question 8). `goods_received` records the supplier as text in v1, since supplier payables come later. Units of sale: loose units (decided 2026-11-15, `SPEC.md` §4, question 2): each item has a base unit and a pack size, and stock is counted in the base unit.
+
+**As built (P4, slice 1a): stores, stock items and reorder levels.** Decided 2026-11-15 (`ROADMAP.md` P4). `inventory_items` above is built as `stock_items`.
+
+- **`stores`:** a name unique in the facility, and a `kind`: `main`, `pharmacy` (which will dispense, slice 3a), `ward` or `other`. A store is renamed or retired, and never changes kind.
+- **`stock_items`:** each sits on an active `drug` or `consumable` billable item, one per item (`stock_items_billable_item_key`). It goes by the item's code and name, and sells at the item's price per base unit through `resolvePrice` (rule 21), so the shelf and the bill never disagree.
+  - A `drug` item names its catalogue drug (`drug_code`), current when set up. A consumable names none.
+  - **`base_unit`** (what one is counted in: `tablet`, `mL`, `vial`, `pair`) and **`pack_size`** (base units per pack) are always given. They are not derived from the drug's dose unit, which for a cream is an "application" and cannot be counted on a shelf.
+  - The billable item, the drug and the base unit are fixed once set, held by column privileges as well as the routes. Stock will be counted in that unit (1b), so a different unit is a new stock item. The pack size may change, and the item may be retired.
+  - Controlled drugs are known from the catalogue's schedule, which the list shows with each drug. Nothing about them is copied onto the item.
+- **`reorder_levels`:** one per item per store, in base units. Zero flags nothing, so a level is set to zero, never removed. `PUT /stores/{id}/reorder-levels` sets the items given and leaves the store's others. Each change is audited with its old and new level, and a request that changes nothing writes nothing. The store's row is locked first, so two changes at once each audit what they replaced.
+- **Audit actions:** `store.created`, `store.updated`, `stock_item.created`, `stock_item.updated` and `reorder_levels.set`, each with its old and new values where something changed. They are the first actions added as rows of `audit_actions` (migration 0075), not a CHECK rewrite.
+- **Who** (`STOCK_KEEPERS`, `src/lib/stock-items.ts`):
+  - the facility admin, pharmacists and storekeepers set up stores, stock items and levels. These aren't clinical acts, so no licence is asked;
+  - every member reads them, since they hold no patient data;
+  - `GET /drugs` is now open to the facility admin and storekeepers as well as clinical roles, so they can name an item's drug.
+- **Not yet:**
+  - a store linked to its ward (P5);
+  - refusing to retire a store or item that still holds stock (1b, once stock exists);
+  - prices shown with the items (the billable-item list has them);
+  - sensitive medicines (question 12, slice 3a).
+
+**As built (P4, slice 1b): goods received, batches and the stock ledger.** Decided 2026-11-15 (`ROADMAP.md` P4, slice 1b).
+
+- **`goods_received`**: one note per delivery. It holds:
+  - the store, the supplier as text (the donor, for donated stock), and the supplier's delivery-note number;
+  - the Kenyan day it arrived (today unless given, never later), and who received it;
+  - a number from the yearly `GRN-` series, registered at onboarding and backfilled by migration 0077.
+
+  It is written once and never edited: the app role has `SELECT` and `INSERT` only, and triggers (migration 0079) refuse `UPDATE` and `DELETE` from every role, the owner included. The same holds for its batches.
+- **`stock_batches`**: one per line, so each batch has one cost.
+  - The supplier's batch number and expiry are needed for a drug and optional for a consumable.
+  - The quantity is stored in base units, with the pack size it came at. A line gives whole `packs` or loose `units`, never both.
+  - The line's `total_cost_cents` may be zero (donated). The unit cost is derived, never stored.
+  - An expired batch is refused. One expiring within 90 days (`EXPIRY_WARNING_DAYS`) is taken, and the response lists a warning for it.
+  - A refused line refuses the whole note, naming the line, and the series number it would have taken is still the next one.
+- **`stock_movements`**: append-only. The app role has `INSERT` and `SELECT`, and a trigger refuses `UPDATE` and `DELETE` for every role.
+  - Each row is a signed quantity in base units per store and batch. The kinds so far are `receipt` and `receipt_reversed`, each with its note as a typed source. `stock_movements_shape` holds each kind's sign, source and reason.
+  - **On hand per store and batch is the sum of the movements, never stored and never negative.** `stock_movements_never_negative`, an after-insert trigger, holds this for any writer. The services also check it under the batch's lock.
+- **The lock order for stock** (`src/lib/stock-levels.ts`): store, then stock items by id, then batches by id.
+  - A batch is written once, so it is locked with a transaction advisory lock, not a row lock.
+  - A delivery holds its store and items shared. Retiring either waits for the delivery to commit, then sees its stock (tested).
+- **Reversing a line** (`POST /stock-batches/{id}/reverse`, with a reason) takes the whole line back off the shelf while none of its stock has moved. A line is reversed at most once (a partial unique index). One whose stock has moved is corrected by an adjustment (3b).
+- **A store or item holding stock cannot be retired** (`holds_stock`).
+- **`GET /stores/{id}/stock`** lists each item the store holds or has a reorder level for, with:
+  - on hand;
+  - its batches, earliest expiry first (expired ones marked);
+  - the value at each batch's cost, rounded once per batch.
+- **Who:**
+  - storekeepers, pharmacists and pharmacy technicians receive and reverse (`RECEIVERS`);
+  - they, the facility admin, the finance manager and the auditor read notes and stock (`STOCK_READERS`);
+  - no licence is asked, and nothing here is patient data, so reads are not audited;
+  - `goods.received` and `stock_batch.reversed` are audited.
+- **Not yet:** opening balances (P6); transfers (2); dispensing (3a); adjustments and write-offs (3b).
+
+**As built (P4, slice 1c): the item import.** Decided 2026-11-15 (`ROADMAP.md` P4, slice 1c). `src/lib/item-import.ts`; no table of its own.
+
+- **The file** is this system's CSV: `code,name,category,drug_code,base_unit,pack_size,unit_price`. It holds at most 5,000 rows and is sent as `{ csv }`, read by the drug loader's RFC 4180 parser.
+  - `unit_price` is per base unit, in shillings with at most two decimals (`2.50` is 250 cents). Empty means not priced yet.
+  - A file it cannot read (the wrong header, no rows, too many, a broken quote) is refused as `unreadable`.
+- **`POST /stock-items/import/preview`** writes nothing. It returns each row's action (`create`, `add_stock_item` or `unchanged`), the price it would request, and every problem.
+  - A drug row with no `drug_code` lists up to three catalogue drugs found by the first word of its name. Suggestions are given for the first 200 such rows, since each one is a search.
+- **`POST /stock-items/import`** imports the whole file or none of it. Any row with a problem refuses the file (`has_problems`), listing every such row.
+  - Each row becomes a billable item (unless its code is already one) and that item's stock item.
+  - The prices go into one price change, effective from today or a later `effectiveFrom`, for a second person to approve (rule 24).
+  - One `stock_items.imported` audit entry names the codes created, beside the price change's own entry.
+- **Running a file again changes nothing:**
+  - a code already set up is matched;
+  - a price is requested only if it differs from the price in force on the day the file's prices would start. A pending change already asking for it doesn't count unless it can still be approved (starting today or later) and starts by that day. The preview takes the same `effectiveFrom`;
+  - imports run one at a time per facility (an advisory lock), so a second waits and then sees the first's items and pending prices;
+  - an existing item keeps its name;
+  - a row that disagrees with what's set up (another category, drug, base unit or pack size, or a retired item) is a problem, never applied.
+- **Who:** the facility admin only, since an import creates billable items as well as stock items.
+- **Not yet:** reorder levels and opening stock (set per store; P6's cutover); matching drugs by anything cleverer than a name's first word.
 
 ---
 

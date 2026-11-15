@@ -450,6 +450,14 @@ export const auditLog = pgTable("audit_log", {
     | "billable_item.updated"
     | "patient.break_glass_refused"
     | "document.view_refused"
+    | "store.created"
+    | "store.updated"
+    | "stock_item.created"
+    | "stock_item.updated"
+    | "reorder_levels.set"
+    | "goods.received"
+    | "stock_batch.reversed"
+    | "stock_items.imported"
   >().notNull().references(() => auditActions.action),
   /** What it happened to. Not a foreign key: the log outlives what it names. */
   entityType: text().notNull(),
@@ -480,7 +488,7 @@ export const auditLog = pgTable("audit_log", {
 export const numberSeries = pgTable("number_series", {
   id: uuid().primaryKey().defaultRandom(),
   facilityId: uuid().notNull().references(() => facilities.id),
-  kind: text().$type<"outpatient" | "inpatient" | "admission" | "receipt" | "invoice" | "credit_note" | "refund" | "prescription" | "lab_accession" | "lab_report">().notNull(),
+  kind: text().$type<"outpatient" | "inpatient" | "admission" | "receipt" | "invoice" | "credit_note" | "refund" | "prescription" | "lab_accession" | "lab_report" | "goods_received">().notNull(),
   /** Facility-chosen, e.g. `OP`. Applies to numbers issued from now on. */
   prefix: text().notNull(),
   /** Zero-padded width: 4 gives OP0001. A number grows past it, never truncates. */
@@ -491,7 +499,7 @@ export const numberSeries = pgTable("number_series", {
 }, t => [
   unique("number_series_facility_id_kind_key").on(t.facilityId, t.kind),
   unique("number_series_facility_id_id_key").on(t.facilityId, t.id),
-  oneOf("number_series_kind_known", t.kind, ["outpatient", "inpatient", "admission", "receipt", "invoice", "credit_note", "refund", "prescription", "lab_accession", "lab_report"]),
+  oneOf("number_series_kind_known", t.kind, ["outpatient", "inpatient", "admission", "receipt", "invoice", "credit_note", "refund", "prescription", "lab_accession", "lab_report", "goods_received"]),
   oneOf("number_series_reset_period_known", t.resetPeriod, ["never", "yearly", "daily"]),
   check("number_series_prefix_shape", sql`${t.prefix} ~ '^[A-Za-z0-9/-]{1,12}$'`),
   check("number_series_padding_range", sql`${t.padding} BETWEEN 1 AND 12`),
@@ -2278,6 +2286,198 @@ export const labReports = pgTable("lab_reports", {
 ]);
 
 // ---------------------------------------------------------------------------
+// Pharmacy and stores (SCHEMA.md §8, P4)
+// ---------------------------------------------------------------------------
+
+/**
+ * A place stock is kept and counted: the main store, the pharmacy, a ward's
+ * or another department's sub-store (P4 slice 1a). Its stock is derived from
+ * the movements into and out of it, per batch (slice 1b). Retired, never
+ * removed.
+ */
+export const stores = pgTable("stores", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  name: text().notNull(),
+  /** What it is for: the pharmacy dispenses (slice 3a), a ward's store holds ward stock. */
+  kind: text().$type<"main" | "pharmacy" | "ward" | "other">().notNull(),
+  isActive: boolean().default(true).notNull(),
+  createdAt: createdAt(),
+}, t => [
+  unique("stores_facility_id_id_key").on(t.facilityId, t.id),
+  unique("stores_facility_id_name_key").on(t.facilityId, t.name),
+  check("stores_name_present", sql`length(btrim(${t.name})) > 0`),
+  oneOf("stores_kind_known", t.kind, ["main", "pharmacy", "ward", "other"]),
+]);
+
+/**
+ * Something the facility stocks: a catalogue drug, or a consumable that is
+ * not one (P4 slice 1a). It is a `drug` or `consumable` billable item with
+ * stock details, going by the item's code and name and sold at its price per
+ * base unit, so the bill and the shelf never disagree.
+ *
+ * Counted in its base unit (a tablet, a mL, a vial, a piece; decided
+ * 2026-11-15), and received in packs of `pack_size` of them. The base unit
+ * and the drug are fixed once set: stock is counted in the one and
+ * dispensed as the other. Retired, never removed.
+ */
+export const stockItems = pgTable("stock_items", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  billableItemId: uuid().notNull(),
+  /** The catalogue drug a drug item is; null for a consumable. */
+  drugCode: text(),
+  /** What one is counted in: `tablet`, `mL`, `vial`, `piece`. */
+  baseUnit: text().notNull(),
+  /** How many base units a pack holds: received in packs, counted in units. */
+  packSize: integer().notNull(),
+  isActive: boolean().default(true).notNull(),
+  createdAt: createdAt(),
+}, t => [
+  unique("stock_items_facility_id_id_key").on(t.facilityId, t.id),
+  // One stock item per billable item, so each has its own price per base unit.
+  unique("stock_items_billable_item_key").on(t.facilityId, t.billableItemId),
+  foreignKey({ name: "stock_items_billable_item_fk", columns: [t.facilityId, t.billableItemId], foreignColumns: [billableItems.facilityId, billableItems.id] }),
+  foreignKey({ name: "stock_items_drug_fk", columns: [t.drugCode], foreignColumns: [drugCatalogue.code] }),
+  index("stock_items_drug_index").on(t.facilityId, t.drugCode),
+  check("stock_items_base_unit_shape", sql`length(btrim(${t.baseUnit})) BETWEEN 1 AND 20`),
+  check("stock_items_pack_size_positive", sql`${t.packSize} > 0`),
+]);
+
+/**
+ * Below this many base units on hand, an item is flagged in that store (the
+ * low-stock alert, slice 6). One per item per store; zero flags nothing, so
+ * a level is set to zero rather than removed.
+ */
+export const reorderLevels = pgTable("reorder_levels", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  storeId: uuid().notNull(),
+  stockItemId: uuid().notNull(),
+  /** In the item's base unit. */
+  level: integer().notNull(),
+  createdAt: createdAt(),
+}, t => [
+  unique("reorder_levels_store_item_key").on(t.facilityId, t.storeId, t.stockItemId),
+  foreignKey({ name: "reorder_levels_store_fk", columns: [t.facilityId, t.storeId], foreignColumns: [stores.facilityId, stores.id] }),
+  foreignKey({ name: "reorder_levels_stock_item_fk", columns: [t.facilityId, t.stockItemId], foreignColumns: [stockItems.facilityId, stockItems.id] }),
+  index("reorder_levels_stock_item_index").on(t.facilityId, t.stockItemId),
+  check("reorder_levels_level_nonnegative", sql`${t.level} >= 0`),
+]);
+
+/**
+ * One delivery into a store (P4 slice 1b): who supplied it, their note's
+ * number and the day it came, numbered from the yearly `GRN-` series. Its
+ * lines are batches. Written once, never changed: a mistyped line is
+ * reversed (`stock_movements`) and entered again.
+ */
+export const goodsReceived = pgTable("goods_received", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  /** `GRN-2026-000123`. */
+  number: text().notNull(),
+  storeId: uuid().notNull(),
+  /** As text in v1, since supplier payables come later; the donor, for donated stock. */
+  supplier: text().notNull(),
+  /** The supplier's delivery note or invoice number. */
+  supplierReference: text(),
+  /** The Kenyan day it arrived, which may be before the day it was entered. */
+  receivedOn: date({ mode: "string" }).notNull(),
+  receivedBy: uuid().notNull(),
+  createdAt: createdAt(),
+}, t => [
+  unique("goods_received_facility_id_id_key").on(t.facilityId, t.id),
+  unique("goods_received_number_key").on(t.facilityId, t.number),
+  foreignKey({ name: "goods_received_store_fk", columns: [t.facilityId, t.storeId], foreignColumns: [stores.facilityId, stores.id] }),
+  foreignKey({ name: "goods_received_received_by_fk", columns: [t.facilityId, t.receivedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  index("goods_received_store_index").on(t.facilityId, t.storeId, t.receivedOn),
+  check(
+    "goods_received_text_present",
+    sql`length(btrim(${t.supplier})) > 0 AND (${t.supplierReference} IS NULL OR length(btrim(${t.supplierReference})) > 0)`,
+  ),
+]);
+
+/**
+ * A batch of a stock item: one line of a goods-received note (decided
+ * 2026-11-15), so it has one cost. Two deliveries of the supplier's batch
+ * are two batches with the same number. Written once; where it is and how
+ * much is left come from `stock_movements`.
+ */
+export const stockBatches = pgTable("stock_batches", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  stockItemId: uuid().notNull(),
+  goodsReceivedId: uuid().notNull(),
+  /** Its place on the note, from 1. */
+  line: integer().notNull(),
+  /** The supplier's batch number; null only for a consumable that has none. */
+  batchNumber: text(),
+  /** The last day it may be used; null only for a consumable that has none. */
+  expiresOn: date({ mode: "string" }),
+  /** In the item's base unit. */
+  quantityReceived: integer().notNull(),
+  /** Base units per pack when it came, copied from the item. */
+  packSize: integer().notNull(),
+  /**
+   * The line's total, as the delivery note shows it; zero for donated stock.
+   * The unit cost is derived (total over quantity), never stored: a pack of
+   * 30 for KES 350 is 1,166.67 cents a tablet.
+   */
+  totalCostCents: integer().notNull(),
+  createdAt: createdAt(),
+}, t => [
+  unique("stock_batches_facility_id_id_key").on(t.facilityId, t.id),
+  unique("stock_batches_line_key").on(t.goodsReceivedId, t.line),
+  foreignKey({ name: "stock_batches_stock_item_fk", columns: [t.facilityId, t.stockItemId], foreignColumns: [stockItems.facilityId, stockItems.id] }),
+  foreignKey({ name: "stock_batches_goods_received_fk", columns: [t.facilityId, t.goodsReceivedId], foreignColumns: [goodsReceived.facilityId, goodsReceived.id] }),
+  index("stock_batches_item_expiry_index").on(t.facilityId, t.stockItemId, t.expiresOn),
+  check("stock_batches_line_positive", sql`${t.line} > 0`),
+  check("stock_batches_quantity_positive", sql`${t.quantityReceived} > 0`),
+  check("stock_batches_pack_size_positive", sql`${t.packSize} > 0`),
+  check("stock_batches_cost_nonnegative", sql`${t.totalCostCents} >= 0`),
+  check("stock_batches_batch_number_shape", sql`${t.batchNumber} IS NULL OR length(btrim(${t.batchNumber})) BETWEEN 1 AND 40`),
+]);
+
+/**
+ * Every change to what a store holds, per batch: a signed quantity in base
+ * units (SCHEMA.md §8). Append-only, for every role. On hand per store and
+ * batch is their sum, never stored (rule 4) and never negative, which a
+ * trigger holds whatever wrote the row. Later slices add their kinds and
+ * sources (transfers, dispenses, adjustments), each a typed foreign key.
+ */
+export const stockMovements = pgTable("stock_movements", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  storeId: uuid().notNull(),
+  batchId: uuid().notNull(),
+  kind: text().$type<"receipt" | "receipt_reversed">().notNull(),
+  quantity: integer().notNull(),
+  /** The note a receipt, or its reversal, belongs to. */
+  goodsReceivedId: uuid(),
+  /** Why, for a reversal. */
+  reason: text(),
+  recordedBy: uuid().notNull(),
+  recordedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+}, t => [
+  foreignKey({ name: "stock_movements_store_fk", columns: [t.facilityId, t.storeId], foreignColumns: [stores.facilityId, stores.id] }),
+  foreignKey({ name: "stock_movements_batch_fk", columns: [t.facilityId, t.batchId], foreignColumns: [stockBatches.facilityId, stockBatches.id] }),
+  foreignKey({ name: "stock_movements_goods_received_fk", columns: [t.facilityId, t.goodsReceivedId], foreignColumns: [goodsReceived.facilityId, goodsReceived.id] }),
+  foreignKey({ name: "stock_movements_recorded_by_fk", columns: [t.facilityId, t.recordedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  index("stock_movements_store_batch_index").on(t.facilityId, t.storeId, t.batchId),
+  index("stock_movements_batch_index").on(t.facilityId, t.batchId),
+  // A batch is received once, and its receipt reversed at most once.
+  uniqueIndex("stock_movements_one_receipt").on(t.batchId).where(sql`${t.kind} = 'receipt'`),
+  uniqueIndex("stock_movements_one_receipt_reversal").on(t.batchId).where(sql`${t.kind} = 'receipt_reversed'`),
+  oneOf("stock_movements_kind_known", t.kind, ["receipt", "receipt_reversed"]),
+  check(
+    "stock_movements_shape",
+    sql`(${t.kind} = 'receipt' AND ${t.quantity} > 0 AND ${t.goodsReceivedId} IS NOT NULL AND ${t.reason} IS NULL)
+      OR (${t.kind} = 'receipt_reversed' AND ${t.quantity} < 0 AND ${t.goodsReceivedId} IS NOT NULL
+          AND ${t.reason} IS NOT NULL AND length(btrim(${t.reason})) > 0)`,
+  ),
+]);
+
+// ---------------------------------------------------------------------------
 // Charges (SCHEMA.md §7.2)
 // ---------------------------------------------------------------------------
 
@@ -3077,4 +3277,10 @@ export const TENANT_TABLES = [
   "mpesa_transactions",
   "mpesa_stk_requests",
   "gateway_exchanges",
+  "stores",
+  "stock_items",
+  "reorder_levels",
+  "goods_received",
+  "stock_batches",
+  "stock_movements",
 ] as const;

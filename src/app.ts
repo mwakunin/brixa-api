@@ -12,6 +12,7 @@ import diagnoses from "@/routes/diagnoses/diagnoses.index";
 import documents from "@/routes/documents/documents.index";
 import encounters from "@/routes/encounters/encounters.index";
 import facility from "@/routes/facility/facility.index";
+import goodsReceived from "@/routes/goods-received/goods-received.index";
 import health from "@/routes/health.route";
 import index from "@/routes/index.route";
 import internal from "@/routes/internal.route";
@@ -33,6 +34,8 @@ import queues from "@/routes/queues/queues.index";
 import refunds from "@/routes/refunds/refunds.index";
 import shifts from "@/routes/shifts/shifts.index";
 import staff from "@/routes/staff/staff.index";
+import stockItems from "@/routes/stock-items/stock-items.index";
+import stores from "@/routes/stores/stores.index";
 import superadmin from "@/routes/superadmin/superadmin.index";
 import verify from "@/routes/verify/verify.index";
 import wards from "@/routes/wards/wards.index";
@@ -100,6 +103,9 @@ const tenantRoutes = [
   orders,
   prescriptions,
   lab,
+  stores,
+  stockItems,
+  goodsReceived,
   wards,
   prices,
   charges,

@@ -76,6 +76,7 @@ describe("onboarding a facility", () => {
     expect(series.map(s => [s.kind, s.prefix, s.resetPeriod, s.padding]).sort()).toEqual([
       ["admission", "ADM-", "yearly", 4],
       ["credit_note", "CN-", "yearly", 6],
+      ["goods_received", "GRN-", "yearly", 6],
       ["inpatient", "IP", "never", 4],
       ["invoice", "INV-", "yearly", 6],
       ["lab_accession", "L-", "daily", 3],
@@ -93,6 +94,7 @@ describe("onboarding a facility", () => {
     expect(counters).toEqual([
       { kind: "admission", next_value: 1 },
       { kind: "credit_note", next_value: 1 },
+      { kind: "goods_received", next_value: 1 },
       { kind: "inpatient", next_value: 1 },
       { kind: "invoice", next_value: 1 },
       { kind: "lab_accession", next_value: 1 },

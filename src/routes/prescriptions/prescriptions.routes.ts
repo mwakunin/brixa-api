@@ -22,7 +22,8 @@ const tags = ["Prescriptions"];
 
 const prescribers = requireClinicalRole(...ORDERING_STAFF);
 const cancellers = requireMembershipRole(...ORDERING_STAFF);
-const clinicalReaders = requireMembershipRole(...CLINICAL_ROLES);
+/** Prescribers, and whoever sets up a stock item, who names its catalogue drug. */
+const drugReaders = requireMembershipRole(...CLINICAL_ROLES, "facility_admin", "storekeeper");
 
 const RefusalSchema = z.object({ message: z.string(), code: z.string() });
 const IdParamsSchema = z.object({ id: z.uuid() });
@@ -91,7 +92,7 @@ export const searchDrugs = createRoute({
   path: "/drugs",
   summary: "Find a drug in the catalogue",
   description: "Each word typed matches the start of a word in the generic name, or the text the start of a code. Current drugs only, at most 20.",
-  middleware: [clinicalReaders] as const,
+  middleware: [drugReaders] as const,
   request: { headers: facilityHeaders, query: SearchQuerySchema },
   responses: {
     [HttpStatusCodes.OK]: jsonContent(z.object({ drugs: z.array(DrugSchema) }), "By name and strength"),
