@@ -7,3 +7,4 @@ What DHA's self-attestation asks for exactly is still open (`SPEC.md` §4, quest
 | Document | Covers | Since |
 |---|---|---|
 | [encryption.md](encryption.md) | Encryption in transit and at rest | P1 |
+| [clinical-functions.md](clinical-functions.md) | The clinical functions, each with where it is built and the test that proves it; what is not yet done | P3 |

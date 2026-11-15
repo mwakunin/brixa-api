@@ -97,6 +97,8 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
 
 **Exit:** a full OPD journey (registration → triage → consultation → lab → cashier) with no manual charge posting. Medication orders produce printable prescriptions; dispensing joins the journey in P4.
 
+**Done (2026-11-15):** `src/routes/opd-journey.test.ts` runs a day's outpatients through the API. One patient pays at each step in cash (triage, the clinic's fee, a lab test charged at order, the result verified, a review, a printed prescription). One comes on an appointment and pays the final bill by M-Pesa paybill. One is a walk-in for the lab with an outside requester. No charge is posted by hand, every visit closes itself, the cashier's list ends empty, and the reconciliation check finds no drift with M7's identities holding. The clinical functions are described, with their evidence, in `docs/certification/clinical-functions.md`.
+
 **Slices** (2026-11-10). Each follows P2's pattern: a migration pair, a lib module, routes and tests, and an "As built" note in `SCHEMA.md`.
 
 | PR | Slice | Builds |
@@ -175,7 +177,14 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
 - **Medicines:** an HIV medicine prescribed outside a sensitive clinic is not caught, since the drug list carries no classes. P4's per-facility stock items can carry the mark.
 - **Neutral names on bills:** a billable item may have a neutral printed name ("Laboratory test"), which invoices and receipts print. The charge copies it at capture, as it copies the price.
 
-**Still open:** whether the MOH 705 report's grouping of ICD-11 codes into MOH's condition list needs WHO's written agreement, since WHO's licence puts mappings between classifications outside it (`SCHEMA.md` §8, slice 3a); the pilot's MOH 705 and 717 forms, so P3 captures what P6 reports need (§9, question 10); whether SMS reminders legally need the patient's consent (they are asked for it anyway, decided 2026-11-13); drug-interaction and dose data (none in v1 without a licensed source).
+**Still open after P3** (2026-11-15), each for its owner:
+- **A clinician:** the age below which a weight is needed to prescribe (`CHILD_UNDER_YEARS = 12`); the injected-route rule; the list of sensitive ICD-11 codes, and the GBV codes to add to it.
+- **A pharmacist:** a review of the drug list before it is loaded, and the controlled schedules PPB's list does not carry.
+- **The pilot:** whether a review visit within a few days is charged a second consultation fee.
+- **Proposed, not decided:** the ordering clinician's results-to-review list; abnormal vital-sign flags.
+- **The outbox's next change:** a claim token, so an attempt that outlived its lease cannot finish a job another attempt holds (found in review of PR #17).
+
+**Also still open:** whether the MOH 705 report's grouping of ICD-11 codes into MOH's condition list needs WHO's written agreement, since WHO's licence puts mappings between classifications outside it (`SCHEMA.md` §8, slice 3a); the pilot's MOH 705 and 717 forms, so P3 captures what P6 reports need (§9, question 10); whether SMS reminders legally need the patient's consent (they are asked for it anyway, decided 2026-11-13); drug-interaction and dose data (none in v1 without a licensed source).
 
 ### P4 · Pharmacy and stores
 
