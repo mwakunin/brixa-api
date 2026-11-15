@@ -247,6 +247,18 @@ describe("restricted records, under review", () => {
     expect((await call("POST", `/notes/${addendum.addenda[0].id}/entered-in-error`, c.facility.id, c.other, { reason: "Wrong patient" })).status).toBe(404);
   });
 
+  it("record a diagnosis the same way whether or not a hidden one has its code or rank", async () => {
+    const c = await clinic();
+    const { encounterId } = await c.visit(c.gopd);
+    await c.diagnose(encounterId, "1C62.Z");
+
+    // To the other doctor the visit has no diagnosis: the same code is new to them, and theirs is the principal.
+    const res = await call("POST", `/encounters/${encounterId}/diagnoses`, c.facility.id, c.other, { code: "1C62.Z", certainty: "provisional" });
+
+    expect(res.status).toBe(201);
+    expect(await res.json()).toMatchObject({ code: "1C62.Z", rank: "principal" });
+  });
+
   it("alert whoever entered a walk-in's sensitive test", async () => {
     const c = await clinic();
     const hiv = await c.labTest("HIV", "hiv");

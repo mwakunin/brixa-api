@@ -474,9 +474,10 @@ describe("the reminder", () => {
     // The first attempt's lease runs out while Africa's Talking is slow, and a second attempt starts.
     const first = remind(c, reminder.id, firstCall.send);
     await expect.poll(async () => (await reminderOf(appointment.id, IN(2))).status).toBe("sending");
-    await new Promise(resolve => setTimeout(resolve, 5));
-    const second = remind(c, reminder.id, secondCall.send);
+    // The first attempt's fence, read before the second starts, which must start at a later instant.
     const firstSendingAt = (await reminderOf(appointment.id, IN(2))).sendingAt!.getTime();
+    await expect.poll(() => Date.now()).toBeGreaterThan(firstSendingAt);
+    const second = remind(c, reminder.id, secondCall.send);
     await expect.poll(async () => (await reminderOf(appointment.id, IN(2))).sendingAt!.getTime()).not.toBe(firstSendingAt);
     // The first answer comes back while the second is still out: the row is the second's, so it is not recorded.
     firstCall.answer("ATX-first");

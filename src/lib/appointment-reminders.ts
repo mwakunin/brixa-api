@@ -132,8 +132,10 @@ interface Message {
  * gives a time since moved; the row keeps what the last attempt sent. One
  * that does not go is skipped with the reason.
  */
-async function startSending(tx: AppDb, reminderId: string, now: Date): Promise<Message | null> {
+async function startSending(tx: AppDb, reminderId: string, attemptAt: Date): Promise<Message | null> {
   const [reminder] = await tx.select().from(appointmentReminders).where(eq(appointmentReminders.id, reminderId)).for("update").limit(1);
+  // Read after the lock wait: the attempt's start is its fence, not the time it is judged at.
+  const now = new Date();
   if (!reminder || (reminder.status !== "scheduled" && reminder.status !== "sending"))
     return null;
 
@@ -166,7 +168,7 @@ async function startSending(tx: AppDb, reminderId: string, now: Date): Promise<M
   const body = reminderText({ ...due, date: due.scheduledOn, time: due.scheduledTime });
   await tx
     .update(appointmentReminders)
-    .set({ status: "sending", toPhone: due.phone, body, sendingAt: now })
+    .set({ status: "sending", toPhone: due.phone, body, sendingAt: attemptAt })
     .where(eq(appointmentReminders.id, reminder.id));
   return { to: due.phone!, body, ...(from ? { from } : {}) };
 }

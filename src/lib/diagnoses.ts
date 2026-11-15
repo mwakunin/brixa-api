@@ -9,7 +9,7 @@ import type { Filtered, Guarded, SensitiveCategory } from "./sensitivity";
 
 import { recordAudit } from "./audit";
 import { codableIcd } from "./icd11";
-import { categoriesOf, categoryOfCode, clinicCategoriesOf, filterFor, isRestricted, readDetail, readerOf } from "./sensitivity";
+import { categoriesOf, categoryOfCode, clinicCategoriesOf, filterFor, isRestricted, readDetail, readerOf, sight } from "./sensitivity";
 
 /**
  * Diagnoses (SCHEMA.md §8, P3 slice 3a), coded in ICD-11 (rule 8) and made by
@@ -127,7 +127,13 @@ export async function recordDiagnosis(
   if (!icd.isLeaf)
     throw new DiagnosisError("code_too_broad");
 
-  const current = await tx.select({ code: diagnoses.icdCode, rank: diagnoses.rank }).from(diagnoses).where(standing(encounterId));
+  // Judged against what the actor may see (rule 27): a hidden diagnosis neither
+  // refuses the same code nor takes the principal rank from theirs, so the
+  // answer never tells them it is there.
+  const reader = await readerOf(tx, encounter.patientId, actor);
+  const clinics = (await clinicCategoriesOf(tx, [encounterId])).get(encounterId);
+  const current = (await tx.select({ code: diagnoses.icdCode, rank: diagnoses.rank, diagnosedBy: diagnoses.diagnosedBy }).from(diagnoses).where(standing(encounterId)))
+    .filter(d => sight(reader, guardOf(d, clinics)) !== "restricted");
   if (current.some(d => d.code === icd.code))
     throw new DiagnosisError("already_diagnosed");
   const principal = input.principal === true || !current.some(d => d.rank === "principal");
