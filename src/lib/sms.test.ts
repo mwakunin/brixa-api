@@ -19,6 +19,11 @@ describe("the answer from Africa's Talking", () => {
     expect(resultOf(answer([], "InvalidSenderId"))).toMatchObject({ accepted: false, reason: "InvalidSenderId" });
   });
 
+  it("throws on Africa's Talking's own temporary failure for the number, so the send is retried", () => {
+    expect(() => resultOf(answer([{ statusCode: 500, status: "InternalServerError", messageId: "None", cost: "0" }]))).toThrow(SmsError);
+    expect(() => resultOf(answer([{ statusCode: 501, status: "GatewayError", messageId: "None", cost: "0" }]))).toThrow(SmsError);
+  });
+
   it("throws on an answer it cannot read, so the send is retried", () => {
     expect(() => resultOf({ SMSMessageData: { Recipients: [{ statusCode: "unexpected" }] } })).toThrow(SmsError);
     expect(() => resultOf({ unexpected: true })).toThrow(SmsError);

@@ -494,7 +494,7 @@ export async function cancelPrescription(tx: AppDb, facilityId: string, orderId:
   await tx.select({ id: encounters.id }).from(encounters).where(eq(encounters.id, found.encounterId)).for("update");
   // One the prescriber may not see (written at a sensitive clinic, rule 27) is not there for them.
   const guard = (await orderGuards(tx, [orderId])).get(orderId)!;
-  if (await isRestricted(tx, guard.patientId, guard, actor))
+  if (await isRestricted(tx, { facilityId: found.facilityId, patientId: guard.patientId, encounterId: found.encounterId }, guard, actor))
     throw new PrescriptionError("not_found");
 
   const cancelled = await tx.update(orderItems)

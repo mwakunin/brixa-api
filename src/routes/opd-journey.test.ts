@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -230,7 +230,8 @@ describe("a day's outpatients (the P3 exit)", () => {
     });
 
     // Every clinical read named who read it (rule 9).
-    const reads = await db.select({ actorId: auditLog.actorId, summary: auditLog.summary }).from(auditLog).where(and(eq(auditLog.facilityId, h.facility.id), eq(auditLog.action, "encounter.viewed"), isNotNull(auditLog.actorId)));
+    const reads = await db.select({ actorId: auditLog.actorId, summary: auditLog.summary }).from(auditLog).where(and(eq(auditLog.facilityId, h.facility.id), eq(auditLog.action, "encounter.viewed")));
+    expect(reads.filter(r => r.actorId === null)).toEqual([]);
     expect(reads.map(r => r.summary)).toEqual(expect.arrayContaining([expect.stringMatching(/^Viewed lab results/), expect.stringMatching(/^Viewed diagnoses/)]));
     const opened = await db.select().from(auditLog).where(and(eq(auditLog.action, "document.viewed"), eq(auditLog.actorId, doctor.id)));
     expect(opened).toHaveLength(1);

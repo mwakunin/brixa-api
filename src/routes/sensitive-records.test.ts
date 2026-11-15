@@ -270,6 +270,28 @@ describe("restricted records, under review", () => {
     expect((await (await call("GET", "/break-glass", c.facility.id, c.labTech)).json()).breakGlass).toHaveLength(1);
   });
 
+  it("mark a change made through a grant with it, and alert whoever recorded a record it opened later", async () => {
+    const c = await clinic();
+    const { encounterId, patientId } = await c.visit(c.gopd);
+    const diagnosisId = await c.diagnose(encounterId, "1C62.Z");
+    const noteId = await c.note(encounterId);
+    // The grant is taken while the note is unmarked: its author is not alerted then.
+    const grant = await (await call("POST", `/patients/${patientId}/break-glass`, c.facility.id, c.other, { reason: "Emergency" })).json();
+    await call("POST", `/notes/${noteId}/sensitive`, c.facility.id, c.doctor, { category: "gbv" });
+    const later = await c.person(["doctor"]);
+    const laterNote = await c.note(encounterId, { plan: "Seen by another" }, later);
+    await call("POST", `/notes/${laterNote}/sensitive`, c.facility.id, later, { category: "gbv" });
+    expect((await (await call("GET", "/break-glass", c.facility.id, later)).json()).breakGlass).toEqual([]);
+
+    // Confirming the hidden diagnosis through the grant answers with it: a read through the grant.
+    expect((await call("POST", `/diagnoses/${diagnosisId}/confirm`, c.facility.id, c.other)).status).toBe(200);
+    const marked = (await audits(c, "encounter.viewed", c.other.id)).filter(a => (a.detail as { breakGlassId?: string } | null)?.breakGlassId === grant.id);
+    expect(marked).toHaveLength(1);
+    // Reading the notes opens the later doctor's restricted note: they are told now.
+    expect((await c.read(encounterId, "notes", c.other)).restricted).toEqual([]);
+    expect((await (await call("GET", "/break-glass", c.facility.id, later)).json()).breakGlass.map((g: { id: string }) => g.id)).toEqual([grant.id]);
+  });
+
   it("audit the grant a report was seen through, even on a page of results with none", async () => {
     const c = await clinic();
     const hiv = await c.labTest("HIV", "hiv");

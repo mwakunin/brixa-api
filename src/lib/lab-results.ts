@@ -33,7 +33,7 @@ import { recordAudit } from "./audit";
 import { businessDate, printedAge, printedDateTime } from "./dates";
 import { FIELD_LENGTH, NOTE_LENGTH, packNotes } from "./document-content";
 import { issueDocument, voidDocument } from "./documents";
-import { filterFor, orderGuards, readDetail, readerOf, sight } from "./sensitivity";
+import { alertRecorders, filterFor, orderGuards, readDetail, readerOf, sight } from "./sensitivity";
 import { patientColumns, patientOf } from "./worklist-patient";
 
 /**
@@ -525,6 +525,8 @@ export async function listResults(tx: AppDb, facilityId: string, encounterId: st
   const reportSights = allReports.map(r => ({ report: r, seen: sight(reader, guards.get(r.orderId)!) }));
   const reports = reportSights.filter(r => r.seen !== "restricted").map(r => r.report);
   const viaGrant = results.viaGrant ?? (reportSights.some(r => r.seen === "via_grant") ? reader.grantId : null);
+  const reportRecorders = reportSights.filter(r => r.seen === "via_grant").flatMap(r => guards.get(r.report.orderId)!.recordedBy);
+  await alertRecorders(tx, facilityId, viaGrant, [...results.viaGrantRecorders, ...reportRecorders], actor);
 
   await recordAudit(tx, {
     facilityId,

@@ -159,23 +159,48 @@ export interface Filtered<T> {
   restricted: { recordedAt: Date }[];
   /** The grant some record was seen through, for the read's audit entry. */
   viaGrant: string | null;
+  /** Who recorded the records seen through it: each is alerted (`alertRecorders`). */
+  viaGrantRecorders: string[];
 }
 
 export function filterFor<T>(reader: Reader, records: readonly T[], guard: (record: T) => Guarded, recordedAt: (record: T) => Date): Filtered<T> {
   const shown: T[] = [];
   const restricted: { recordedAt: Date }[] = [];
+  const recorders = new Set<string>();
   let viaGrant: string | null = null;
   for (const record of records) {
-    const seen = sight(reader, guard(record));
+    const judged = guard(record);
+    const seen = sight(reader, judged);
     if (seen === "restricted") {
       restricted.push({ recordedAt: recordedAt(record) });
       continue;
     }
-    if (seen === "via_grant")
+    if (seen === "via_grant") {
       viaGrant = reader.grantId;
+      for (const by of judged.recordedBy) {
+        if (by)
+          recorders.add(by);
+      }
+    }
     shown.push(record);
   }
-  return { shown, restricted, viaGrant };
+  return { shown, restricted, viaGrant, viaGrantRecorders: [...recorders] };
+}
+
+/**
+ * Alerts those who recorded what a grant has opened, once per grant each
+ * (rule 27). Breaking the glass alerts the owners of the patient's
+ * restricted records then; a record restricted since, or recorded since,
+ * alerts its owner when the grant first opens it.
+ */
+export async function alertRecorders(tx: AppDb, facilityId: string, grantId: string | null, recorders: readonly (string | null)[], actor: PatientActor): Promise<void> {
+  const owners = [...new Set(recorders.filter((by): by is string => Boolean(by) && by !== actor.membershipId))];
+  if (!grantId || owners.length === 0)
+    return;
+  await tx
+    .insert(breakGlassAlerts)
+    .values(owners.map(membershipId => ({ facilityId, grantId, membershipId })))
+    .onConflictDoNothing({ target: [breakGlassAlerts.grantId, breakGlassAlerts.membershipId] });
 }
 
 /** The audit detail of a read that hid records, or saw them through a grant. */
@@ -217,11 +242,35 @@ export async function orderGuards(tx: AppDb, orderIds: readonly string[]): Promi
   }]));
 }
 
-/** Whether `actor` may not see a record of `patientId` judged by `guard`: for writes that answer with the record. */
-export async function isRestricted(tx: AppDb, patientId: string, guard: Guarded, actor: PatientActor): Promise<boolean> {
+/**
+ * Whether `actor` may not see a record judged by `guard`: for writes, which
+ * answer with the record. One they see only through their grant is a read
+ * through it, audited as one on the record's encounter, and its recorders
+ * are alerted.
+ */
+export async function isRestricted(
+  tx: AppDb,
+  record: { facilityId: string; patientId: string; encounterId: string },
+  guard: Guarded,
+  actor: PatientActor,
+): Promise<boolean> {
   if (guard.categories.size === 0)
     return false;
-  return sight(await readerOf(tx, patientId, actor), guard) === "restricted";
+  const reader = await readerOf(tx, record.patientId, actor);
+  const seen = sight(reader, guard);
+  if (seen === "via_grant") {
+    await alertRecorders(tx, record.facilityId, reader.grantId, guard.recordedBy, actor);
+    await recordAudit(tx, {
+      facilityId: record.facilityId,
+      actorId: actor.userId,
+      action: "encounter.viewed",
+      entityType: "encounter",
+      entityId: record.encounterId,
+      summary: "Changed a restricted record through break-glass",
+      detail: { breakGlassId: reader.grantId },
+    });
+  }
+  return seen === "restricted";
 }
 
 /** The lab prints its own reports, and the pharmacy dispenses against prescriptions: their own work. */
@@ -236,7 +285,7 @@ const DOCUMENT_WORKERS: Partial<Record<"prescription" | "lab_report", readonly M
  */
 export async function documentSight(
   tx: AppDb,
-  document: { id: string; kind: string },
+  document: { id: string; kind: string; facilityId: string },
   actor: PatientActor & { roles: readonly MembershipRole[] },
 ): Promise<{ sight: Sight; grantId: string | null }> {
   if (document.kind !== "prescription" && document.kind !== "lab_report")
@@ -251,6 +300,8 @@ export async function documentSight(
   const guard = (await orderGuards(tx, [order.id])).get(order.id)!;
   const reader = await readerOf(tx, guard.patientId, actor);
   const seen = sight(reader, guard);
+  if (seen === "via_grant")
+    await alertRecorders(tx, document.facilityId, reader.grantId, guard.recordedBy, actor);
   return { sight: seen, grantId: seen === "via_grant" ? reader.grantId : null };
 }
 

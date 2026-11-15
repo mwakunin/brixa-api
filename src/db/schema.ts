@@ -1546,8 +1546,9 @@ export const breakGlassGrants = pgTable("break_glass_grants", {
 
 /**
  * Who is told of a break-glass: the clinicians who recorded the patient's
- * restricted records when the glass was broken (the facility admin sees
- * every one). Written with the grant, never changed.
+ * restricted records when the glass was broken, and anyone whose record the
+ * grant opens later (the facility admin sees every one). One row per member
+ * per grant, never changed.
  */
 export const breakGlassAlerts = pgTable("break_glass_alerts", {
   id: uuid().primaryKey().defaultRandom(),

@@ -12,7 +12,7 @@ import type { Filtered } from "./sensitivity";
 import { recordAudit } from "./audit";
 import { cancelOrderItemCharge, captureOrderItemCharge, ChargeError } from "./charges";
 import { refreshReport } from "./lab-results";
-import { filterFor, isRestricted, orderGuards, readDetail, readerOf } from "./sensitivity";
+import { alertRecorders, filterFor, isRestricted, orderGuards, readDetail, readerOf } from "./sensitivity";
 
 /**
  * Orders (SCHEMA.md §8, P3 slice 4a): lab tests and services asked for on an
@@ -274,7 +274,7 @@ async function lockItem(tx: AppDb, itemId: string, actor: OrderActor | PatientAc
   await lockEncounter(tx, found.encounterId);
   const [item] = await tx.select().from(orderItems).where(eq(orderItems.id, itemId)).for("update").limit(1);
   const guard = (await orderGuards(tx, [found.orderId])).get(found.orderId)!;
-  if (!(labWork && item.labTestId) && await isRestricted(tx, guard.patientId, guard, actor))
+  if (!(labWork && item.labTestId) && await isRestricted(tx, { facilityId: item.facilityId, patientId: guard.patientId, encounterId: found.encounterId }, guard, actor))
     throw new OrderError("not_found");
   if (item.status !== "ordered")
     throw new OrderError("not_ordered");
@@ -529,6 +529,7 @@ export async function listOrders(tx: AppDb, facilityId: string, encounterId: str
     summary: `Viewed orders (${listed.shown.length})`,
     detail: readDetail(listed),
   });
+  await alertRecorders(tx, facilityId, listed.viaGrant, listed.viaGrantRecorders, actor);
   return listed;
 }
 

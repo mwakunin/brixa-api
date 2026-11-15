@@ -72,6 +72,8 @@ export function parseCostCents(raw: unknown): number | null {
 
 /** 100 Processed, 101 Sent and 102 Queued all mean Africa's Talking took the message. */
 const ACCEPTED = new Set([100, 101, 102]);
+/** 500 InternalServerError and 501 GatewayError are Africa's Talking's own, and pass: retried, not a refusal. */
+const TEMPORARY = new Set([500, 501]);
 
 /** The answer as Africa's Talking documents it; anything else is not an answer this code can trust. */
 const AnswerSchema = z.object({
@@ -101,6 +103,8 @@ export function resultOf(payload: unknown): SmsResult {
   // registered, no balance, a malformed number).
   if (!recipient)
     return { accepted: false, providerMessageId: null, costCents: null, reason: (data.Message || "Refused with no recipient detail").slice(0, 200) };
+  if (TEMPORARY.has(recipient.statusCode))
+    throw new SmsError(`Africa's Talking failed for now (${recipient.status ?? recipient.statusCode})`);
   const accepted = ACCEPTED.has(recipient.statusCode);
   return {
     accepted,

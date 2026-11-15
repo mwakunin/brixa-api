@@ -9,7 +9,7 @@ import type { PatientActor } from "./patients";
 import type { Filtered, SensitiveCategory } from "./sensitivity";
 
 import { recordAudit } from "./audit";
-import { categoriesOf, clinicCategoriesOf, filterFor, isRestricted, patientOfEncounter, readDetail, readerOf } from "./sensitivity";
+import { alertRecorders, categoriesOf, clinicCategoriesOf, filterFor, isRestricted, patientOfEncounter, readDetail, readerOf } from "./sensitivity";
 
 /**
  * Clinical notes (SCHEMA.md §8, P3 slice 3b). A note is the author's draft
@@ -132,7 +132,7 @@ async function restrictedFor(tx: AppDb, note: NoteRow, actor: PatientActor): Pro
     : note;
   const clinics = (await clinicCategoriesOf(tx, [note.encounterId])).get(note.encounterId);
   const guard = { categories: categoriesOf(clinics, [root.sensitiveCategory]), recordedBy: [root.writtenBy] };
-  return guard.categories.size > 0 && isRestricted(tx, (await patientOfEncounter(tx, note.encounterId))!, guard, actor);
+  return guard.categories.size > 0 && isRestricted(tx, { facilityId: note.facilityId, patientId: (await patientOfEncounter(tx, note.encounterId))!, encounterId: note.encounterId }, guard, actor);
 }
 
 /** Writing or signing a note's content takes a role that writes its kind, held now, not only when the draft was started. */
@@ -427,6 +427,7 @@ export async function listNotes(tx: AppDb, facilityId: string, encounterId: stri
     summary: `Viewed clinical notes (${listed.shown.length})`,
     detail: readDetail(listed),
   });
+  await alertRecorders(tx, facilityId, listed.viaGrant, listed.viaGrantRecorders, actor);
   return listed;
 }
 

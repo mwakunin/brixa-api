@@ -9,7 +9,7 @@ import type { Filtered, Guarded, SensitiveCategory } from "./sensitivity";
 
 import { recordAudit } from "./audit";
 import { codableIcd } from "./icd11";
-import { categoriesOf, categoryOfCode, clinicCategoriesOf, filterFor, isRestricted, readDetail, readerOf, sight } from "./sensitivity";
+import { alertRecorders, categoriesOf, categoryOfCode, clinicCategoriesOf, filterFor, isRestricted, readDetail, readerOf, sight } from "./sensitivity";
 
 /**
  * Diagnoses (SCHEMA.md §8, P3 slice 3a), coded in ICD-11 (rule 8) and made by
@@ -87,7 +87,7 @@ async function lockStanding(tx: AppDb, diagnosisId: string, actor: PatientActor)
     throw new DiagnosisError("encounter_cancelled");
   const [diagnosis] = await tx.select().from(diagnoses).where(eq(diagnoses.id, diagnosisId)).for("update").limit(1);
   const clinics = (await clinicCategoriesOf(tx, [found.encounterId])).get(found.encounterId);
-  if (await isRestricted(tx, encounter.patientId, guardOf({ code: diagnosis.icdCode, diagnosedBy: diagnosis.diagnosedBy }, clinics), actor))
+  if (await isRestricted(tx, { facilityId: diagnosis.facilityId, patientId: encounter.patientId, encounterId: found.encounterId }, guardOf({ code: diagnosis.icdCode, diagnosedBy: diagnosis.diagnosedBy }, clinics), actor))
     throw new DiagnosisError("not_found");
   if (diagnosis.endedAt)
     throw new DiagnosisError("ended");
@@ -302,5 +302,6 @@ export async function listDiagnoses(tx: AppDb, facilityId: string, encounterId: 
     summary: `Viewed diagnoses (${listed.shown.length})`,
     detail: readDetail(listed),
   });
+  await alertRecorders(tx, facilityId, listed.viaGrant, listed.viaGrantRecorders, actor);
   return listed;
 }
