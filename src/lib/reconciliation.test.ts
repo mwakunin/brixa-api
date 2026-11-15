@@ -154,8 +154,9 @@ describe("the daily reconciliation check", () => {
       );
       // A charge from before the final bill that no bill carries.
       const late = await client.query(
-        `INSERT INTO charges (facility_id, encounter_id, billable_item_id, quantity, unit_price_cents, amount_cents, price_list_item_id, service_date, manual_reason, captured_by, captured_at)
-         SELECT facility_id, encounter_id, billable_item_id, quantity, unit_price_cents, amount_cents, price_list_item_id, service_date, manual_reason, captured_by, captured_at - interval '1 hour'
+        // With triggers off, the printed name the capture trigger would set is copied too.
+        `INSERT INTO charges (facility_id, encounter_id, billable_item_id, quantity, unit_price_cents, amount_cents, price_list_item_id, printed_name, service_date, manual_reason, captured_by, captured_at)
+         SELECT facility_id, encounter_id, billable_item_id, quantity, unit_price_cents, amount_cents, price_list_item_id, printed_name, service_date, manual_reason, captured_by, captured_at - interval '1 hour'
          FROM charges WHERE id = $1 RETURNING id`,
         [assignment.charge_id],
       );
