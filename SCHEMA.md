@@ -595,7 +595,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - doctors, clinical officers and nurses (in nurse-led clinics) diagnose, under a current licence;
   - clinical roles read diagnoses, audited as `encounter.viewed`.
 - **Cancelling a visit** is refused while a diagnosis stands (`has_clinical_records`), as for vital signs.
-- **Not yet:** postcoordinated (cluster) codes, and marking sensitive codes for break-glass (slice 7).
+- **Not yet:** postcoordinated (cluster) codes. Sensitive codes and break-glass came with slice 7, below.
 
 **As built (P3, slice 3b): clinical notes.** Decided 2026-11-10 (`ROADMAP.md` P3):
 
@@ -623,7 +623,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - all under a current licence (`requireClinicalRole`, then `NOTE_WRITERS` per kind).
   - Clinical roles read signed notes, audited as `encounter.viewed`. Each write is audited without the note's text, which stays in this table only (rule 10).
 - **Cancelling a visit** is refused while a draft, or a signed note or addendum not marked entered in error, stands (`has_clinical_records`), as for vital signs and diagnoses. An addendum counts even under a marked note: once the visit is cancelled it could no longer be marked.
-- **Not yet:** sensitive notes and break-glass (slice 7); note templates by clinic, which the frontend can offer over these sections.
+- **Not yet:** note templates by clinic, which the frontend can offer over these sections. Sensitive notes and break-glass came with slice 7, below.
 
 **As built (P3, slice 4a): orders and the lab catalogue.** Decided 2026-11-10 and 2026-11-11 (`ROADMAP.md` P3):
 
@@ -762,6 +762,24 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - The trigger `appointment_reminders_lifecycle` moves a row only forward (scheduled to sending, failed or skipped; sending to sent, rejected, failed or skipped), keeps what a finished reminder's last attempt sent, and never changes which appointment and day it is for, nor deletes it. Each message is a row here, not in `gateway_exchanges`, which is M-Pesa's.
 - **Africa's Talking** (`src/lib/sms.ts`, ported from school-saas-api): one account for the platform, `AT_USERNAME` and `AT_API_KEY` (`docs/deployment.md` §1). Kenyan numbers only.
 - **Not yet:** delivery reports (they need a public callback); a defaulter list from missed appointments; undoing a check-in when its visit is cancelled as opened in error (the appointment stays checked in, and is booked again); the review-visit fee (asked of the pilot).
+
+**As built (P3, slice 7): sensitive records and break-glass.** Decided 2026-11-15 (`ROADMAP.md` P3; rule 27, `SPEC.md` D5). `src/lib/sensitivity.ts` holds it:
+
+- **Three categories:** `hiv`, `mental_health`, `gbv`. A record is restricted when it falls in one:
+  - a diagnosis under a code on the list in `sensitivity.ts`: HIV 1C60–1C62, and chapter 06 (codes beginning with 6) for mental health. The list is to be confirmed by a clinician, who also names the GBV codes; until then GBV is marked by its clinic and by notes. It is read at each view, not copied, so a code added to the list covers past diagnoses too;
+  - an order with a lab test the catalogue marks (`lab_tests.sensitive_category`, set by the facility admin and the lab supervisor), with its results and its lab report. One sensitive test restricts its whole order, indication included;
+  - a note its author marks (`clinical_notes.sensitive_category`), as they start it or later (`POST /notes/{id}/sensitive`), once and for good. An addendum follows its note;
+  - anything clinical recorded in a visit queued at a clinic the facility admin marks (`service_points.sensitive_category`, clinics only, by CHECK): notes, diagnoses, orders, prescriptions, results and their documents.
+  - Vital signs, allergies, queues, appointments and the bill are not restricted. Unmarking a clinic or a test reopens its records.
+- **Who sees a restricted record** (`sight`): whoever recorded it (the author, the diagnosing clinician, whoever ordered or entered the order, the lab member who entered or verified a result); a member the facility admin assigned every category it is in (`memberships.sensitive_categories`, `PUT /staff/members/{id}/sensitive-access`, audited with the old and new); and anyone holding a break-glass grant for the patient. The lab's worklist and result entry, and the lab cancelling a test it cannot run, are the lab's own work and not restricted. So are opening a lab report, for the lab, and a prescription, for the pharmacy.
+- **The lists** (`/encounters/{id}/notes`, `/diagnoses`, `/orders`, `/lab-results`) leave a restricted record out and list it under `restricted` with its date only, never its category. The read's audit entry counts what it withheld (`restricted`) and names the grant a record was seen through (`breakGlassId`). A report of a restricted order is left out.
+- **Writes on a restricted record** answer as if it did not exist: an addendum, marking a note entered in error, confirming, ranking or ending a diagnosis, cancelling an order item, marking a service done, cancelling a prescription. A write's answer would otherwise show the record.
+- **A restricted document** (a prescription or lab report of a restricted order) is refused with `403 restricted` at `/documents/{id}/pdf`; opened through a grant, its audit entry names it.
+- **Breaking the glass** (`POST /patients/{id}/break-glass`, any clinical role under a current licence, a reason always): a `break_glass_grants` row opens the patient's restricted records to that member for 12 hours. It alerts the members who recorded the patient's restricted notes, diagnoses and orders (`break_glass_alerts`, written with the grant), and is audited as `patient.break_glass`.
+- **The alert list** (`GET /break-glass`, audited): every grant for the facility admin, and for a clinician those that alerted them, latest first, 100 a page, `unreviewed=true` for those still to review. The facility admin reviews each once, with a note if wanted (`POST /break-glass/{id}/review`).
+- **Triggers (0071):** a grant changes only by its review, once, and none is deleted; alerts never change; a note's mark is set once, as a change of its own, on a draft or signed note, and never taken off or changed.
+- **Neutral names on bills:** `billable_items.printed_name` (set at creation or with `PUT /billable-items/{id}/printed-name`, by the price keepers, audited) prints in place of the name. `charges.printed_name` copies it, or the name, at capture: a trigger sets it on every insert, so no capture path can leave it out, and the charge's cancel-only trigger freezes it. Invoice lines print the charge's copy, so a later change never alters a bill (rule 7). Migration 0070 fills it for charges captured before. The bill also prints the item's code, so a facility should choose codes that do not name the test.
+- **Not yet:** medicines that disclose a condition outside a sensitive clinic (no drug classes; P4's stock items can carry the mark); the GBV codes; ward and department scoping (later, D5).
 
 **Clinical record.** `observations` (vitals and charted values, with `entered_in_error` instead of deletion), `diagnoses` (ICD code, provisional \| final \| secondary), `clinical_notes` (`signed_at`, `addendum_of`: a signed note is corrected only by an addendum), `orders` and `order_items` (lab, imaging, procedure, medication, service; medication items carry dose, route, frequency and duration). Every clinical act records the acting membership, whose licence details live on `memberships` (rule 25).
 

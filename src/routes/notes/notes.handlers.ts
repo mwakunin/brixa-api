@@ -6,6 +6,7 @@ import * as HttpStatusPhrases from "stoker/http-status-phrases";
 import type { TenantBindings, TenantRouteHandler } from "@/lib/types";
 
 import * as notes from "@/lib/notes";
+import { restrictedJson } from "@/lib/validation";
 
 import type {
   AddAddendumRoute,
@@ -13,6 +14,7 @@ import type {
   EditDraftRoute,
   ListNotesRoute,
   MarkEnteredInErrorRoute,
+  MarkSensitiveRoute,
   SignNoteRoute,
   StartNoteRoute,
 } from "./notes.routes";
@@ -113,7 +115,7 @@ export const listNotes: TenantRouteHandler<ListNotesRoute> = async (c) => {
   const { id } = c.req.valid("param");
   try {
     const listed = await notes.listNotes(c.var.db, c.var.facility.id, id, actorOf(c));
-    return c.json({ notes: listed.map(noteJson) }, HttpStatusCodes.OK);
+    return c.json({ notes: listed.shown.map(noteJson), restricted: restrictedJson(listed.restricted) }, HttpStatusCodes.OK);
   }
   catch (err) {
     const refused = refusal(c, err);
@@ -121,4 +123,10 @@ export const listNotes: TenantRouteHandler<ListNotesRoute> = async (c) => {
       return refused as never;
     throw err;
   }
+};
+
+export const markSensitive: TenantRouteHandler<MarkSensitiveRoute> = async (c) => {
+  const { id } = c.req.valid("param");
+  const { category } = c.req.valid("json");
+  return answer(c, () => notes.markNoteSensitive(c.var.db, c.var.facility.id, id, category, actorOf(c))) as never;
 };

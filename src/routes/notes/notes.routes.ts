@@ -4,6 +4,7 @@ import { jsonContent, jsonContentRequired } from "stoker/openapi/helpers";
 import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { CLINICAL_ROLES } from "@/lib/professions";
+import { restrictedSchema, sensitiveCategorySchema } from "@/lib/validation";
 import { requireClinicalRole, requireMembershipRole } from "@/middlewares/auth";
 import { clinicalResponses, facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
@@ -37,7 +38,12 @@ const ContentSchema = z.object({
   text: noteText.optional(),
 });
 
-const StartBodySchema = ContentSchema.extend({ kind: z.enum(["consultation", "nursing"]) });
+const StartBodySchema = ContentSchema.extend({
+  kind: z.enum(["consultation", "nursing"]),
+  /** Marks it sensitive from the start: only its author, staff assigned the category, or someone who breaks the glass reads it. */
+  sensitiveCategory: sensitiveCategorySchema.optional(),
+});
+const SensitiveBodySchema = z.strictObject({ category: sensitiveCategorySchema });
 const AddendumBodySchema = z.object({ text: noteText });
 const ReasonBodySchema = z.object({ reason: z.string().trim().min(3).max(200).regex(/^\P{C}+$/u, "One line") });
 
@@ -58,6 +64,8 @@ const NoteSchema = z.object({
   updatedAt: z.string(),
   signedAt: z.string().nullable(),
   enteredInError: z.object({ at: z.string(), reason: z.string() }).nullable(),
+  /** Marked sensitive by its author. */
+  sensitiveCategory: sensitiveCategorySchema.nullable(),
   addenda: z.array(z.object({
     id: z.uuid(),
     text: z.string(),
@@ -184,17 +192,36 @@ export const listNotes = createRoute({
   method: "get",
   path: "/encounters/{id}/notes",
   summary: "An encounter's notes",
-  description: "Signed notes with their addenda, and your own drafts, in the order written. Audited.",
+  description: "Signed notes with their addenda, and your own drafts, in the order written. A note you may not see (rule 27) is listed under `restricted`, by date only. Audited.",
   middleware: [clinicalReaders] as const,
   request: { headers: facilityHeaders, params: IdParamsSchema },
   responses: {
-    [HttpStatusCodes.OK]: jsonContent(z.object({ notes: z.array(NoteSchema) }), "Notes"),
+    [HttpStatusCodes.OK]: jsonContent(z.object({ notes: z.array(NoteSchema), restricted: restrictedSchema }), "Notes"),
     ...notAnId,
     ...tenantResponses,
   },
 });
 
+export const markSensitive = createRoute({
+  tags,
+  method: "post",
+  path: "/notes/{id}/sensitive",
+  summary: "Mark your note sensitive",
+  description:
+    "Your own note, a draft or signed: once, and for good. From then on only "
+    + "you, staff assigned its category, and anyone who breaks the glass read it.",
+  middleware: [noteStaff] as const,
+  request: { headers: facilityHeaders, params: IdParamsSchema, body: jsonContentRequired(SensitiveBodySchema, "Its category") },
+  responses: {
+    [HttpStatusCodes.OK]: jsonContent(NoteSchema, "Marked"),
+    ...refusals,
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(SensitiveBodySchema), "Not a category, or not an id"),
+    ...clinicalResponses,
+  },
+});
+
 export type StartNoteRoute = typeof startNote;
+export type MarkSensitiveRoute = typeof markSensitive;
 export type EditDraftRoute = typeof editDraft;
 export type SignNoteRoute = typeof signNote;
 export type DiscardDraftRoute = typeof discardDraft;

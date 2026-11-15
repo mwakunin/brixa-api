@@ -6,6 +6,7 @@ import * as HttpStatusPhrases from "stoker/http-status-phrases";
 import type { TenantBindings, TenantRouteHandler } from "@/lib/types";
 
 import * as orders from "@/lib/orders";
+import { restrictedJson } from "@/lib/validation";
 
 import type {
   CancelOrderItemRoute,
@@ -66,7 +67,7 @@ export const listOrders: TenantRouteHandler<ListOrdersRoute> = async (c) => {
   const { id } = c.req.valid("param");
   try {
     const listed = await orders.listOrders(c.var.db, c.var.facility.id, id, actorOf(c));
-    return c.json({ orders: listed.map(orderJson) }, HttpStatusCodes.OK);
+    return c.json({ orders: listed.shown.map(orderJson), restricted: restrictedJson(listed.restricted) }, HttpStatusCodes.OK);
   }
   catch (err) {
     const refused = refusal(c, err);

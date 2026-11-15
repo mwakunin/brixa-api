@@ -126,7 +126,7 @@ export async function updateServicePoint(
   tx: AppDb,
   facilityId: string,
   id: string,
-  input: { name?: string; isActive?: boolean; consultationItemId?: string | null },
+  input: { name?: string; isActive?: boolean; consultationItemId?: string | null; sensitiveCategory?: ServicePointRow["sensitiveCategory"] },
   actor: PatientActor,
 ): Promise<ServicePointRow> {
   const [current] = await tx.select().from(servicePoints).where(eq(servicePoints.id, id)).for("update").limit(1);
@@ -144,6 +144,9 @@ export async function updateServicePoint(
     if (!item || item.category !== "consultation" || !item.isActive)
       throw new QueueError("not_a_consultation_item");
   }
+  // Only a clinic is marked sensitive: triage sees everyone (rule 27).
+  if (input.sensitiveCategory && current.kind !== "consultation")
+    throw new QueueError("not_a_clinic");
 
   let point: ServicePointRow;
   try {
@@ -163,8 +166,8 @@ export async function updateServicePoint(
     entityId: id,
     summary: `Updated service point ${point.name}`,
     detail: {
-      before: { name: current.name, isActive: current.isActive, consultationItemId: current.consultationItemId },
-      after: { name: point.name, isActive: point.isActive, consultationItemId: point.consultationItemId },
+      before: { name: current.name, isActive: current.isActive, consultationItemId: current.consultationItemId, sensitiveCategory: current.sensitiveCategory },
+      after: { name: point.name, isActive: point.isActive, consultationItemId: point.consultationItemId, sensitiveCategory: point.sensitiveCategory },
     },
   });
   return point;
@@ -192,6 +195,7 @@ export interface ListedServicePoint {
   name: string;
   kind: ServicePointKind;
   consultationItemId: string | null;
+  sensitiveCategory: ServicePointRow["sensitiveCategory"];
   isActive: boolean;
   /** How many are waiting there now. */
   waiting: number;
@@ -212,6 +216,7 @@ export async function listServicePoints(tx: AppDb): Promise<ListedServicePoint[]
       name: servicePoints.name,
       kind: servicePoints.kind,
       consultationItemId: servicePoints.consultationItemId,
+      sensitiveCategory: servicePoints.sensitiveCategory,
       isActive: servicePoints.isActive,
       waiting: sql<number>`coalesce(${waiting.n}, 0)::int`,
     })
@@ -522,7 +527,7 @@ export async function viewQueue(tx: AppDb, facilityId: string, servicePointId: s
   });
 
   return {
-    servicePoint: { id: point.id, name: point.name, kind: point.kind, consultationItemId: point.consultationItemId, isActive: point.isActive },
+    servicePoint: { id: point.id, name: point.name, kind: point.kind, consultationItemId: point.consultationItemId, sensitiveCategory: point.sensitiveCategory, isActive: point.isActive },
     entries: rows.map(r => ({
       entryId: r.entryId,
       encounterId: r.encounterId,

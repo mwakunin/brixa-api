@@ -41,8 +41,8 @@ export function entryJson(e: typeof queueEntries.$inferSelect): z.infer<typeof Q
   };
 }
 
-function pointJson(p: { id: string; name: string; kind: "triage" | "consultation"; consultationItemId: string | null; isActive: boolean }) {
-  return { id: p.id, name: p.name, kind: p.kind, consultationItemId: p.consultationItemId, isActive: p.isActive };
+function pointJson(p: { id: string; name: string; kind: "triage" | "consultation"; consultationItemId: string | null; sensitiveCategory: "hiv" | "mental_health" | "gbv" | null; isActive: boolean }) {
+  return { id: p.id, name: p.name, kind: p.kind, consultationItemId: p.consultationItemId, sensitiveCategory: p.sensitiveCategory, isActive: p.isActive };
 }
 
 /** A queue refusal, or null to let the error through. Shared with the encounters handlers, whose opening joins a queue. */

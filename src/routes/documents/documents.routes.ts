@@ -3,6 +3,7 @@ import * as HttpStatusCodes from "stoker/http-status-codes";
 import { jsonContent } from "stoker/openapi/helpers";
 import { createErrorSchema } from "stoker/openapi/schemas";
 
+import { forbiddenSchema } from "@/lib/constants";
 import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
 /**
@@ -23,8 +24,10 @@ export const getDocumentPdf = createRoute({
   description:
     "The document exactly as issued, as a PDF, with VOID across it if it has "
     + "been voided. Who may open one depends on its kind (a receipt: cashier, "
-    + "billing clerk, finance manager, facility admin, auditor). Every opening "
-    + "is recorded in the audit log.",
+    + "billing clerk, finance manager, facility admin, auditor). A prescription "
+    + "or lab report of a restricted order opens only for those who may see it "
+    + "(rule 27): the lab its reports and the pharmacy its prescriptions, as "
+    + "their own work. Every opening is recorded in the audit log.",
   request: {
     headers: facilityHeaders,
     params: DocumentParamsSchema,
@@ -36,6 +39,10 @@ export const getDocumentPdf = createRoute({
     },
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(DocumentParamsSchema), "Not a document id"),
     ...tenantResponses,
+    [HttpStatusCodes.FORBIDDEN]: jsonContent(
+      z.union([z.object({ message: z.string(), code: z.literal("restricted") }), forbiddenSchema]),
+      "Facility suspended, role not allowed, or a restricted record (`restricted`, rule 27)",
+    ),
   },
 });
 

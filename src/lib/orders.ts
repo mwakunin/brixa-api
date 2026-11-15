@@ -7,10 +7,12 @@ import type { MembershipRole } from "@/db/schema";
 import { billableItems, chargeAssignments, charges, documents, encounters, invoiceLines, invoices, labAnalytes, labTests, memberships, orderItems, orders, user } from "@/db/schema";
 
 import type { PatientActor } from "./patients";
+import type { Filtered } from "./sensitivity";
 
 import { recordAudit } from "./audit";
 import { cancelOrderItemCharge, captureOrderItemCharge, ChargeError } from "./charges";
 import { refreshReport } from "./lab-results";
+import { filterFor, isRestricted, orderGuards, readDetail, readerOf } from "./sensitivity";
 
 /**
  * Orders (SCHEMA.md §8, P3 slice 4a): lab tests and services asked for on an
@@ -255,9 +257,14 @@ export async function placeWalkInOrder(
 }
 
 /** The item, locked after its encounter (M8), with what its order says about who placed it. */
-async function lockItem(tx: AppDb, itemId: string) {
+/**
+ * The item, locked after its encounter (M8). One on an order the actor may
+ * not see (rule 27) is not found, unless `labWork` says the lab is doing its
+ * own work on a lab test.
+ */
+async function lockItem(tx: AppDb, itemId: string, actor: OrderActor | PatientActor, labWork = false) {
   const [found] = await tx
-    .select({ encounterId: orders.encounterId, orderedBy: orders.orderedBy })
+    .select({ encounterId: orders.encounterId, orderedBy: orders.orderedBy, orderId: orders.id })
     .from(orderItems)
     .innerJoin(orders, eq(orders.id, orderItems.orderId))
     .where(eq(orderItems.id, itemId))
@@ -266,6 +273,9 @@ async function lockItem(tx: AppDb, itemId: string) {
     throw new OrderError("not_found");
   await lockEncounter(tx, found.encounterId);
   const [item] = await tx.select().from(orderItems).where(eq(orderItems.id, itemId)).for("update").limit(1);
+  const guard = (await orderGuards(tx, [found.orderId])).get(found.orderId)!;
+  if (!(labWork && item.labTestId) && await isRestricted(tx, guard.patientId, guard, actor))
+    throw new OrderError("not_found");
   if (item.status !== "ordered")
     throw new OrderError("not_ordered");
   return { item, encounterId: found.encounterId, walkIn: found.orderedBy === null };
@@ -301,7 +311,7 @@ async function chargedCode(tx: AppDb, item: ItemRow): Promise<string> {
  * clinical act, so no current licence is needed.
  */
 export async function cancelOrderItem(tx: AppDb, facilityId: string, itemId: string, reason: string, actor: OrderActor, at = new Date()): Promise<ItemRow> {
-  const { item, encounterId, walkIn } = await lockItem(tx, itemId);
+  const { item, encounterId, walkIn } = await lockItem(tx, itemId, actor, actor.roles.some(r => LAB_STAFF.includes(r)));
   // Its printed prescription would no longer say what stands.
   if (item.drugCode)
     throw new OrderError("cancel_the_prescription");
@@ -338,7 +348,7 @@ export async function cancelOrderItem(tx: AppDb, facilityId: string, itemId: str
 
 /** Marks a service performed, by the clinician who did it (rule 25). A lab test is done by its specimen's collection instead. */
 export async function markServiceDone(tx: AppDb, facilityId: string, itemId: string, actor: PatientActor, at = new Date()): Promise<ItemRow> {
-  const { item, encounterId } = await lockItem(tx, itemId);
+  const { item, encounterId } = await lockItem(tx, itemId, actor);
   if (!item.billableItemId)
     throw new OrderError("not_a_service_item");
 
@@ -497,20 +507,27 @@ export async function ordersOf(tx: AppDb, encounterId: string, filter: { orderId
   });
 }
 
-/** As `ordersOf`, with an audit entry: orders are part of the record (rule 9). */
-export async function listOrders(tx: AppDb, facilityId: string, encounterId: string, actor: PatientActor): Promise<ShownOrder[]> {
-  const [encounter] = await tx.select({ id: encounters.id }).from(encounters).where(eq(encounters.id, encounterId)).limit(1);
+/**
+ * As `ordersOf`, with an audit entry: orders are part of the record (rule 9).
+ * An order the reader may not see (rule 27) is withheld whole, indication
+ * and all, and counted: one sensitive test makes its order restricted.
+ */
+export async function listOrders(tx: AppDb, facilityId: string, encounterId: string, actor: PatientActor): Promise<Filtered<ShownOrder>> {
+  const [encounter] = await tx.select({ id: encounters.id, patientId: encounters.patientId }).from(encounters).where(eq(encounters.id, encounterId)).limit(1);
   if (!encounter)
     throw new OrderError("encounter_not_found");
 
-  const listed = await ordersOf(tx, encounterId);
+  const all = await ordersOf(tx, encounterId);
+  const guards = await orderGuards(tx, all.map(o => o.id));
+  const listed = filterFor(await readerOf(tx, encounter.patientId, actor), all, o => guards.get(o.id)!, o => o.orderedAt);
   await recordAudit(tx, {
     facilityId,
     actorId: actor.userId,
     action: "encounter.viewed",
     entityType: "encounter",
     entityId: encounterId,
-    summary: `Viewed orders (${listed.length})`,
+    summary: `Viewed orders (${listed.shown.length})`,
+    detail: readDetail(listed),
   });
   return listed;
 }

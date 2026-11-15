@@ -5,6 +5,7 @@ import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { CLINICAL_ROLES } from "@/lib/professions";
 import { COLLECTING_STAFF, LAB_STAFF } from "@/lib/specimens";
+import { restrictedSchema } from "@/lib/validation";
 import { requireClinicalRole, requireMembershipRole } from "@/middlewares/auth";
 import { clinicalResponses, facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 import { LabNumberSchema } from "@/routes/lab-tests/lab-tests.routes";
@@ -310,13 +311,14 @@ export const listResults = createRoute({
   method: "get",
   path: "/encounters/{id}/lab-results",
   summary: "An encounter's lab results",
-  description: "Released and verified results, with each order's current printed report (`/documents/{id}/pdf`). Audited.",
+  description: "Released and verified results, with each order's current printed report (`/documents/{id}/pdf`). A result you may not see (rule 27) is listed under `restricted`, by date only, and its report left out. Audited.",
   middleware: [clinicalReaders] as const,
   request: { headers: facilityHeaders, params: IdParamsSchema, query: z.object({ offset: z.coerce.number().int().min(0).default(0) }) },
   responses: {
     [HttpStatusCodes.OK]: jsonContent(z.object({
       results: z.array(ResultSchema),
       reports: z.array(z.object({ orderId: z.uuid(), documentId: z.uuid(), number: z.string() })),
+      restricted: restrictedSchema,
     }), "Results"),
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(IdParamsSchema), "Not an encounter id"),
     ...tenantResponses,

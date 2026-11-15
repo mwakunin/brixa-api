@@ -5,6 +5,7 @@ import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { ORDERING_STAFF, PERFORMING_STAFF, WALK_IN_STAFF } from "@/lib/orders";
 import { CLINICAL_ROLES } from "@/lib/professions";
+import { restrictedSchema } from "@/lib/validation";
 import { requireClinicalRole, requireMembershipRole } from "@/middlewares/auth";
 import { clinicalResponses, facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
@@ -111,11 +112,11 @@ export const listOrders = createRoute({
   method: "get",
   path: "/encounters/{id}/orders",
   summary: "An encounter's orders",
-  description: "Oldest first, each with its items. Audited.",
+  description: "Oldest first, each with its items. An order you may not see (rule 27) is listed under `restricted`, by date only. Audited.",
   middleware: [clinicalReaders] as const,
   request: { headers: facilityHeaders, params: IdParamsSchema },
   responses: {
-    [HttpStatusCodes.OK]: jsonContent(z.object({ orders: z.array(OrderSchema) }), "Orders"),
+    [HttpStatusCodes.OK]: jsonContent(z.object({ orders: z.array(OrderSchema), restricted: restrictedSchema }), "Orders"),
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(IdParamsSchema), "Not an encounter id"),
     ...tenantResponses,
   },

@@ -11,9 +11,10 @@ import type { TenantRouteHandler } from "@/lib/types";
 import { invitations } from "@/db/schema";
 import * as invites from "@/lib/invitations";
 import * as practitioners from "@/lib/practitioners";
+import * as sensitivity from "@/lib/sensitivity";
 import { invitationRefusal } from "@/routes/invitation-errors";
 
-import type { ChangeRolesRoute, CreateInvitationRoute, ListInvitationsRoute, ListMembersRoute, RevokeInvitationRoute, SetLicenceRoute } from "./staff.routes";
+import type { ChangeRolesRoute, CreateInvitationRoute, ListInvitationsRoute, ListMembersRoute, RevokeInvitationRoute, SetLicenceRoute, SetSensitiveAccessRoute } from "./staff.routes";
 
 type InvitationRow = typeof invitations.$inferSelect;
 type OutboxStatus = (typeof outbox.$inferSelect)["status"];
@@ -179,6 +180,20 @@ export const changeRoles: TenantRouteHandler<ChangeRolesRoute> = async (c) => {
     const refused = practitionerRefusal(c, err, ["licence"]);
     if (refused)
       return refused as never;
+    throw err;
+  }
+};
+
+export const setSensitiveAccess: TenantRouteHandler<SetSensitiveAccessRoute> = async (c) => {
+  const { id } = c.req.valid("param");
+  const { categories } = c.req.valid("json");
+  try {
+    const assigned = await sensitivity.setSensitiveAccess(c.var.db, c.var.facility.id, id, categories, { userId: c.var.user!.id, membershipId: c.var.membership.id });
+    return c.json({ id, sensitiveCategories: assigned }, HttpStatusCodes.OK);
+  }
+  catch (err) {
+    if (err instanceof sensitivity.SensitivityError)
+      return c.json({ message: HttpStatusPhrases.NOT_FOUND }, HttpStatusCodes.NOT_FOUND) as never;
     throw err;
   }
 };

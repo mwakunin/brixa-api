@@ -3,6 +3,7 @@ import * as HttpStatusCodes from "stoker/http-status-codes";
 import { jsonContent, jsonContentRequired } from "stoker/openapi/helpers";
 import { createErrorSchema } from "stoker/openapi/schemas";
 
+import { sensitiveCategorySchema } from "@/lib/validation";
 import { requireMembershipRole } from "@/middlewares/auth";
 import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
@@ -84,6 +85,8 @@ const CreateBodySchema = z.strictObject({
   /** An active `lab` item: the test goes by its code and name, and is charged at its price. */
   billableItemId: z.uuid(),
   specimenType: z.enum(SPECIMEN_TYPES),
+  /** A sensitive test (an HIV test, a CD4 count): its orders and results are restricted (rule 27). */
+  sensitiveCategory: sensitiveCategorySchema.optional(),
   /** In report order. */
   analytes: z.array(AnalyteBodySchema).min(1).max(60),
 }).refine(b => new Set(b.analytes.map(a => a.code)).size === b.analytes.length, {
@@ -95,7 +98,9 @@ const UpdateTestBodySchema = z.strictObject({
   specimenType: z.enum(SPECIMEN_TYPES).optional(),
   /** False retires it from ordering, e.g. while reagents are out. */
   isActive: z.boolean().optional(),
-}).refine(b => b.specimenType !== undefined || b.isActive !== undefined, "Nothing to change");
+  /** Marks it sensitive, or null to unmark it; its orders past and future follow. */
+  sensitiveCategory: sensitiveCategorySchema.nullable().optional(),
+}).refine(b => b.specimenType !== undefined || b.isActive !== undefined || b.sensitiveCategory !== undefined, "Nothing to change");
 
 const UpdateAnalyteBodySchema = z.strictObject({
   name: oneLine(120).optional(),
@@ -138,6 +143,7 @@ const LabTestSchema = z.object({
   name: z.string(),
   specimenType: z.enum(SPECIMEN_TYPES),
   isActive: z.boolean(),
+  sensitiveCategory: sensitiveCategorySchema.nullable(),
   analytes: z.array(AnalyteSchema),
 });
 

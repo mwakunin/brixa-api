@@ -9,6 +9,7 @@ import { recordAudit } from "@/lib/audit";
 import { documentDefinition } from "@/lib/document-pdf";
 import { mayRead } from "@/lib/documents";
 import { renderPdf } from "@/lib/pdf";
+import { documentSight } from "@/lib/sensitivity";
 
 import type { GetDocumentPdfRoute } from "./documents.routes";
 
@@ -28,6 +29,11 @@ export const getDocumentPdf: TenantRouteHandler<GetDocumentPdfRoute> = async (c)
   if (!mayRead(c.var.membership.roles, document.kind))
     return c.json({ message: HttpStatusPhrases.FORBIDDEN }, HttpStatusCodes.FORBIDDEN);
 
+  // A prescription or report of a restricted order (rule 27) opens only for those who may see it.
+  const seen = await documentSight(c.var.db, document, { userId: c.var.user!.id, membershipId: c.var.membership.id, roles: c.var.membership.roles });
+  if (seen.sight === "restricted")
+    return c.json({ message: "This record is restricted; break the glass on the patient to open it", code: "restricted" }, HttpStatusCodes.FORBIDDEN);
+
   /*
    * Recorded before rendering, on the request transaction: if rendering
    * fails, the 500 rolls the entry back with everything else, so the log
@@ -40,7 +46,7 @@ export const getDocumentPdf: TenantRouteHandler<GetDocumentPdfRoute> = async (c)
     entityType: "document",
     entityId: document.id,
     summary: `${document.content.title} ${document.number} opened`,
-    detail: { membershipId: c.var.membership.id },
+    detail: { membershipId: c.var.membership.id, ...(seen.grantId ? { breakGlassId: seen.grantId } : {}) },
   });
 
   const pdf = await renderPdf(documentDefinition(document));

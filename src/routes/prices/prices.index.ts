@@ -10,6 +10,7 @@ router.use(withFacility);
 
 router.openapi(routes.listItems, handlers.listItems);
 router.openapi(routes.createItem, handlers.createItem);
+router.openapi(routes.setPrintedName, handlers.setPrintedName);
 router.openapi(routes.listChanges, handlers.listChanges);
 router.openapi(routes.requestChange, handlers.requestChange);
 router.openapi(routes.approveChange, handlers.approveChange);

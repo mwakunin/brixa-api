@@ -25,15 +25,27 @@ const ItemSchema = z.object({
   name: z.string(),
   category: z.enum(CATEGORIES),
   isActive: z.boolean(),
+  /** What bills print instead of the name; null prints the name. */
+  printedName: z.string().nullable(),
   /** Today's cash price in cents, or null if the item has none. */
   cashPriceCents: z.number().int().nullable(),
 });
+
+const PrintedNameSchema = z.string().trim().min(2).max(120).regex(/^\P{C}+$/u, "One line");
 
 const ItemBodySchema = z.object({
   code: z.string().trim().toUpperCase().regex(/^[A-Z0-9][A-Z0-9./-]{0,23}$/, "Letters, digits and . / - only, up to 24"),
   name: z.string().trim().min(2).max(120).regex(/^\P{C}+$/u, "One line"),
   category: z.enum(CATEGORIES),
+  /**
+   * What bills print instead of the name, for an item whose name discloses a
+   * condition (rule 27). Choose a code that does not name it either: bills
+   * print the code too.
+   */
+  printedName: PrintedNameSchema.optional(),
 });
+
+const PrintedNameBodySchema = z.strictObject({ printedName: PrintedNameSchema.nullable() });
 
 const ChangeLineSchema = z.object({
   billableItemId: z.uuid(),
@@ -86,6 +98,21 @@ export const createItem = createRoute({
     [HttpStatusCodes.CREATED]: jsonContent(ItemSchema, "Added"),
     [HttpStatusCodes.CONFLICT]: jsonContent(RefusalSchema, "Another item has that code"),
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(ItemBodySchema), "Invalid item"),
+    ...tenantResponses,
+  },
+});
+
+export const setPrintedName = createRoute({
+  tags,
+  method: "put",
+  path: "/billable-items/{id}/printed-name",
+  summary: "Set what bills print for an item",
+  description: "A neutral name in place of one that discloses a condition, or null for the item's name. Charges captured from now on copy it; those already captured keep theirs. Audited.",
+  middleware: [keepersOnly] as const,
+  request: { headers: facilityHeaders, params: IdParamsSchema, body: jsonContentRequired(PrintedNameBodySchema, "The printed name") },
+  responses: {
+    [HttpStatusCodes.OK]: jsonContent(z.object({ id: z.uuid(), printedName: z.string().nullable() }), "Set"),
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(PrintedNameBodySchema), "Invalid name"),
     ...tenantResponses,
   },
 });
@@ -152,6 +179,7 @@ export const rejectChange = decision("/price-changes/{id}/reject", "Reject a pri
 export const withdrawChange = decision("/price-changes/{id}/withdraw", "Withdraw a price change", "By its requester, while pending.");
 
 export type ListItemsRoute = typeof listItems;
+export type SetPrintedNameRoute = typeof setPrintedName;
 export type CreateItemRoute = typeof createItem;
 export type ListChangesRoute = typeof listChanges;
 export type RequestChangeRoute = typeof requestChange;

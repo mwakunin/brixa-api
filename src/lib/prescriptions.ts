@@ -17,6 +17,7 @@ import { issueDocument, voidDocument } from "./documents";
 import { currentDrug, describeDrug, ingredientsOf, INJECTED_ROUTES } from "./drug-catalogue";
 import { printedQuantity } from "./money";
 import { PROFESSIONS } from "./professions";
+import { isRestricted, orderGuards } from "./sensitivity";
 
 /**
  * Prescriptions (SCHEMA.md §8, P3 slice 4b): medicines ordered on an open
@@ -491,6 +492,10 @@ export async function cancelPrescription(tx: AppDb, facilityId: string, orderId:
   if (!found?.documentId)
     throw new PrescriptionError("not_found");
   await tx.select({ id: encounters.id }).from(encounters).where(eq(encounters.id, found.encounterId)).for("update");
+  // One the prescriber may not see (written at a sensitive clinic, rule 27) is not there for them.
+  const guard = (await orderGuards(tx, [orderId])).get(orderId)!;
+  if (await isRestricted(tx, guard.patientId, guard, actor))
+    throw new PrescriptionError("not_found");
 
   const cancelled = await tx.update(orderItems)
     .set({ status: "cancelled", cancelledAt: at, cancelledBy: actor.membershipId, cancellationReason: reason })
