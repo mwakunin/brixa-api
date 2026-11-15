@@ -83,7 +83,7 @@ export const listReturns = createRoute({
   method: "get",
   path: "/dispense-returns",
   summary: "Returns",
-  description: "Newest first, 50 a page. `?status=pending` is the approvers' list.",
+  description: "Newest first, 50 a page. `?status=pending` is the approvers' list. Audited, as each names a visit.",
   middleware: [readers] as const,
   request: { headers: facilityHeaders, query: ListQuerySchema },
   responses: {

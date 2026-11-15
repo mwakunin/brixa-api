@@ -40,7 +40,8 @@ const SendBodySchema = z.strictObject({ lines: SendLinesSchema });
 const DirectBodySchema = z.strictObject({ fromStoreId: z.uuid(), toStoreId: z.uuid(), lines: SendLinesSchema });
 const ReceiveBodySchema = z.strictObject({
   /** What arrived of each batch; one not named arrived whole. */
-  received: z.array(z.strictObject({ batchId: z.uuid(), quantity: z.number().int().min(0).max(100_000_000) })).max(200).refine(r => new Set(r.map(x => lower(x.batchId))).size === r.length, "Each batch once").optional(),
+  // As many as a send can carry: 200 lines of up to 20 batches.
+  received: z.array(z.strictObject({ batchId: z.uuid(), quantity: z.number().int().min(0).max(100_000_000) })).max(4000).refine(r => new Set(r.map(x => lower(x.batchId))).size === r.length, "Each batch once").optional(),
   /** Needed when less arrived than was sent. */
   shortfallReason: ReasonSchema.optional(),
 });
@@ -166,7 +167,7 @@ export const getTransfer = createRoute({
 
 export const requestTransfer = startStep("/stock-transfers", "Ask another store for stock", "Per item, in base units. Numbered `TRF-`. A nurse asks only for a ward's store.", staffOrWard, RequestBodySchema);
 export const sendDirect = startStep("/stock-transfers/send", "Send stock to another store without a request", "Each line by quantity (earliest expiry first, never an expired batch) or by the batches named. The stock leaves the store now.", staff, DirectBodySchema);
-export const sendTransfer = nextStep("/stock-transfers/{id}/send", "Send what a request asked for", "Sending approves it. Less may be sent, with no back-order. Each line by quantity, earliest expiry first, or by the batches named.", staff, SendBodySchema);
+export const sendTransfer = nextStep("/stock-transfers/{id}/send", "Send what a request asked for", "Sending approves it. Only items asked for, and never more of one; less may be sent, with no back-order. Each line by quantity, earliest expiry first, or by the batches named.", staff, SendBodySchema);
 export const receiveTransfer = nextStep("/stock-transfers/{id}/receive", "Receive a transfer", "Once, by someone other than its sender. A batch not named arrived whole; less than was sent needs `shortfallReason`, and its loss waits for a second person.", staffOrWard, ReceiveBodySchema);
 export const acceptShortfall = nextStep("/stock-transfers/{id}/accept-shortfall", "Accept a shortfall's loss", "By the finance manager or a pharmacist other than its receiver (rule 24).", approvers, z.strictObject({}));
 export const cancelTransfer = nextStep("/stock-transfers/{id}/cancel", "Cancel a request", "By whoever asked for it, before it is sent.", staffOrWard, CloseBodySchema);

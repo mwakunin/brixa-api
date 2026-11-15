@@ -53,7 +53,9 @@ export type TransferErrorCode
     | "batch_not_in_transfer"
     | "more_than_sent"
     | "shortfall_reason_needed"
-    | "no_shortfall";
+    | "no_shortfall"
+    | "not_requested"
+    | "more_than_requested";
 
 export class TransferError extends Error {
   constructor(readonly code: TransferErrorCode) {
@@ -73,6 +75,8 @@ export class TransferError extends Error {
       more_than_sent: "More cannot arrive than was sent",
       shortfall_reason_needed: "Less arrived than was sent: say why",
       no_shortfall: "Nothing on this transfer is waiting to be accepted",
+      not_requested: "That item was not asked for: send it without a request instead",
+      more_than_requested: "More than was asked for: less may be sent, never more",
     }[code]);
     this.name = "TransferError";
   }
@@ -166,11 +170,30 @@ async function moveOut(tx: AppDb, transfer: TransferRow, lines: TakeLine[], acto
   await audit(tx, transfer, actor, "stock_transfer.sent", "Sent", { batches, requested: transfer.requestedBy !== null });
 }
 
+/** Refuses lines that send an item not asked for, or more of one than was (decided 2026-11-15, question 6). */
+async function checkAgainstRequest(tx: AppDb, transferId: string, lines: TakeLine[]): Promise<void> {
+  const asked = new Map((await tx.select({ stockItemId: stockTransferItems.stockItemId, quantity: stockTransferItems.quantityRequested }).from(stockTransferItems).where(eq(stockTransferItems.transferId, transferId))).map(i => [i.stockItemId, i.quantity]));
+  const sending = new Map<string, number>();
+  for (const line of lines) {
+    const id = line.stockItemId.toLowerCase();
+    const quantity = line.batches ? line.batches.reduce((sum, b) => sum + b.quantity, 0) : line.quantity!;
+    sending.set(id, (sending.get(id) ?? 0) + quantity);
+  }
+  for (const [id, quantity] of sending) {
+    const limit = asked.get(id);
+    if (limit === undefined)
+      throw new TransferError("not_requested");
+    if (quantity > limit)
+      throw new TransferError("more_than_requested");
+  }
+}
+
 /** Sends what a request asked for, or less: its rest is a new request. */
 export async function sendTransfer(tx: AppDb, facilityId: string, id: string, lines: TakeLine[], actor: StockActor, today = businessDate()): Promise<TransferRow> {
   const transfer = await lockTransfer(tx, id);
   if (transfer.status !== "requested")
     throw new TransferError("not_open");
+  await checkAgainstRequest(tx, id, lines);
   await lockStores(tx, transfer.fromStoreId, transfer.toStoreId);
   const [sent] = await tx.update(stockTransfers)
     .set({ status: "sent", sentBy: actor.membershipId, sentAt: new Date() })

@@ -92,6 +92,11 @@ export interface PrepareLine {
   complete?: boolean;
 }
 
+/** Whether this member may give, take back or adjust a controlled drug: a pharmacist under a pharmacy licence. */
+export function mayGiveControlled(actor: DispenseActor): boolean {
+  return actor.roles.includes("pharmacist") && actor.licenceProfession === "pharmacy";
+}
+
 /** Locks the encounter (M8) and refuses a closed visit. */
 async function lockOpenVisit(tx: AppDb, encounterId: string): Promise<{ kind: string }> {
   const [visit] = await tx.select({ status: encounters.status, kind: encounters.kind }).from(encounters).where(eq(encounters.id, encounterId)).for("update");
@@ -116,10 +121,33 @@ async function beingPrepared(tx: AppDb, orderItemIds: string[]): Promise<Set<str
   return new Set(rows.map(r => r.id));
 }
 
-/** What has been handed over of each medicine, in base units. */
-async function handedOverOf(tx: AppDb, orderItemIds: string[]): Promise<Map<string, number>> {
-  const rows = await tx.select({ id: dispenseLines.orderItemId, total: sql<string>`sum(${dispenseLines.quantity})` }).from(dispenseLines).innerJoin(dispenses, eq(dispenses.id, dispenseLines.dispenseId)).where(and(eq(dispenses.status, "handed_over"), inArray(dispenseLines.orderItemId, orderItemIds))).groupBy(dispenseLines.orderItemId);
-  return new Map(rows.map(r => [r.id, Number(r.total)]));
+/** What a medicine has been given so far. */
+interface Given {
+  /** In base units, every line counted. */
+  total: number;
+  /** Of that, in stock counted in the prescription's own dose unit. */
+  inDoseUnit: number;
+  /** Some was given in another unit, which cannot be counted against the prescription. */
+  otherUnits: boolean;
+}
+
+/** What has been handed over of each medicine, by whether its unit is the prescription's. */
+async function handedOverOf(tx: AppDb, orderItemIds: string[]): Promise<Map<string, Given>> {
+  const sameUnit = sql`lower(${stockItems.baseUnit}) = lower(${orderItems.doseUnit})`;
+  const rows = await tx
+    .select({
+      id: dispenseLines.orderItemId,
+      total: sql<string>`sum(${dispenseLines.quantity})`,
+      inDoseUnit: sql<string>`coalesce(sum(${dispenseLines.quantity}) FILTER (WHERE ${sameUnit}), 0)`,
+      otherUnits: sql<boolean>`bool_or(NOT ${sameUnit})`,
+    })
+    .from(dispenseLines)
+    .innerJoin(dispenses, eq(dispenses.id, dispenseLines.dispenseId))
+    .innerJoin(stockItems, eq(stockItems.id, dispenseLines.stockItemId))
+    .innerJoin(orderItems, eq(orderItems.id, dispenseLines.orderItemId))
+    .where(and(eq(dispenses.status, "handed_over"), inArray(dispenseLines.orderItemId, orderItemIds)))
+    .groupBy(dispenseLines.orderItemId);
+  return new Map(rows.map(r => [r.id, { total: Number(r.total), inDoseUnit: Number(r.inDoseUnit), otherUnits: Boolean(r.otherUnits) }]));
 }
 
 interface PlannedLine {
@@ -131,14 +159,16 @@ interface PlannedLine {
 }
 
 /** How much a line gives, and whether that finishes its medicine (P4 slice 3a, questions 4 and 5). */
-function quantityOf(line: PrepareLine, number: number, medicine: MedicineRow, baseUnit: string, given: number): { quantity: number; completes: boolean } {
+function quantityOf(line: PrepareLine, number: number, medicine: MedicineRow, baseUnit: string, givenSoFar: Given | undefined): { quantity: number; completes: boolean } {
   const asked = line.batches ? line.batches.reduce((sum, b) => sum + b.quantity, 0) : line.quantity;
-  if (baseUnit.toLowerCase() !== (medicine.doseUnit ?? "").toLowerCase()) {
+  // Some given in another unit cannot be subtracted from the prescription: the pharmacist says how much, and whether it finishes it.
+  if (baseUnit.toLowerCase() !== (medicine.doseUnit ?? "").toLowerCase() || givenSoFar?.otherUnits) {
     if (asked === undefined)
       throw new DispenseError("quantity_needed", number);
     return { quantity: asked, completes: line.complete ?? true };
   }
   const prescribed = Number(medicine.quantity);
+  const given = givenSoFar?.inDoseUnit ?? 0;
   const owed = Math.ceil(prescribed - given);
   const quantity = asked ?? owed;
   if (quantity > owed || quantity < 1)
@@ -175,9 +205,9 @@ async function planLines(tx: AppDb, orderId: string, lines: PrepareLine[], actor
     if (!item.isActive)
       throw new DispenseError("item_retired", number);
     // A controlled drug: a pharmacist, under a pharmacy licence (P4 question 4).
-    if (item.schedule && !(actor.roles.includes("pharmacist") && actor.licenceProfession === "pharmacy"))
+    if (item.schedule && !mayGiveControlled(actor))
       throw new DispenseError("controlled_dispenser", number);
-    return { line, medicine, item, ...quantityOf(line, number, medicine, item.baseUnit, given.get(medicine.id) ?? 0) };
+    return { line, medicine, item, ...quantityOf(line, number, medicine, item.baseUnit, given.get(medicine.id)) };
   });
 }
 
@@ -256,9 +286,17 @@ async function lockDispense(tx: AppDb, id: string): Promise<DispenseRow> {
  * Hands a prepared dispense over, finishing each medicine its lines
  * complete. Never held up over money: the response says whether it is paid.
  */
-export async function handOver(tx: AppDb, facilityId: string, id: string, actor: PatientActor, at = new Date()): Promise<DispenseRow> {
+export async function handOver(tx: AppDb, facilityId: string, id: string, actor: DispenseActor, at = new Date()): Promise<DispenseRow> {
   await lockDispense(tx, id);
-  const lines = await tx.select().from(dispenseLines).where(eq(dispenseLines.dispenseId, id));
+  const lines = await tx.select({ line: dispenseLines, schedule: drugCatalogue.controlledSchedule })
+    .from(dispenseLines)
+    .innerJoin(stockItems, eq(stockItems.id, dispenseLines.stockItemId))
+    .leftJoin(drugCatalogue, eq(drugCatalogue.code, stockItems.drugCode))
+    .where(eq(dispenseLines.dispenseId, id))
+    .then(rows => rows.map(r => ({ ...r.line, schedule: r.schedule })));
+  // A controlled drug is handed over, as it is prepared, by a pharmacist under a pharmacy licence (P4 question 4).
+  if (lines.some(l => l.schedule) && !mayGiveControlled(actor))
+    throw new DispenseError("controlled_dispenser");
   const finishing = lines.filter(l => l.completes).map(l => l.orderItemId);
   if (finishing.length > 0) {
     await tx.update(orderItems)
@@ -339,7 +377,7 @@ export async function markNotSupplied(
   if ((await beingPrepared(tx, [medicine.id])).size > 0)
     throw new DispenseError("already_prepared");
 
-  const given = (await handedOverOf(tx, [medicine.id])).get(medicine.id) ?? 0;
+  const given = (await handedOverOf(tx, [medicine.id])).get(medicine.id)?.total ?? 0;
   await tx.insert(medicinesNotSupplied).values({ facilityId, orderItemId: medicine.id, reason: input.reason, note: input.note ?? null, recordedBy: actor.membershipId, recordedAt: at });
   await tx.update(orderItems).set({ status: "done", doneAt: at, doneBy: actor.membershipId }).where(eq(orderItems.id, medicine.id));
   await recordAudit(tx, {

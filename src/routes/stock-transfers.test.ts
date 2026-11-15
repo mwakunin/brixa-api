@@ -162,6 +162,17 @@ describe("sending", () => {
     expect((await direct([{ stockItemId: paracetamol, quantity: 1, batches: [{ batchId: soon, quantity: 1 }] }])).status).toBe(422);
   });
 
+  it("sends only what was asked for, never more of it nor another item", async () => {
+    const asked = await created(await ask(10));
+    const send = (lines: unknown[]) => post(`/stock-transfers/${asked.id}/send`, storekeeper, { lines });
+    const amoxilItem = (await created(await call("POST", "/billable-items", h.facility.id, h.admin, { code: "AMX-500", name: "Amoxicillin", category: "drug" }))).id;
+    const amoxil = (await created(await call("POST", "/stock-items", h.facility.id, h.admin, { billableItemId: amoxilItem, drugCode: "AMX-500-CAP", baseUnit: "capsule", packSize: 100 }))).id;
+
+    expect(await refusal(await send([{ stockItemId: paracetamol, quantity: 6 }, { stockItemId: paracetamol, batches: [{ batchId: later, quantity: 5 }] }]))).toBe("more_than_requested");
+    expect(await refusal(await send([{ stockItemId: amoxil, quantity: 1 }]))).toBe("not_requested");
+    expect((await send([{ stockItemId: paracetamol, quantity: 10 }])).status).toBe(200);
+  });
+
   it("may send less than was asked for, with no back-order", async () => {
     const asked = await created(await ask(2000));
 

@@ -8,7 +8,7 @@ import type { ShownDispense } from "@/lib/dispensing-views";
 import type { TenantBindings, TenantRouteHandler } from "@/lib/types";
 
 import * as dispensing from "@/lib/dispensing";
-import { dispenseShown, pharmacyWorklist } from "@/lib/dispensing-views";
+import { dispenseShown, pharmacyWorklist, viewDispense } from "@/lib/dispensing-views";
 import { AllocationError } from "@/lib/stock-allocation";
 
 import type { CancelRoute, GetDispenseRoute, HandOverRoute, NotSuppliedRoute, PrepareRoute, WorklistRoute } from "./dispensing.routes";
@@ -23,7 +23,8 @@ function refusal(c: Context, err: unknown) {
     return c.json({ message: err.message, code: err.code, line: err.line }, HttpStatusCodes.CONFLICT);
   if (!(err instanceof dispensing.DispenseError))
     return null;
-  if (err.code === "not_found")
+  // A dispense, its prescription, or a medicine named by the path; one named by a line is that line's refusal.
+  if (err.code === "not_found" || err.code === "prescription_not_found" || (err.code === "medicine_not_found" && err.line === undefined))
     return c.json({ message: HttpStatusPhrases.NOT_FOUND }, HttpStatusCodes.NOT_FOUND);
   const body = { message: err.message, code: err.code, ...(err.line === undefined ? {} : { line: err.line }) };
   if (err.code === "controlled_dispenser")
@@ -65,7 +66,15 @@ export const worklist: TenantRouteHandler<WorklistRoute> = async (c) => {
 
 export const getDispense: TenantRouteHandler<GetDispenseRoute> = async (c) => {
   const { id } = c.req.valid("param");
-  return answer(c, async () => ({ id })) as never;
+  try {
+    return c.json(dispenseJson(await viewDispense(c.var.db, c.var.facility.id, id, actorOf(c))), HttpStatusCodes.OK);
+  }
+  catch (err) {
+    const refused = refusal(c, err);
+    if (refused)
+      return refused as never;
+    throw err;
+  }
 };
 
 export const prepare: TenantRouteHandler<PrepareRoute> = async (c) => {

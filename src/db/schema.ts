@@ -477,6 +477,8 @@ export const auditLog = pgTable("audit_log", {
     | "stock_adjustment.rejected"
     | "stock_adjustment.withdrawn"
     | "drug.sensitivity_set"
+    | "dispense.viewed"
+    | "dispense_return.listed"
   >().notNull().references(() => auditActions.action),
   /** What it happened to. Not a foreign key: the log outlives what it names. */
   entityType: text().notNull(),

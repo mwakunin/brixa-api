@@ -873,7 +873,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - a line the store cannot fill from stock in date is refused, naming the line;
   - every batch the item has had in the store is locked before its balance is read, so two sends from one batch queue (tested).
 
-  Each batch's `transfer_out` movement leaves the sending store. Less may be sent than was asked for; the request is then closed as sent.
+  Each batch's `transfer_out` movement leaves the sending store. A request's send carries only items it asked for, and never more of one (`not_requested`, `more_than_requested`). Less may be sent, and the request is then closed as sent.
 - **Receiving** happens once, by someone other than the sender (`stock_transfers_received_by_another`).
   - A batch not named arrived whole, and more than was sent is refused.
   - Less needs a `shortfall_reason`. Each batch that arrived gets a `transfer_in` movement into the receiving store.
@@ -899,7 +899,9 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - Each line gets one charge (`charges.dispense_line_id`, a fourth typed source): the item's cash price per base unit on the day, times the quantity, rounded to whole shillings once. An unpriced item is refused (`not_priced`) before anything is taken.
   - Where the item's base unit is the dose unit, the quantity defaults to what's still owed and can't exceed it. Otherwise it must be given (`quantity_needed`), and the line completes the medicine unless `complete: false`.
   - A medicine is on one prepared dispense at a time. A refused line refuses the whole dispense, naming the line.
-- **A controlled drug** is prepared only by a member holding `pharmacist` with a `pharmacy` licence (`controlled_dispenser`, 403). The request's membership now carries `licenceProfession`.
+- **A controlled drug** is prepared and handed over only by a member holding `pharmacist` with a `pharmacy` licence (`controlled_dispenser`, 403). The request's membership now carries `licenceProfession`.
+- **Units:** a medicine some of which was given in a unit other than the prescription's dose unit has its quantity and completion given by the pharmacist from then on. One unit is never subtracted from another.
+- **`GET /dispenses/{id}`** is audited (`dispense.viewed`), as it names the patient and medicines.
 - **`POST /dispenses/{id}/hand-over`** sets each medicine its lines complete to `done`. A medicine given in part stays on the list with what has been given. The dispense's `unpaid` flag (an outpatient's charges not yet paid) is a warning and never blocks.
 - **`POST /dispenses/{id}/cancel`** (prepared only, with a reason) puts each batch's stock back with a `dispense_cancelled` movement and cancels the charges, while none is on a bill (`billed`, then a return in 3b). A prescription with a prepared dispense cannot be cancelled (`being_dispensed`).
 - **`POST /order-items/{id}/not-supplied`** ends a medicine, or its rest, without a charge for what wasn't given. The reason is `out_of_stock`, `patient_declined`, `buying_elsewhere`, or `other` with a note. The medicine becomes `done`; what was given comes from its dispense lines, and why not from `medicines_not_supplied`.
@@ -922,7 +924,8 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
     - While the charge is unbilled, it is cancelled and a replacement charge raised for what was kept, at the price first charged (`replaceDispenseCharge`). A line has one standing charge (`charges_one_standing_per_dispense_line`).
     - Once billed on a finalised invoice, a credit note is asked for through the existing invoice adjustments, for the difference between what was kept and what is kept now, each rounded as a charge is. Its id is on the return.
     - The return is refused when the charge is on a draft bill (`on_draft_bill`), split across bills (`split_billed`), or the bill is paid (`bill_paid`: the cashier frees the payment first, and the money goes back as a refund).
-  - A controlled drug is taken back by a pharmacist with a pharmacy licence. `GET /dispense-returns?status=pending` is the approvers' list. Ids and items only, so it is not audited.
+  - A controlled drug is taken back by a pharmacist with a pharmacy licence. `GET /dispense-returns?status=pending` is the approvers' list. Each return names a visit, so the list is audited (`dispense_return.listed`, with the encounters' ids).
+  - A charge billed in part (a payer's share, P7) is refused as `split_billed`, like one across bills.
 - **`POST /stock-adjustments`** asks for `expired`, `damaged`, `lost`, `found` or `correction`, with a reason, naming batches and signed quantities.
   - A write-off takes stock off and `found` puts it on (`wrong_sign`). `expired` takes only batches past their date, and a removal can be no more than the store holds.
   - Each line carries its value at the batch's cost. A controlled drug needs a pharmacist with a pharmacy licence.

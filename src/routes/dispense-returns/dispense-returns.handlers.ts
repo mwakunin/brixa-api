@@ -48,7 +48,7 @@ export const recordReturn: TenantRouteHandler<RecordReturnRoute> = async (c) => 
 
 export const listReturns: TenantRouteHandler<ListReturnsRoute> = async (c) => {
   const filter = c.req.valid("query");
-  return c.json({ returns: (await returns.listReturns(c.var.db, filter)).map(json) }, HttpStatusCodes.OK);
+  return c.json({ returns: (await returns.viewReturns(c.var.db, c.var.facility.id, filter, actorOf(c))).map(json) }, HttpStatusCodes.OK);
 };
 
 export const approveReturn: TenantRouteHandler<ApproveReturnRoute> = async (c) => {

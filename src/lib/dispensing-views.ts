@@ -47,6 +47,17 @@ const visitPatient = and(eq(encounters.id, orders.encounterId), eq(encounters.st
 
 /** Medicines neither finished nor cancelled on open visits, by prescription, oldest first. */
 async function waiting(tx: AppDb): Promise<WaitingPrescription[]> {
+  const pending = and(isNotNull(orderItems.drugCode), eq(orderItems.status, "ordered"));
+  // The oldest prescriptions first, a bounded number, each then read whole.
+  const oldest = await tx
+    .select({ id: orders.id, orderedAt: orders.orderedAt })
+    .from(orders)
+    .innerJoin(encounters, visitPatient)
+    .where(sql`EXISTS (SELECT 1 FROM ${orderItems} WHERE ${orderItems.orderId} = ${orders.id} AND ${pending})`)
+    .orderBy(asc(orders.orderedAt), asc(orders.id))
+    .limit(WORKLIST_LIMIT);
+  if (oldest.length === 0)
+    return [];
   const rows = await tx
     .select({
       orderId: orders.id,
@@ -67,10 +78,8 @@ async function waiting(tx: AppDb): Promise<WaitingPrescription[]> {
     .leftJoin(memberships, eq(memberships.id, orders.orderedBy))
     .leftJoin(user, eq(user.id, memberships.userId))
     .leftJoin(drugCatalogue, eq(drugCatalogue.code, orderItems.drugCode))
-    .where(and(isNotNull(orderItems.drugCode), eq(orderItems.status, "ordered")))
+    .where(and(pending, inArray(orders.id, oldest.map(o => o.id))))
     .orderBy(asc(orders.orderedAt), asc(orders.id), asc(orderItems.id));
-  if (rows.length === 0)
-    return [];
 
   const ids = rows.map(r => r.medicine.id);
   const lines = await tx
@@ -89,8 +98,6 @@ async function waiting(tx: AppDb): Promise<WaitingPrescription[]> {
 
   const byOrder = new Map<string, WaitingPrescription>();
   for (const r of rows) {
-    if (!byOrder.has(r.orderId) && byOrder.size >= WORKLIST_LIMIT)
-      continue;
     const prescription = byOrder.get(r.orderId) ?? { orderId: r.orderId, number: r.number, encounterId: r.encounterId, patient: patientOf(r), prescribedByName: r.prescribedByName, orderedAt: r.orderedAt, medicines: [] };
     prescription.medicines.push({
       orderItemId: r.medicine.id,
@@ -169,16 +176,38 @@ async function namesOf(tx: AppDb, ids: (string | null)[]): Promise<Map<string, s
   return new Map(rows.map(r => [r.id, r.name]));
 }
 
+/**
+ * Each line's charge as the dispense shows it: the standing one, which a
+ * return may have replaced; for a cancelled dispense, the last it had.
+ */
+async function lineCharges(tx: AppDb, lineIds: string[]): Promise<Map<string, { id: string; amountCents: number }>> {
+  if (lineIds.length === 0)
+    return new Map();
+  const rows = await tx
+    .select({ id: charges.id, lineId: charges.dispenseLineId, amountCents: charges.amountCents, cancelledAt: charges.cancelledAt })
+    .from(charges)
+    .where(inArray(charges.dispenseLineId, lineIds))
+    .orderBy(asc(charges.capturedAt), asc(charges.id));
+  const chosen = new Map<string, { id: string; amountCents: number; standing: boolean }>();
+  for (const r of rows) {
+    const standing = r.cancelledAt === null;
+    // A standing charge wins; else the latest.
+    if (!chosen.get(r.lineId!)?.standing || standing)
+      chosen.set(r.lineId!, { id: r.id, amountCents: r.amountCents, standing });
+  }
+  return chosen;
+}
+
 async function linesOf(tx: AppDb, dispenseIds: string[]): Promise<Map<string, (ShownDispenseLine & { chargeId: string | null })[]>> {
   const rows = await tx
-    .select({ line: dispenseLines, description: orderItems.drugDescription, code: billableItems.code, name: billableItems.name, baseUnit: stockItems.baseUnit, chargeId: charges.id, amountCents: charges.amountCents })
+    .select({ line: dispenseLines, description: orderItems.drugDescription, code: billableItems.code, name: billableItems.name, baseUnit: stockItems.baseUnit })
     .from(dispenseLines)
     .innerJoin(orderItems, eq(orderItems.id, dispenseLines.orderItemId))
     .innerJoin(stockItems, eq(stockItems.id, dispenseLines.stockItemId))
     .innerJoin(billableItems, eq(billableItems.id, stockItems.billableItemId))
-    .leftJoin(charges, eq(charges.dispenseLineId, dispenseLines.id))
     .where(inArray(dispenseLines.dispenseId, dispenseIds))
     .orderBy(asc(billableItems.code));
+  const chargeOf = await lineCharges(tx, rows.map(r => r.line.id));
   const taken = rows.length === 0
     ? []
     : await tx
@@ -200,8 +229,8 @@ async function linesOf(tx: AppDb, dispenseIds: string[]): Promise<Map<string, (S
       baseUnit: r.baseUnit,
       quantity: r.line.quantity,
       completes: r.line.completes,
-      amountCents: r.amountCents ?? 0,
-      chargeId: r.chargeId,
+      amountCents: chargeOf.get(r.line.id)?.amountCents ?? 0,
+      chargeId: chargeOf.get(r.line.id)?.id ?? null,
       batches: (batchesOf.get(r.line.id) ?? []).map(b => ({ batchId: b.batchId, batchNumber: b.batchNumber, expiresOn: b.expiresOn, quantity: Number(b.quantity) })),
     };
     result.set(r.line.dispenseId, [...(result.get(r.line.dispenseId) ?? []), shown]);
@@ -252,10 +281,25 @@ async function dispensesShown(tx: AppDb, ids: string[]): Promise<ShownDispense[]
   return ids.flatMap(id => byId.get(id) ?? []);
 }
 
-/** One dispense as the pharmacy sees it. */
+/** One dispense as the pharmacy sees it. Not audited: for answering a write, which is. */
 export async function dispenseShown(tx: AppDb, id: string): Promise<ShownDispense> {
   const [shown] = await dispensesShown(tx, [id]);
   if (!shown)
     throw new DispenseError("not_found");
+  return shown;
+}
+
+/** One dispense opened on its own: it names its patient and medicines, so the read is audited (rule 9). */
+export async function viewDispense(tx: AppDb, facilityId: string, id: string, actor: PatientActor): Promise<ShownDispense> {
+  const shown = await dispenseShown(tx, id);
+  await recordAudit(tx, {
+    facilityId,
+    actorId: actor.userId,
+    action: "dispense.viewed",
+    entityType: "encounter",
+    entityId: shown.encounterId,
+    summary: "Viewed a dispense",
+    detail: { dispenseId: id },
+  });
   return shown;
 }

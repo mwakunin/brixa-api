@@ -12,6 +12,7 @@ import { recordAudit } from "./audit";
 import { assignedByCharge } from "./billing";
 import { dispenseCharges, replaceDispenseCharge } from "./charges";
 import { businessDate } from "./dates";
+import { mayGiveControlled } from "./dispensing";
 import { chargeAmountCents } from "./money";
 import { lockBatches } from "./stock-levels";
 
@@ -53,7 +54,7 @@ export class ReturnError extends Error {
       not_pending: "This return has already been decided",
       same_person: "Someone other than whoever took it back decides this",
       on_draft_bill: "Its charge is on a draft bill: finalise or discard the draft first",
-      split_billed: "Its charge is split across bills: billing credits it by hand",
+      split_billed: "Its charge is billed in part, or across bills: billing credits it by hand",
       bill_paid: "Its bill is paid: the cashier frees the payment first, then the credit can be asked for and the money refunded",
     }[code]);
     this.name = "ReturnError";
@@ -162,10 +163,14 @@ async function credit(tx: AppDb, facilityId: string, line: LineContext, ret: Ret
   const keptAfter = keptBefore - ret.quantity;
   const reason = `Returned ${ret.quantity} of ${line.code}: ${ret.reason}`;
 
-  if (!(await assignedByCharge(tx, [charge.id])).has(charge.id)) {
+  const assigned = (await assignedByCharge(tx, [charge.id])).get(charge.id) ?? 0;
+  if (assigned === 0) {
     await replaceDispenseCharge(tx, facilityId, charge, keptAfter, reason, actor);
     return null;
   }
+  // Billed in part (a payer's share and the patient's, P7): which part the return comes off is billing's call.
+  if (assigned !== charge.amountCents)
+    throw new ReturnError("split_billed");
   const amountCents = chargeAmountCents(String(keptBefore), charge.unitPriceCents) - chargeAmountCents(String(keptAfter), charge.unitPriceCents);
   if (amountCents === 0)
     return null;
@@ -193,7 +198,7 @@ export async function recordReturn(
   today = businessDate(),
 ): Promise<ReturnRow> {
   const line = await lockLine(tx, lineId);
-  if (line.schedule && !(actor.roles.includes("pharmacist") && actor.licenceProfession === "pharmacy"))
+  if (line.schedule && !mayGiveControlled(actor))
     throw new ReturnError("controlled_dispenser");
   if (input.quantity > line.quantity - await returnedOf(tx, line.id, ["done", "pending"]))
     throw new ReturnError("more_than_given");
@@ -273,7 +278,26 @@ export interface ListedReturn {
   invoiceAdjustmentId: string | null;
 }
 
-/** Returns, newest first, 50 a page; `pending` is the approvers' list. Ids and items only, so not audited. */
+/**
+ * Returns, newest first, 50 a page; `pending` is the approvers' list. Each
+ * names a visit and what its patient brought back, so the list is audited
+ * (rule 9), with ids only.
+ */
+export async function viewReturns(tx: AppDb, facilityId: string, filter: { status?: ReturnRow["status"]; offset?: number }, actor: PatientActor): Promise<ListedReturn[]> {
+  const listed = await listReturns(tx, filter);
+  await recordAudit(tx, {
+    facilityId,
+    actorId: actor.userId,
+    action: "dispense_return.listed",
+    entityType: "facility",
+    entityId: facilityId,
+    summary: `Viewed ${listed.length} return${listed.length === 1 ? "" : "s"}`,
+    detail: { status: filter.status ?? null, encounters: [...new Set(listed.map(r => r.encounterId))] },
+  });
+  return listed;
+}
+
+/** Returns as `viewReturns` lists them; not audited, for answering a write. */
 export async function listReturns(tx: AppDb, filter: { status?: ReturnRow["status"]; id?: string; offset?: number } = {}): Promise<ListedReturn[]> {
   const rows = await tx
     .select({ ret: dispenseReturns, encounterId: dispenses.encounterId, code: billableItems.code, name: billableItems.name })

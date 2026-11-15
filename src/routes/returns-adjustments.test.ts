@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { Hospital, StaffMember } from "@/test/hospital";
 
 import db from "@/db";
-import { charges } from "@/db/schema";
+import { auditLog, charges } from "@/db/schema";
 import { runAsFacility } from "@/db/tenant-transaction";
 import { addDays, businessDate } from "@/lib/dates";
 import { pgErrorCode } from "@/lib/db-errors";
@@ -71,13 +71,13 @@ async function shelf(): Promise<number> {
 }
 
 /** 15 tablets handed over on an open outpatient visit: charged KES 38. */
-async function handedOver(): Promise<{ encounterId: string; lineId: string; patientId: string }> {
+async function handedOver(): Promise<{ encounterId: string; lineId: string; patientId: string; dispenseId: string }> {
   const patientId = await h.patient();
   const visit = await created(await post("/encounters", h.nurse, { patientId, kind: "opd" }));
   const order = await created(await post(`/encounters/${visit.id}/prescriptions`, doctor, { items: [{ drugCode: "PCM-500-TAB", doseAmount: "1", frequency: "tds", durationDays: 5 }] }));
   const dispense = await created(await post("/dispenses", pharmacist, { orderId: order.id, lines: [{ orderItemId: order.items[0].id, stockItemId: paracetamol }] }));
   await post(`/dispenses/${dispense.id}/hand-over`, pharmacist);
-  return { encounterId: visit.id, lineId: dispense.lines[0].id, patientId };
+  return { encounterId: visit.id, lineId: dispense.lines[0].id, patientId, dispenseId: dispense.id };
 }
 
 async function standing(encounterId: string) {
@@ -88,7 +88,7 @@ const giveBack = (lineId: string, body: Record<string, unknown>, who: StaffMembe
 
 describe("a patient's return", () => {
   it("fit to sell again, goes back on the shelf and replaces the unbilled charge with one for what was kept", async () => {
-    const { encounterId, lineId } = await handedOver();
+    const { encounterId, lineId, dispenseId } = await handedOver();
     expect(await shelf()).toBe(2985);
 
     const back = await created(await giveBack(lineId, { quantity: 5, reason: "Fever gone", fitForResale: true }));
@@ -97,6 +97,9 @@ describe("a patient's return", () => {
     expect(await shelf()).toBe(2990);
     // Ten kept, at the price first charged: KES 25.
     expect(await standing(encounterId)).toEqual([{ quantity: "10.000", amountCents: 2500 }]);
+    // The dispense shows its one line at the charge standing now, not once per charge it has had.
+    const dispense = await (await call("GET", `/dispenses/${dispenseId}`, h.facility.id, pharmacist)).json();
+    expect(dispense.lines.map((l: { amountCents: number }) => l.amountCents)).toEqual([2500]);
 
     expect(await refusal(await giveBack(lineId, { quantity: 11, reason: "All of it", fitForResale: true }))).toBe("more_than_given");
     await created(await giveBack(lineId, { quantity: 10, reason: "All of it", fitForResale: true }));
@@ -127,6 +130,8 @@ describe("a patient's return", () => {
     // Counted against what may still come back.
     expect(await refusal(await giveBack(lineId, { quantity: 11, reason: "More", fitForResale: true }))).toBe("more_than_given");
     expect((await (await call("GET", "/dispense-returns?status=pending", h.facility.id, h.finance)).json()).returns).toHaveLength(1);
+    const [listed] = await db.select().from(auditLog).where(eq(auditLog.action, "dispense_return.listed"));
+    expect(listed).toMatchObject({ actorId: h.finance.id, detail: { status: "pending", encounters: [encounterId] } });
 
     expect(await refusal(await post(`/dispense-returns/${back.id}/approve`, pharmacist))).toBe("same_person");
     const approved = await (await post(`/dispense-returns/${back.id}/approve`, h.finance)).json();
@@ -174,6 +179,14 @@ describe("a stock adjustment", () => {
     expect(approved.status).toBe("approved");
     expect(await shelf()).toBe(3000);
     expect(await refusal(await post(`/stock-adjustments/${asked.id}/approve`, h.finance))).toBe("not_pending");
+  });
+
+  it("refuses a line worth more than one adjustment records", async () => {
+    const dear = await created(await post("/goods-received", storekeeper, { storeId: pharmacy, supplier: "MEDS", lines: [{ stockItemId: paracetamol, batchNumber: "DEAR", expiresOn: inDays(300), units: 1, totalCostCents: 2_000_000_000 }] }));
+
+    const res = await ask({ storeId: pharmacy, kind: "found", reason: "Counted twice", lines: [{ batchId: dear.items[0].batchId, quantity: 2 }] });
+
+    expect(await refusal(res)).toBe("value_too_large");
   });
 
   it("takes off only what the store holds, by the sign its kind moves, and puts found stock on an existing batch", async () => {

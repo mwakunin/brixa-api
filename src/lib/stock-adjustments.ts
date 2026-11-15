@@ -9,6 +9,7 @@ import type { PatientActor } from "./patients";
 
 import { recordAudit } from "./audit";
 import { businessDate } from "./dates";
+import { mayGiveControlled } from "./dispensing";
 import { lockBatches } from "./stock-levels";
 
 /**
@@ -32,7 +33,8 @@ export type StockAdjustmentErrorCode
     | "controlled_dispenser"
     | "not_pending"
     | "same_person"
-    | "not_requester";
+    | "not_requester"
+    | "value_too_large";
 
 export class StockAdjustmentError extends Error {
   constructor(readonly code: StockAdjustmentErrorCode, readonly line?: number) {
@@ -47,10 +49,14 @@ export class StockAdjustmentError extends Error {
       not_pending: "This adjustment has already been decided",
       same_person: "Someone other than whoever asked for it decides it",
       not_requester: "Only whoever asked for it may withdraw it",
+      value_too_large: "That line is worth more than one adjustment records; split it",
     }[code]}`);
     this.name = "StockAdjustmentError";
   }
 }
+
+/** The most a line's value may be, either way: what an integer column holds. */
+const MAX_VALUE_CENTS = 2_147_483_647;
 
 /** Which way each kind moves stock: off the shelf, onto it, or either. */
 const SIGN: Record<StockAdjustmentKind, -1 | 1 | 0> = { expired: -1, damaged: -1, lost: -1, found: 1, correction: 0 };
@@ -109,9 +115,13 @@ export async function requestStockAdjustment(
     // A first look; approval looks again under the batch's lock.
     if (line.quantity < 0 && batch.onHand < -line.quantity)
       throw new StockAdjustmentError("not_enough_stock", number);
-    if (batch.schedule && !(actor.roles.includes("pharmacist") && actor.licenceProfession === "pharmacy"))
+    if (batch.schedule && !mayGiveControlled(actor))
       throw new StockAdjustmentError("controlled_dispenser", number);
-    return { batchId: line.batchId, quantity: line.quantity, valueCents: Math.round(line.quantity * batch.totalCostCents / batch.quantityReceived) };
+    const valueCents = Math.round(line.quantity * batch.totalCostCents / batch.quantityReceived);
+    // Held in an integer column: KES 21 million either way.
+    if (Math.abs(valueCents) > MAX_VALUE_CENTS)
+      throw new StockAdjustmentError("value_too_large", number);
+    return { batchId: line.batchId, quantity: line.quantity, valueCents };
   });
 
   const [adjustment] = await tx.insert(stockAdjustments).values({ facilityId, storeId: store.id, kind: input.kind, reason: input.reason, status: "pending", requestedBy: actor.membershipId }).returning();

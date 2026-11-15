@@ -1,4 +1,4 @@
-import { and, asc, eq, isNotNull, isNull } from "drizzle-orm";
+import { and, asc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 import type { MembershipRole } from "@/db/schema";
@@ -42,6 +42,8 @@ export async function setDrugSensitivity(tx: AppDb, facilityId: string, drugCode
   const [drug] = await tx.select({ code: drugCatalogue.code, retiredAt: drugCatalogue.retiredAt }).from(drugCatalogue).where(eq(drugCatalogue.code, drugCode)).limit(1);
   if (!drug)
     throw new SensitiveDrugError("drug_not_found");
+  // A first mark has no row to lock: two at once would each audit "before: none".
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`sensitive_drug:${facilityId}:${drug.code}`}, 0))`);
   const [before] = await tx.select({ category: sensitiveDrugs.category }).from(sensitiveDrugs).where(eq(sensitiveDrugs.drugCode, drug.code)).for("update").limit(1);
   if ((before?.category ?? null) === category)
     return;

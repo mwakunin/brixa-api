@@ -1,4 +1,5 @@
 import { and, eq } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -163,6 +164,21 @@ describe("dispensing a prescription", () => {
     expect(await refusal(await prepare({ orderId: other.orderId, storeId: pharmacy, lines: [{ orderItemId: other.medicines[0], stockItemId: paracetamol }] }))).toBe("visit_closed");
   });
 
+  it("asks the quantity again once some was given in another unit, never subtracting one from the other", async () => {
+    const bottles = await stocked("PCM-SYR", "PCM-120-SUSP", "bottle", 15_000, 10);
+    const loose = await stocked("PCM-ML", "PCM-120-SUSP", "mL", 100, 500);
+    const rx = await prescribed([{ drugCode: "PCM-120-SUSP", doseAmount: "5", frequency: "tds", durationDays: 5 }]);
+    const line = (stockItemId: string, extra: Record<string, unknown> = {}) => ({ orderId: rx.orderId, lines: [{ orderItemId: rx.medicines[0], stockItemId, ...extra }] });
+
+    const first = await created(await prepare(line(bottles, { quantity: 1, complete: false })));
+    await post(`/dispenses/${first.id}/hand-over`, pharmacist);
+
+    // One bottle is not 1 mL of the 75 mL prescribed.
+    expect(await refusal(await prepare(line(loose)))).toBe("quantity_needed");
+    const rest = await created(await prepare(line(loose, { quantity: 30 })));
+    expect(rest.lines[0]).toMatchObject({ quantity: 30, completes: true });
+  });
+
   it("gives a controlled drug only from a pharmacist with a pharmacy licence", async () => {
     const morphine = await stocked("MOR-10", "MOR-10-INJ", "mL", 10_000, 50);
     const nursePharmTech = await staff(["nurse", "pharm_tech"]);
@@ -171,7 +187,10 @@ describe("dispensing a prescription", () => {
 
     expect(await refusal(await prepare(body, pharmTech), 403)).toBe("controlled_dispenser");
     expect(await refusal(await prepare(body, nursePharmTech), 403)).toBe("controlled_dispenser");
-    expect((await prepare(body, pharmacist)).status).toBe(201);
+    const dispense = await created(await prepare(body, pharmacist));
+    // Nor is it handed over by anyone else.
+    expect(await refusal(await post(`/dispenses/${dispense.id}/hand-over`, pharmTech), 403)).toBe("controlled_dispenser");
+    expect((await post(`/dispenses/${dispense.id}/hand-over`, pharmacist)).status).toBe(200);
   });
 
   it("is done by pharmacists and pharmacy technicians alone", async () => {
@@ -180,6 +199,19 @@ describe("dispensing a prescription", () => {
     expect((await call("GET", "/pharmacy/worklist", h.facility.id, h.nurse)).status).toBe(403);
     expect((await call("GET", "/pharmacy/worklist", h.facility.id, storekeeper)).status).toBe(403);
     expect((await prepare({ orderId: rx.orderId, lines: [{ orderItemId: rx.medicines[0], stockItemId: paracetamol }] }, doctor)).status).toBe(403);
+    // What is not there answers as nothing.
+    expect((await prepare({ orderId: randomUUID(), lines: [{ orderItemId: rx.medicines[0], stockItemId: paracetamol }] })).status).toBe(404);
+    expect((await post(`/order-items/${randomUUID()}/not-supplied`, pharmacist, { reason: "out_of_stock" })).status).toBe(404);
+  });
+
+  it("audits opening a dispense on its own, as it names the patient", async () => {
+    const rx = await prescribed();
+    const dispense = await created(await prepare({ orderId: rx.orderId, lines: [{ orderItemId: rx.medicines[0], stockItemId: paracetamol }] }));
+
+    expect((await call("GET", `/dispenses/${dispense.id}`, h.facility.id, pharmTech)).status).toBe(200);
+
+    const [entry] = await db.select().from(auditLog).where(eq(auditLog.action, "dispense.viewed"));
+    expect(entry).toMatchObject({ actorId: pharmTech.id, entityId: rx.encounterId, detail: { dispenseId: dispense.id } });
   });
 });
 

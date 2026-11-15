@@ -140,6 +140,7 @@ export const getDispense = createRoute({
   method: "get",
   path: "/dispenses/{id}",
   summary: "One dispense",
+  description: "Audited, as it names its patient and medicines.",
   middleware: [dispensers] as const,
   request: { headers: facilityHeaders, params: IdParamsSchema },
   responses: {
@@ -173,7 +174,7 @@ export const handOver = createRoute({
   method: "post",
   path: "/dispenses/{id}/hand-over",
   summary: "Hand a prepared dispense over",
-  description: "Finishes each medicine it completes. Never held up over money: `unpaid` says whether it is paid for.",
+  description: "Finishes each medicine it completes. A controlled drug is handed over by a pharmacist with a pharmacy licence. Never held up over money: `unpaid` says whether it is paid for.",
   middleware: [dispensers] as const,
   request: { headers: facilityHeaders, params: IdParamsSchema },
   responses: {
@@ -181,6 +182,7 @@ export const handOver = createRoute({
     ...refusals,
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(IdParamsSchema), "Not a dispense id"),
     ...clinicalResponses,
+    ...forbidden,
   },
 });
 
