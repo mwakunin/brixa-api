@@ -198,6 +198,33 @@ Main store, pharmacy and ward sub-stores; transfers; goods received; batches and
 - A batch nearing expiry and an item below its reorder level each produce an alert.
 - The full OPD journey now includes pharmacy (registration → triage → consultation → lab → pharmacy → cashier), still with no manual charge posting.
 
+**Slices** (proposed 2026-11-15, not yet agreed). Each follows P3's pattern: a migration pair, a lib module, routes and tests, and an "As built" note in `SCHEMA.md`.
+
+| PR | Slice | Builds |
+|---|---|---|
+| A | 1a Stores and stock items | Stores (main store, pharmacy, ward and other sub-stores). The facility's stock items: a catalogue drug or a consumable, each with a billable item, so its selling price goes through the price list and `resolvePrice`. The units it is counted and sold in (question 1). A reorder level per item per store |
+| A | 1b Goods received | Receipts into a store, the supplier as text: batch number, expiry, quantity and unit cost. Each is a `receipt` movement. Stock on hand per store and batch is derived (Σ movements), with a stock-status view |
+| A | 1c Item import | A facility's drug and consumable list and prices loaded from a CSV and mapped to the catalogue (`SPEC.md` §7.4), so a hospital is not set up by hand. Opening stock waits for P6's cutover |
+| B | 2 Transfers | Requested, approved, sent and received between stores, with a difference on receipt explained and adjusted |
+| B | 3a Dispensing | The pharmacy's list of prescriptions waiting. Prepared from the pharmacy's stock, earliest expiry first. Raises the charge, then is handed over (question 5). Partly dispensed, or marked not supplied. Visits close only once each medicine is dispensed or marked not supplied |
+| B | 3b Returns and adjustments | A patient's return credits its charge while unbilled, and is credited or refunded once billed. Write-offs (expired, damaged) and other adjustments need a reason and a second person (rule 24) |
+| C | 4 Controlled drugs | The register, per item and store, with a running balance (rule 12). Who may dispense them. Its entries balance against the movements |
+| C | 5 Stock take | A count per store, then the variances, each an adjustment approved by a second person |
+| C | 6 Alerts and exit | The nightly expiry and low-stock scan (`CLAUDE.md` §7) and the lists they feed. The OPD journey extended through the pharmacy. The stock identity and the register checked as P4's exit |
+
+**Questions before code** (proposed 2026-11-15; recommendations to confirm):
+1. **Loose units or packs** (`SPEC.md` §4, question 2; ask the pilot, `SPEC.md` §9, question 7). It decides the stock model, so 1a waits for it. *Recommended whatever the answer:* stock is counted in a base unit (tablet, capsule, mL, vial), with an optional pack size. Goods are received in packs and converted, and the price is per base unit, since a unit price may carry fractional shillings (D2). This serves a pharmacy that sells single tablets and one that sells whole packs alike.
+2. **Cost.** *Recommended:* each batch keeps its own unit cost from goods received, and stock is valued at batch cost. No average costing, and no ledger in v1 (`ROADMAP.md` §3).
+3. **Selling prices.** *Recommended:* set per item through the existing price changes, approved by a second person (rule 24). The optional markup per category (`SPEC.md` §7.4) waits until a facility asks for it.
+4. **Who dispenses.** *Recommended:* pharmacists and pharmacy technicians, under a current licence. A controlled drug: pharmacists only, and never a nurse who holds the pharmacy technician role (the question left open in slice 1a, `SCHEMA.md` §8).
+5. **Paying before the hand-over.** A Kenyan hospital pharmacy usually prepares, sends the patient to pay, then hands over. *Recommended:* two steps. Preparing takes the stock and raises the charge. Handing over completes the dispense. A prepared dispense not handed over can be cancelled, which returns the stock and cancels the unbilled charge. An unpaid outpatient's hand-over shows a warning and is never blocked, as at the lab, since paying at the end is allowed (`SPEC.md` §2).
+6. **Which product fills a prescription.** Prescriptions name a generic drug. *Recommended:* the pharmacist picks any of the facility's items for that drug (a brand, a pack). The batch is chosen earliest-expiry-first, and the pharmacist may override it with a reason.
+7. **Not supplied.** Patients often buy what the hospital does not stock. *Recommended:* the pharmacist marks a medicine "not supplied", with a reason (out of stock, patient declined, bought elsewhere). That ends it without a charge, so the visit can close.
+8. **The controlled-drug register's contents** wait on PPB's answer (`SPEC.md` §4, question 7). *Recommended until then:* date, patient, prescriber and licence, item, batch, quantity in and out, running balance, and who dispensed. A wrong entry is corrected by a reversing entry, never edited.
+9. **Stock takes.** *Recommended:* a blind count, so the counter does not see the expected quantity until the count is submitted. The store does not freeze; movements during the count are reconciled by their time. Each variance is an adjustment approved by a second person.
+10. **Alerts.** *Recommended:* an in-app list for the pharmacy and stores, as for break-glass. A batch is flagged 90 days before it expires, and an item when it falls below its store's reorder level.
+11. **Consumables on orders** (deferred from P3 slice 4a). *Recommended:* stock items that are not drugs, charged when issued against an order. Ward issues for inpatients wait for P5's medication administration record.
+
 ### P5 · Inpatient clinical
 
 **Size:** L.
