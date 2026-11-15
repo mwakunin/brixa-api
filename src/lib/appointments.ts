@@ -498,7 +498,7 @@ export async function patientAppointments(
   const matching = eq(appointments.patientId, patientId);
   const rows = await listQuery(tx)
     .where(matching)
-    .orderBy(desc(appointments.scheduledOn), sql`${appointments.scheduledTime} DESC NULLS LAST`, desc(appointments.bookedAt))
+    .orderBy(desc(appointments.scheduledOn), sql`${appointments.scheduledTime} DESC NULLS LAST`, desc(appointments.bookedAt), desc(appointments.id))
     .limit(PATIENT_LIST_LIMIT)
     .offset(offset);
 
