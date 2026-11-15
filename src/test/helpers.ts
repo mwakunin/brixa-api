@@ -59,9 +59,11 @@ export async function resetDb(): Promise<void> {
   if (keys.length > 0)
     await redis.del(...keys);
 
+  // `audit_actions` is written by migrations, not by tests: emptied, it would
+  // refuse every audit entry.
   const { rows } = await pool.query<{ tablename: string }>(`
     SELECT tablename FROM pg_tables
-    WHERE schemaname = 'public' AND tablename <> '__drizzle_migrations'
+    WHERE schemaname = 'public' AND tablename NOT IN ('__drizzle_migrations', 'audit_actions')
   `);
 
   if (rows.length === 0)

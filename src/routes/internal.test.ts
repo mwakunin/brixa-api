@@ -117,7 +117,7 @@ describe("the drain route", () => {
     const res = await drain(`Bearer ${token()}`);
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ done: 1, skipped: 0, retried: 0, failed: 0 });
+    expect(await res.json()).toEqual({ done: 1, skipped: 0, retried: 0, failed: 0, superseded: 0 });
     expect(sentEmails.map(m => m.to)).toEqual(["admin@example.test"]);
   });
 

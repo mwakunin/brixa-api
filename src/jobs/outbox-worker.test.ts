@@ -48,7 +48,25 @@ function failWith(message: string): OutboxHandler {
   };
 }
 
-const NOTHING = { done: 0, skipped: 0, retried: 0, failed: 0 };
+const NOTHING = { done: 0, skipped: 0, retried: 0, failed: 0, superseded: 0 };
+
+/** A handler that waits to be let go, then answers as `then` does. */
+function heldOpen(then: OutboxHandler) {
+  let started!: () => void;
+  let release!: () => void;
+  const running = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const handler: OutboxHandler = async (j) => {
+    started();
+    await released;
+    return then(j);
+  };
+  return { handler, running, release };
+}
 
 describe("the outbox worker", () => {
   beforeEach(async () => {
@@ -141,6 +159,52 @@ describe("the outbox worker", () => {
     }));
 
     expect(await job(subjectId)).toMatchObject({ status: "done", last_error: null });
+  });
+
+  it("lets an attempt that outlived its lease record nothing, so the later attempt's failure is retried", async () => {
+    const facility = await makeFacility();
+    const subjectId = await queued(facility.id);
+    const first = heldOpen(succeed);
+
+    // The first attempt is slow, and its lease runs out while it waits...
+    const slow = drainOutbox(handling(first.handler));
+    await first.running;
+    await makeDue(subjectId);
+    // ...so a second worker claims the job, and that call fails.
+    expect(await drainOutbox(handling(failWith("provider down")))).toEqual({ ...NOTHING, retried: 1 });
+
+    // The first then succeeds, but no longer holds the job: marking it done
+    // would cancel the retry the second attempt just scheduled.
+    first.release();
+    expect(await slow).toEqual({ ...NOTHING, superseded: 1 });
+    const after = await job(subjectId);
+    expect(after).toMatchObject({ status: "pending", attempts: 2, last_error: "Error | provider down" });
+    expect(after.due_in_seconds).toBeGreaterThan(0);
+  });
+
+  it("keeps an attempt that outlived its lease from moving the lease of the attempt holding the job", async () => {
+    const facility = await makeFacility();
+    const subjectId = await queued(facility.id);
+    const first = heldOpen(failWith("slow worker gave up"));
+    const second = heldOpen(succeed);
+
+    const slow = drainOutbox(handling(first.handler));
+    await first.running;
+    await makeDue(subjectId);
+    const current = drainOutbox(handling(second.handler));
+    await second.running;
+
+    // A retry written now would make the job due in 30 s, inside the second
+    // attempt's 120 s lease, for a third worker to claim alongside it.
+    first.release();
+    expect(await slow).toEqual({ ...NOTHING, superseded: 1 });
+    const during = await job(subjectId);
+    expect(during).toMatchObject({ status: "pending", attempts: 2, last_error: null });
+    expect(during.due_in_seconds).toBeGreaterThan(60);
+
+    second.release();
+    expect(await current).toEqual({ ...NOTHING, done: 1 });
+    expect(await job(subjectId)).toMatchObject({ status: "done", attempts: 2 });
   });
 
   it("records what failed without any of the query's values", async () => {

@@ -11,7 +11,7 @@ import { errorLine } from "@/lib/error-summary";
  * Resend configured, an email is printed to the console (lib/email.ts).
  */
 drainOutbox().then((tally) => {
-  console.log(`Outbox: ${tally.done} done, ${tally.skipped} skipped, ${tally.retried} to retry, ${tally.failed} failed.`);
+  console.log(`Outbox: ${tally.done} done, ${tally.skipped} skipped, ${tally.retried} to retry, ${tally.failed} failed, ${tally.superseded} superseded.`);
   process.exit(0);
 }, (err) => {
   // A database error's message carries its SQL parameters (CLAUDE.md rule 10).

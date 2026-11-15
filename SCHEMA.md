@@ -33,7 +33,7 @@ Every table carries `facility_id` except the shared reference group.
 
 | Module | Tables |
 |---|---|
-| Tenancy and access | `facilities` (kmhfr_code, level, SHA contract ref), `memberships` (roles[], licence number and expiry; cadre and council derived, §8), `departments`, `service_points`, `number_series`, `audit_log`, `outbox`, `job_failures`, `files` |
+| Tenancy and access | `facilities` (kmhfr_code, level, SHA contract ref), `memberships` (roles[], licence number and expiry; cadre and council derived, §8), `departments`, `service_points`, `number_series`, `audit_log` (its actions are the rows of `audit_actions`, a reference table), `outbox`, `job_failures`, `files` |
 | Shared reference (no `facility_id`; read-only to the app role) | `icd_codes`, `drug_catalogue`, `sha_tariffs` (versioned), `payer_registry` |
 | Patients | `patients`, `patient_numbers`, `patient_identifiers` (incl. SHA number, client-registry ID), `patient_contacts` (next of kin; guardian for minors), `patient_alerts` (allergies and similar), `consents` |
 | Encounters | `encounters` (opd \| ipd \| emergency), `appointments`, `queue_entries`, `observations`, `diagnoses`, `clinical_notes`, `orders`, `order_items`, `procedures_performed` |

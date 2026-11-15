@@ -21,6 +21,11 @@ import { closeAbandonedStkPush, sendStkPush } from "@/lib/mpesa-stk";
  * recording it leaves the job to come back when its lease runs out, so every
  * handler must be safe to run twice.
  *
+ * Each claim takes a fresh token, and only the attempt holding the current
+ * one records an outcome. An attempt that outlived its lease, while a later
+ * attempt holds the job, is superseded: it records nothing, so it can neither
+ * finish the job under the later attempt nor move its lease.
+ *
  * Triggered by a Cloud Task after each commit that queues a job, and by a
  * Scheduler sweep, both through `POST /internal/outbox/drain`
  * (routes/internal.route.ts). In development it runs in-process after the
@@ -75,7 +80,10 @@ interface ClaimedRow {
   operation: OutboxOperation;
   subject_id: string;
   attempts: number;
+  claim_token: string;
 }
+
+type Outcome = OutboxOutcome | "retried" | "failed" | "superseded";
 
 /**
  * Fails a job whose lease ran out on its last attempt (the worker died before
@@ -142,7 +150,8 @@ async function claimOne(): Promise<ClaimedRow | undefined> {
   const { rows } = await pool.query<ClaimedRow>(`
     UPDATE outbox
     SET attempts = attempts + 1,
-        available_at = now() + make_interval(secs => $1)
+        available_at = now() + make_interval(secs => $1),
+        claim_token = gen_random_uuid()
     WHERE id = (
       SELECT id FROM outbox
       WHERE status = 'pending' AND available_at <= now() AND attempts < $2
@@ -150,43 +159,60 @@ async function claimOne(): Promise<ClaimedRow | undefined> {
       LIMIT 1
       FOR UPDATE SKIP LOCKED
     )
-    RETURNING id, facility_id, operation, subject_id, attempts
+    RETURNING id, facility_id, operation, subject_id, attempts, claim_token
   `, [LEASE_SECONDS, MAX_ATTEMPTS]);
   return rows[0];
 }
 
-/** Unconditional: a job that was delivered ends finished, whatever else ran. */
-async function recordSuccess(id: string, outcome: OutboxOutcome) {
-  await pool.query(
-    "UPDATE outbox SET status = $2, completed_at = now(), last_error = NULL WHERE id = $1",
-    [id, outcome],
-  );
-}
+/**
+ * Every outcome is written only by the attempt holding the current claim, and
+ * only while the job is pending. A later claim has replaced the token of an
+ * attempt that outlived its lease, and a job already finished is not pending:
+ * either way the write matches nothing.
+ */
+const HELD = "id = $1 AND claim_token = $2 AND status = 'pending'";
 
 /**
- * Only while still pending: a handler that outlived its lease must not turn a
- * job another worker has since finished back into a failure.
+ * An attempt that no longer holds its job. Ids only (rule 10); seen often, it
+ * means calls are outliving `LEASE_SECONDS`.
  */
-async function recordFailure(row: ClaimedRow, err: unknown) {
+function superseded(row: ClaimedRow): "superseded" {
+  logger.warn(
+    { outboxId: row.id, facilityId: row.facility_id, operation: row.operation, attempts: row.attempts },
+    "outbox attempt outlived its lease",
+  );
+  return "superseded";
+}
+
+async function recordSuccess(row: ClaimedRow, outcome: OutboxOutcome): Promise<Outcome> {
+  const { rowCount } = await pool.query(
+    `UPDATE outbox SET status = $3, completed_at = now(), last_error = NULL WHERE ${HELD}`,
+    [row.id, row.claim_token, outcome],
+  );
+  return rowCount ? outcome : superseded(row);
+}
+
+async function recordFailure(row: ClaimedRow, err: unknown): Promise<Outcome> {
   // Class, SQLSTATE and the message's first line only: a query error's
   // parameters (an email, later a patient's details) never reach the column.
   const message = errorLine(err);
 
   if (row.attempts >= MAX_ATTEMPTS) {
     const { rowCount } = await pool.query(
-      "UPDATE outbox SET status = 'failed', completed_at = now(), last_error = $2 WHERE id = $1 AND status = 'pending'",
-      [row.id, message],
+      `UPDATE outbox SET status = 'failed', completed_at = now(), last_error = $3 WHERE ${HELD}`,
+      [row.id, row.claim_token, message],
     );
-    if (rowCount)
-      await gaveUp(row);
-    return "failed" as const;
+    if (!rowCount)
+      return superseded(row);
+    await gaveUp(row);
+    return "failed";
   }
 
-  await pool.query(
-    "UPDATE outbox SET available_at = now() + make_interval(secs => $2), last_error = $3 WHERE id = $1 AND status = 'pending'",
-    [row.id, backoffSeconds(row.attempts), message],
+  const { rowCount } = await pool.query(
+    `UPDATE outbox SET available_at = now() + make_interval(secs => $3), last_error = $4 WHERE ${HELD}`,
+    [row.id, row.claim_token, backoffSeconds(row.attempts), message],
   );
-  return "retried" as const;
+  return rowCount ? "retried" : superseded(row);
 }
 
 /**
@@ -196,9 +222,9 @@ async function recordFailure(row: ClaimedRow, err: unknown) {
 export async function drainOutbox(options: {
   limit?: number;
   handlers?: Partial<Record<OutboxOperation, OutboxHandler>>;
-} = {}): Promise<{ done: number; skipped: number; retried: number; failed: number }> {
+} = {}): Promise<Record<Outcome, number>> {
   const handlers = { ...HANDLERS, ...options.handlers };
-  const tally = { done: 0, skipped: 0, retried: 0, failed: 0 };
+  const tally: Record<Outcome, number> = { done: 0, skipped: 0, retried: 0, failed: 0, superseded: 0 };
 
   await failAbandoned();
 
@@ -209,8 +235,7 @@ export async function drainOutbox(options: {
 
     try {
       const outcome = await handlers[row.operation]({ facilityId: row.facility_id, subjectId: row.subject_id, finalAttempt: row.attempts >= MAX_ATTEMPTS });
-      await recordSuccess(row.id, outcome);
-      tally[outcome] += 1;
+      tally[await recordSuccess(row, outcome)] += 1;
     }
     catch (err) {
       tally[await recordFailure(row, err)] += 1;

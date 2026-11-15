@@ -289,6 +289,22 @@ export const memberships = pgTable("memberships", {
 ]);
 
 /**
+ * The actions an audit entry may name: `audit_log.action` references this
+ * table instead of carrying a CHECK.
+ *
+ * A CHECK listing them would be rewritten for every new action, and Postgres
+ * re-reads the whole log to validate it while holding a lock that blocks
+ * every audit write. A new action is instead one `INSERT INTO audit_actions`
+ * in the migration of the change that adds it. `enum-checks.test.ts` keeps
+ * the rows equal to the union on `audit_log.action`. Reference data like
+ * `icd_codes` (CLAUDE.md rule 1): no facility, read-only to the app role, and
+ * written only by migrations.
+ */
+export const auditActions = pgTable("audit_actions", {
+  action: text().primaryKey(),
+});
+
+/**
  * Who did what, and who viewed what (CLAUDE.md rule 9).
  *
  * Written inside the same transaction as the action it records, so it commits
@@ -304,7 +320,7 @@ export const auditLog = pgTable("audit_log", {
   /*
    * Written inline, not as a named type: `enum-checks.test.ts` reads this
    * file's syntax tree and can only cross-check an inline union against the
-   * `oneOf` below.
+   * rows of `audit_actions`, which the foreign key below enforces.
    */
   action: text().$type<
     | "facility.created"
@@ -434,7 +450,7 @@ export const auditLog = pgTable("audit_log", {
     | "billable_item.updated"
     | "patient.break_glass_refused"
     | "document.view_refused"
-  >().notNull(),
+  >().notNull().references(() => auditActions.action),
   /** What it happened to. Not a foreign key: the log outlives what it names. */
   entityType: text().notNull(),
   entityId: uuid(),
@@ -445,135 +461,6 @@ export const auditLog = pgTable("audit_log", {
 }, t => [
   index().on(t.facilityId, t.at),
   index().on(t.facilityId, t.entityType, t.entityId),
-  oneOf("audit_log_action_known", t.action, [
-    "facility.created",
-    "invitation.created",
-    "invitation.revoked",
-    "membership.granted",
-    "membership.roles_changed",
-    "membership.revoked",
-    "membership.licence_changed",
-    "document.issued",
-    "document.voided",
-    "document.viewed",
-    "document.verified",
-    "patient.registered",
-    "patient.updated",
-    "patient.identifier_added",
-    "patient.viewed",
-    "patient.searched",
-    "encounter.opened",
-    "encounter.closed",
-    "encounter.cancelled",
-    "encounter.viewed",
-    "patient.admitted",
-    "patient.transferred",
-    "patient.discharged",
-    "ward.created",
-    "bed.created",
-    "billable_item.created",
-    "price_change.requested",
-    "price_change.approved",
-    "price_change.rejected",
-    "price_change.withdrawn",
-    "ward.bed_day_item_set",
-    "charge.posted",
-    "charge.accrued",
-    "charge.cancelled",
-    "invoice.drafted",
-    "invoice.finalised",
-    "invoice.voided",
-    "invoice.viewed",
-    "adjustment.requested",
-    "adjustment.approved",
-    "adjustment.rejected",
-    "adjustment.withdrawn",
-    "adjustment.listed",
-    "shift.opened",
-    "shift.closed",
-    "payment.recorded",
-    "payment.reversed",
-    "allocation.recorded",
-    "allocation.reversed",
-    "account.viewed",
-    "payment.viewed",
-    "refund.requested",
-    "refund.approved",
-    "refund.rejected",
-    "refund.withdrawn",
-    "refund.paid",
-    "refund.reversed",
-    "refund.listed",
-    "mpesa.settings_changed",
-    "mpesa.received",
-    "mpesa.assigned",
-    "mpesa.rejected",
-    "mpesa.listed",
-    "mpesa.stk_requested",
-    "mpesa.stk_viewed",
-    "adjustment.reversal_requested",
-    "adjustment.reversed",
-    "adjustment.reversal_rejected",
-    "adjustment.reversal_withdrawn",
-    "adjustment.reversals_listed",
-    "service_point.created",
-    "service_point.updated",
-    "queue.joined",
-    "queue.served",
-    "queue.finished",
-    "queue.removed",
-    "queue.viewed",
-    "charge.captured",
-    "billing.due_listed",
-    "observation.recorded",
-    "observation.entered_in_error",
-    "allergy.recorded",
-    "allergy.removed",
-    "diagnosis.recorded",
-    "diagnosis.confirmed",
-    "diagnosis.principal_set",
-    "diagnosis.ended",
-    "note.drafted",
-    "note.edited",
-    "note.signed",
-    "note.discarded",
-    "note.addendum_added",
-    "note.entered_in_error",
-    "lab_test.created",
-    "lab_test.updated",
-    "lab_analyte.added",
-    "lab_analyte.updated",
-    "lab_analyte.ranges_set",
-    "order.placed",
-    "order_item.cancelled",
-    "order_item.done",
-    "prescription.issued",
-    "prescription.cancelled",
-    "prescription.allergy_overridden",
-    "specimen.collected",
-    "specimen.received",
-    "specimen.rejected",
-    "lab.worklist_viewed",
-    "lab_result.entered",
-    "lab_result.released",
-    "lab_result.verified",
-    "lab_report.issued",
-    "appointment.booked",
-    "appointment.moved",
-    "appointment.cancelled",
-    "appointment.checked_in",
-    "appointment.listed",
-    "patient.sms_reminders_set",
-    "facility.updated",
-    "patient.break_glass",
-    "break_glass.listed",
-    "break_glass.reviewed",
-    "membership.sensitive_access_changed",
-    "note.marked_sensitive",
-    "billable_item.updated",
-    "patient.break_glass_refused",
-    "document.view_refused",
-  ]),
 ]);
 
 // ---------------------------------------------------------------------------
@@ -663,6 +550,12 @@ export const outbox = pgTable("outbox", {
   attempts: integer().default(0).notNull(),
   /** Not before this instant: the retry backoff, and a claimed job's lease. */
   availableAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  /**
+   * New on every claim. Only the attempt holding the current one may record
+   * an outcome, so an attempt that outlived its lease cannot finish a job a
+   * later attempt now holds.
+   */
+  claimToken: uuid(),
   /** The last failure, for an operator. Never a payload. */
   lastError: text(),
   createdAt: createdAt(),
