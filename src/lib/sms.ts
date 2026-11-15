@@ -62,10 +62,11 @@ export function parseCostCents(raw: unknown): number | null {
     return Number.isFinite(raw) && raw >= 0 ? Math.round(raw * 100) : null;
   if (typeof raw !== "string")
     return null;
-  const match = raw.match(/\d+(?:\.\d+)?/);
+  // The whole field, in the shape documented: an optional KES and a non-negative amount.
+  const match = /^(?:KES\s+)?(\d+(?:\.\d+)?)$/.exec(raw.trim());
   if (!match)
     return null;
-  const amount = Number(match[0]);
+  const amount = Number(match[1]);
   return Number.isFinite(amount) ? Math.round(amount * 100) : null;
 }
 

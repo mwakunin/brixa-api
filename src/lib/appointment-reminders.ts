@@ -171,7 +171,12 @@ async function startSending(tx: AppDb, reminderId: string, now: Date): Promise<M
   return { to: due.phone!, body, ...(from ? { from } : {}) };
 }
 
-async function recordResult(tx: AppDb, reminderId: string, result: SmsResult, at: Date): Promise<void> {
+/**
+ * Records Africa's Talking's answer, only for the attempt that owns the row
+ * now (`sending_at` is its fence): an earlier attempt whose lease ran out
+ * while it waited is not recorded against a later attempt's message.
+ */
+async function recordResult(tx: AppDb, reminderId: string, result: SmsResult, at: Date, attemptAt: Date): Promise<void> {
   await tx
     .update(appointmentReminders)
     .set({
@@ -181,7 +186,7 @@ async function recordResult(tx: AppDb, reminderId: string, result: SmsResult, at
       costCents: result.costCents,
       outcomeNote: result.accepted ? null : (result.reason?.trim() || "Refused"),
     })
-    .where(eq(appointmentReminders.id, reminderId));
+    .where(and(eq(appointmentReminders.id, reminderId), eq(appointmentReminders.status, "sending"), eq(appointmentReminders.sendingAt, attemptAt)));
 }
 
 /**
@@ -195,11 +200,12 @@ export async function sendAppointmentReminder(
   job: { facilityId: string; subjectId: string },
   send: (message: Message) => Promise<SmsResult> = sendSms,
 ): Promise<"done" | "skipped"> {
-  const message = await runAsFacility(job.facilityId, tx => startSending(tx, job.subjectId, new Date()));
+  const attemptAt = new Date();
+  const message = await runAsFacility(job.facilityId, tx => startSending(tx, job.subjectId, attemptAt));
   if (!message)
     return "skipped";
   const result = await send(message);
-  await runAsFacility(job.facilityId, tx => recordResult(tx, job.subjectId, result, new Date()));
+  await runAsFacility(job.facilityId, tx => recordResult(tx, job.subjectId, result, new Date(), attemptAt));
   return "done";
 }
 

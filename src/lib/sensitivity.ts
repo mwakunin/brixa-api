@@ -290,8 +290,10 @@ async function ownersOf(tx: AppDb, patientId: string): Promise<Set<string>> {
   }
   const ordered = await tx.select({ id: orders.id }).from(orders).where(inArray(orders.encounterId, ids));
   for (const guard of (await orderGuards(tx, ordered.map(o => o.id))).values()) {
-    if (guard.categories.size > 0 && guard.recordedBy[0])
-      owners.add(guard.recordedBy[0]);
+    // The ordering clinician; for a walk-in's request, whoever entered it.
+    const owner = guard.recordedBy[0] ?? guard.recordedBy[1];
+    if (guard.categories.size > 0 && owner)
+      owners.add(owner);
   }
   return owners;
 }

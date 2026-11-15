@@ -121,13 +121,17 @@ async function lockNote(tx: AppDb, noteId: string, actor: PatientActor): Promise
   return note;
 }
 
-/** Whether `actor` may not see `note` (an addendum is judged with its note). */
+/**
+ * Whether `actor` may not see `note`. An addendum is judged as its note, by
+ * the note's author: a write on it answers with the note, so writing an
+ * addendum earlier is no way in once the note is restricted.
+ */
 async function restrictedFor(tx: AppDb, note: NoteRow, actor: PatientActor): Promise<boolean> {
   const root = note.addendumOf
     ? (await tx.select().from(clinicalNotes).where(eq(clinicalNotes.id, note.addendumOf)).limit(1))[0]
     : note;
   const clinics = (await clinicCategoriesOf(tx, [note.encounterId])).get(note.encounterId);
-  const guard = { categories: categoriesOf(clinics, [root.sensitiveCategory]), recordedBy: [root.writtenBy, note.writtenBy] };
+  const guard = { categories: categoriesOf(clinics, [root.sensitiveCategory]), recordedBy: [root.writtenBy] };
   return guard.categories.size > 0 && isRestricted(tx, (await patientOfEncounter(tx, note.encounterId))!, guard, actor);
 }
 
@@ -405,10 +409,12 @@ export async function listNotes(tx: AppDb, facilityId: string, encounterId: stri
   if (!encounter)
     throw new NoteError("encounter_not_found");
 
+  // The notes first, then the clinics: a clinic joined before a note was written is then always seen (each read is its own snapshot).
+  const all = await notesOf(tx, encounterId, actor);
   const clinics = (await clinicCategoriesOf(tx, [encounterId])).get(encounterId);
   const listed = filterFor(
     await readerOf(tx, encounter.patientId, actor),
-    await notesOf(tx, encounterId, actor),
+    all,
     n => ({ categories: categoriesOf(clinics, [n.sensitiveCategory]), recordedBy: [n.writtenBy.membershipId] }),
     n => n.createdAt,
   );

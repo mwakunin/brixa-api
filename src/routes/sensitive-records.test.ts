@@ -40,7 +40,7 @@ async function clinic() {
   expect((await call("PUT", `/staff/members/${cccNurse.actor.membershipId}/sensitive-access`, h.facility.id, h.admin, { categories: ["hiv"] })).status).toBe(200);
 
   /** An outpatient visit, joined at `queueAt`. */
-  const visit = async (queueAt: string, patientId?: string) => {
+  const visit = async (queueAt: string | null, patientId?: string) => {
     const id = patientId ?? await h.patient();
     const encounter = await (await call("POST", "/encounters", h.facility.id, h.nurse, { patientId: id, kind: "opd", queueAt })).json();
     return { patientId: id, encounterId: encounter.id as string };
@@ -171,6 +171,7 @@ describe("restricted records", () => {
 
     // The prescription opens for the pharmacy, whose work it is, not for the other doctor.
     expect((await call("GET", `/documents/${prescription.prescription.documentId}/pdf`, c.facility.id, c.other)).status).toBe(403);
+    expect((await audits(c, "document.view_refused", c.other.id)).map(a => a.entityId)).toEqual([prescription.prescription.documentId]);
     expect((await call("GET", `/documents/${prescription.prescription.documentId}/pdf`, c.facility.id, c.pharmacist)).status).toBe(200);
     // The lab cancels a test it cannot run, its own work.
     expect((await call("POST", `/order-items/${order.items[0].id}/cancel`, c.facility.id, c.labTech, { reason: "Kits out" })).status).toBe(200);
@@ -187,11 +188,20 @@ describe("breaking the glass", () => {
 
     expect((await call("POST", `/patients/${patientId}/break-glass`, c.facility.id, c.other, { reason: " " })).status).toBe(422);
     expect((await call("POST", `/patients/${patientId}/break-glass`, c.facility.id, c.clerk, { reason: "Curious" })).status).toBe(403);
+    const lapsed = await c.person(["doctor"]);
+    await pool.query("UPDATE memberships SET licence_expires_on = $2 WHERE id = $1", [lapsed.actor.membershipId, "2020-01-01"]);
+    expect((await call("POST", `/patients/${patientId}/break-glass`, c.facility.id, lapsed, { reason: "Curious" })).status).toBe(403);
+    // Refused, yet on record: written in a transaction of their own, which the 403 does not roll back.
+    expect((await audits(c, "patient.break_glass_refused")).map(a => [a.actorId, a.entityId])).toEqual([[c.clerk.id, patientId], [lapsed.id, patientId]]);
+    const before = Date.now();
     const res = await call("POST", `/patients/${patientId}/break-glass`, c.facility.id, c.other, { reason: "Collapsed in casualty; needs regimen" });
+    const after = Date.now();
 
     expect(res.status).toBe(201);
     const grant = await res.json();
-    expect(new Date(grant.expiresAt).getTime() - Date.now()).toBeGreaterThan(11.9 * 3_600_000);
+    const expires = new Date(grant.expiresAt).getTime();
+    expect(expires).toBeGreaterThanOrEqual(before + 12 * 3_600_000);
+    expect(expires).toBeLessThanOrEqual(after + 12 * 3_600_000);
     const seen = await c.read(encounterId, "notes", c.other);
     expect([seen.notes.length, seen.restricted]).toEqual([1, []]);
     const reads = await audits(c, "encounter.viewed", c.other.id);
@@ -222,6 +232,43 @@ describe("breaking the glass", () => {
       expiresAt: new Date(Date.now() - 3_600_000),
     });
     expect((await c.read(encounterId, "notes", later)).restricted).toHaveLength(1);
+  });
+});
+
+describe("restricted records, under review", () => {
+  it("answer an addendum's author with the addendum alone once its note is restricted to them", async () => {
+    const c = await clinic();
+    const { encounterId } = await c.visit(c.gopd);
+    const noteId = await c.note(encounterId);
+    const addendum = await (await call("POST", `/notes/${noteId}/addenda`, c.facility.id, c.other, { text: "Seen again" })).json();
+    // The author marks the note after the other doctor added to it.
+    await call("POST", `/notes/${noteId}/sensitive`, c.facility.id, c.doctor, { category: "gbv" });
+
+    expect((await call("POST", `/notes/${addendum.addenda[0].id}/entered-in-error`, c.facility.id, c.other, { reason: "Wrong patient" })).status).toBe(404);
+  });
+
+  it("alert whoever entered a walk-in's sensitive test", async () => {
+    const c = await clinic();
+    const hiv = await c.labTest("HIV", "hiv");
+    const { encounterId, patientId } = await c.visit(null);
+    expect((await call("POST", `/encounters/${encounterId}/walk-in-orders`, c.facility.id, c.labTech, { labTestIds: [hiv.testId], selfRequested: true })).status).toBe(201);
+
+    await call("POST", `/patients/${patientId}/break-glass`, c.facility.id, c.other, { reason: "Emergency" });
+
+    expect((await (await call("GET", "/break-glass", c.facility.id, c.labTech)).json()).breakGlass).toHaveLength(1);
+  });
+
+  it("audit the grant a report was seen through, even on a page of results with none", async () => {
+    const c = await clinic();
+    const hiv = await c.labTest("HIV", "hiv");
+    const { encounterId, patientId } = await c.visit(c.gopd);
+    await resulted(c, encounterId, hiv);
+    const grant = await (await call("POST", `/patients/${patientId}/break-glass`, c.facility.id, c.other, { reason: "Emergency" })).json();
+
+    const page = await (await call("GET", `/encounters/${encounterId}/lab-results?offset=10`, c.facility.id, c.other)).json();
+
+    expect([page.results, page.reports.length]).toEqual([[], 1]);
+    expect((await audits(c, "encounter.viewed", c.other.id)).at(-1)?.detail).toEqual({ breakGlassId: grant.id });
   });
 });
 

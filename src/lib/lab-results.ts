@@ -522,7 +522,9 @@ export async function listResults(tx: AppDb, facilityId: string, encounterId: st
     const order = guards.get(r.orderId)!;
     return { categories: order.categories, recordedBy: [...order.recordedBy, r.enteredBy.membershipId, r.verifiedBy?.membershipId ?? null] };
   }, r => r.enteredAt);
-  const reports = allReports.filter(r => sight(reader, guards.get(r.orderId)!) !== "restricted");
+  const reportSights = allReports.map(r => ({ report: r, seen: sight(reader, guards.get(r.orderId)!) }));
+  const reports = reportSights.filter(r => r.seen !== "restricted").map(r => r.report);
+  const viaGrant = results.viaGrant ?? (reportSights.some(r => r.seen === "via_grant") ? reader.grantId : null);
 
   await recordAudit(tx, {
     facilityId,
@@ -531,7 +533,7 @@ export async function listResults(tx: AppDb, facilityId: string, encounterId: st
     entityType: "encounter",
     entityId: encounterId,
     summary: `Viewed lab results (${results.shown.length})`,
-    detail: readDetail(results),
+    detail: readDetail({ restricted: results.restricted, viaGrant }),
   });
   return { results: results.shown, reports, restricted: results.restricted };
 }

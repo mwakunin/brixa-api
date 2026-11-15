@@ -278,10 +278,12 @@ export async function listDiagnoses(tx: AppDb, facilityId: string, encounterId: 
   if (!encounter)
     throw new DiagnosisError("encounter_not_found");
 
+  // The diagnoses first, then the clinics: a clinic joined before a diagnosis was made is then always seen (each read is its own snapshot).
+  const all = await diagnosesOf(tx, encounterId);
   const clinics = (await clinicCategoriesOf(tx, [encounterId])).get(encounterId);
   const listed = filterFor(
     await readerOf(tx, encounter.patientId, actor),
-    await diagnosesOf(tx, encounterId),
+    all,
     d => guardOf({ code: d.code, diagnosedBy: d.diagnosedBy.membershipId }, clinics),
     d => d.diagnosedAt,
   );

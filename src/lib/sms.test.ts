@@ -27,5 +27,7 @@ describe("the answer from Africa's Talking", () => {
 
   it("reads a cost with its currency", () => {
     expect([parseCostCents("KES 0.8000"), parseCostCents("0"), parseCostCents(1.2), parseCostCents("none")]).toEqual([80, 0, 120, null]);
+    // A negative or malformed amount is not read as a cost.
+    expect([parseCostCents("KES -0.8000"), parseCostCents("KES 0.80 extra"), parseCostCents("USD 0.80")]).toEqual([null, null, null]);
   });
 });

@@ -1,9 +1,13 @@
 import { createRoute, z } from "@hono/zod-openapi";
+import { createMiddleware } from "hono/factory";
 import * as HttpStatusCodes from "stoker/http-status-codes";
 import { jsonContent, jsonContentRequired } from "stoker/openapi/helpers";
 import { createErrorSchema } from "stoker/openapi/schemas";
 
+import type { TenantBindings } from "@/lib/types";
+
 import { CLINICAL_ROLES } from "@/lib/professions";
+import { recordRefusal } from "@/lib/refusal-audit";
 import { requireClinicalRole, requireMembershipRole } from "@/middlewares/auth";
 import { clinicalResponses, facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
@@ -15,7 +19,30 @@ import { clinicalResponses, facilityHeaders, tenantResponses } from "@/routes/fa
  */
 const tags = ["Break-glass"];
 
-const clinicians = requireClinicalRole(...CLINICAL_ROLES);
+const clinicalGuard = requireClinicalRole(...CLINICAL_ROLES);
+
+/**
+ * The clinical guard, with each refusal (no clinical role, or a lapsed
+ * licence) recorded against the patient in its own transaction (rule 27).
+ */
+const clinicians = createMiddleware<TenantBindings>(async (c, next) => {
+  let passed = false;
+  const refused = await clinicalGuard(c, async () => {
+    passed = true;
+    await next();
+  });
+  if (!passed) {
+    await recordRefusal(c.var.facility.id, {
+      actorId: c.var.user!.id,
+      action: "patient.break_glass_refused",
+      entityType: "patient",
+      entityId: z.uuid().safeParse(c.req.param("id")).data ?? null,
+      summary: "Refused breaking the glass: no clinical role, or no current licence",
+      detail: { membershipId: c.var.membership.id },
+    });
+  }
+  return refused;
+});
 const alerted = requireMembershipRole("facility_admin", ...CLINICAL_ROLES);
 const adminOnly = requireMembershipRole("facility_admin");
 

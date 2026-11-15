@@ -457,6 +457,37 @@ describe("the reminder", () => {
     expect(await reminderOf(second.id, IN(2))).toMatchObject({ status: "failed", outcomeNote: "Africa's Talking could not be reached after several tries" });
   });
 
+  it("records only the latest attempt's answer when an earlier one comes back late", async () => {
+    const c = await clinic();
+    const appointment = await booked(c, { patientId: await c.patient({ phone: "0712345678" }), smsReminders: true });
+    const reminder = await reminderOf(appointment.id, IN(2));
+    const held = () => {
+      let answer!: (id: string) => void;
+      const answered = new Promise<string>((resolve) => {
+        answer = resolve;
+      });
+      return { answer, send: async () => ({ accepted: true, providerMessageId: await answered, costCents: 80, reason: null }) };
+    };
+    const firstCall = held();
+    const secondCall = held();
+
+    // The first attempt's lease runs out while Africa's Talking is slow, and a second attempt starts.
+    const first = remind(c, reminder.id, firstCall.send);
+    await expect.poll(async () => (await reminderOf(appointment.id, IN(2))).status).toBe("sending");
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const second = remind(c, reminder.id, secondCall.send);
+    const firstSendingAt = (await reminderOf(appointment.id, IN(2))).sendingAt!.getTime();
+    await expect.poll(async () => (await reminderOf(appointment.id, IN(2))).sendingAt!.getTime()).not.toBe(firstSendingAt);
+    // The first answer comes back while the second is still out: the row is the second's, so it is not recorded.
+    firstCall.answer("ATX-first");
+    await first;
+    expect((await reminderOf(appointment.id, IN(2))).status).toBe("sending");
+    secondCall.answer("ATX-second");
+    await second;
+
+    expect(await reminderOf(appointment.id, IN(2))).toMatchObject({ status: "sent", providerMessageId: "ATX-second" });
+  });
+
   it("records a refusal for the number as rejected, with Africa's Talking's reason", async () => {
     const c = await clinic();
     const appointment = await booked(c, { patientId: await c.patient({ phone: "0712345678" }), smsReminders: true });

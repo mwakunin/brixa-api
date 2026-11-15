@@ -432,6 +432,8 @@ export const auditLog = pgTable("audit_log", {
     | "membership.sensitive_access_changed"
     | "note.marked_sensitive"
     | "billable_item.updated"
+    | "patient.break_glass_refused"
+    | "document.view_refused"
   >().notNull(),
   /** What it happened to. Not a foreign key: the log outlives what it names. */
   entityType: text().notNull(),
@@ -569,6 +571,8 @@ export const auditLog = pgTable("audit_log", {
     "membership.sensitive_access_changed",
     "note.marked_sensitive",
     "billable_item.updated",
+    "patient.break_glass_refused",
+    "document.view_refused",
   ]),
 ]);
 
