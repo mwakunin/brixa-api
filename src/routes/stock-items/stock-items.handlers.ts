@@ -5,9 +5,11 @@ import * as HttpStatusPhrases from "stoker/http-status-phrases";
 
 import type { TenantBindings, TenantRouteHandler } from "@/lib/types";
 
+import * as itemImport from "@/lib/item-import";
+import { PriceError } from "@/lib/prices";
 import * as stock from "@/lib/stock-items";
 
-import type { CreateStockItemRoute, ListStockItemsRoute, UpdateStockItemRoute } from "./stock-items.routes";
+import type { CreateStockItemRoute, ImportItemsRoute, ListStockItemsRoute, PreviewImportRoute, UpdateStockItemRoute } from "./stock-items.routes";
 
 function actorOf(c: Context<TenantBindings>) {
   return { userId: c.var.user!.id, membershipId: c.var.membership.id };
@@ -38,6 +40,40 @@ async function answer(c: Context<TenantBindings>, act: () => Promise<{ id: strin
 export const listStockItems: TenantRouteHandler<ListStockItemsRoute> = async (c) => {
   const filter = c.req.valid("query");
   return c.json({ items: await stock.listStockItems(c.var.db, filter) }, HttpStatusCodes.OK);
+};
+
+function importRefusal(c: Context, err: unknown) {
+  if (err instanceof itemImport.ItemImportError)
+    return c.json({ message: err.message, code: err.code, ...(err.rows ? { rows: err.rows } : {}) }, HttpStatusCodes.CONFLICT);
+  if (err instanceof PriceError && err.code === "effective_in_past")
+    return c.json({ message: err.message, code: err.code }, HttpStatusCodes.CONFLICT);
+  return null;
+}
+
+export const previewImport: TenantRouteHandler<PreviewImportRoute> = async (c) => {
+  const { csv } = c.req.valid("json");
+  try {
+    return c.json({ rows: await itemImport.planImport(c.var.db, csv) }, HttpStatusCodes.OK);
+  }
+  catch (err) {
+    const refused = importRefusal(c, err);
+    if (refused)
+      return refused as never;
+    throw err;
+  }
+};
+
+export const importItems: TenantRouteHandler<ImportItemsRoute> = async (c) => {
+  const { csv, effectiveFrom } = c.req.valid("json");
+  try {
+    return c.json(await itemImport.importItems(c.var.db, c.var.facility.id, csv, actorOf(c), { effectiveFrom }), HttpStatusCodes.CREATED);
+  }
+  catch (err) {
+    const refused = importRefusal(c, err);
+    if (refused)
+      return refused as never;
+    throw err;
+  }
 };
 
 export const createStockItem: TenantRouteHandler<CreateStockItemRoute> = async (c) => {

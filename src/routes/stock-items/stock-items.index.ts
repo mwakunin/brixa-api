@@ -10,6 +10,8 @@ router.use(withFacility);
 
 router.openapi(routes.listStockItems, handlers.listStockItems);
 router.openapi(routes.createStockItem, handlers.createStockItem);
+router.openapi(routes.previewImport, handlers.previewImport);
+router.openapi(routes.importItems, handlers.importItems);
 router.openapi(routes.updateStockItem, handlers.updateStockItem);
 
 export default router;

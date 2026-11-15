@@ -3,6 +3,7 @@ import * as HttpStatusCodes from "stoker/http-status-codes";
 import { jsonContent, jsonContentRequired } from "stoker/openapi/helpers";
 import { createErrorSchema } from "stoker/openapi/schemas";
 
+import { MAX_IMPORT_ROWS } from "@/lib/item-import";
 import { STOCK_KEEPERS } from "@/lib/stock-items";
 import { requireMembershipRole } from "@/middlewares/auth";
 import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
@@ -14,6 +15,8 @@ import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.rou
  */
 const tags = ["Stock items"];
 const stockKeepers = requireMembershipRole(...STOCK_KEEPERS);
+// It creates billable items as well as stock items, which only the facility admin holds both of.
+const adminOnly = requireMembershipRole("facility_admin");
 
 const RefusalSchema = z.object({ message: z.string(), code: z.string() });
 const IdParamsSchema = z.object({ id: z.uuid() });
@@ -116,6 +119,85 @@ export const updateStockItem = createRoute({
   },
 });
 
+/** About 400 characters a row at the most rows a file holds. */
+const CsvSchema = z.string().min(1).max(2_000_000);
+
+const PreviewBodySchema = z.strictObject({
+  /** `code,name,category,drug_code,base_unit,pack_size,unit_price`, then one row per item. */
+  csv: CsvSchema,
+});
+
+const ImportBodySchema = z.strictObject({
+  csv: CsvSchema,
+  /** When the file's prices start, once approved: today unless given. */
+  effectiveFrom: z.iso.date().optional(),
+});
+
+const PlannedRowSchema = z.object({
+  row: z.number(),
+  code: z.string(),
+  name: z.string(),
+  /** A new item and stock item, a stock item on an item already there, or nothing; null while it has problems. */
+  action: z.enum(["create", "add_stock_item", "unchanged"]).nullable(),
+  /** The cash price per base unit it would request, when that differs from today's. */
+  requestedPriceCents: z.number().nullable(),
+  problems: z.array(z.string()),
+  /** For a drug row naming no catalogue drug. */
+  suggestions: z.array(z.object({ code: z.string(), genericName: z.string(), strength: z.string(), form: z.string() })),
+});
+
+const ImportRefusalSchema = z.object({
+  message: z.string(),
+  code: z.enum(["unreadable", "has_problems", "changed_meanwhile", "effective_in_past"]),
+  /** The rows with problems, for `has_problems`. */
+  rows: z.array(PlannedRowSchema).optional(),
+});
+
+export const previewImport = createRoute({
+  tags,
+  method: "post",
+  path: "/stock-items/import/preview",
+  summary: "Check an item list before importing it",
+  description:
+    `What importing would do with each row, and every problem in the file, writing nothing. At most ${MAX_IMPORT_ROWS.toLocaleString("en")} rows. `
+    + "A drug row with no `drug_code` is a problem, and lists up to three catalogue drugs its name suggests.",
+  middleware: [adminOnly] as const,
+  request: { headers: facilityHeaders, body: jsonContentRequired(PreviewBodySchema, "The file") },
+  responses: {
+    [HttpStatusCodes.OK]: jsonContent(z.object({ rows: z.array(PlannedRowSchema) }), "Row by row"),
+    [HttpStatusCodes.CONFLICT]: jsonContent(ImportRefusalSchema, "Not a file this reads"),
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(PreviewBodySchema), "No file"),
+    ...tenantResponses,
+  },
+});
+
+export const importItems = createRoute({
+  tags,
+  method: "post",
+  path: "/stock-items/import",
+  summary: "Import an item list",
+  description:
+    "Whole or not at all: one row with a problem refuses the file, listing every such row. Each row "
+    + "becomes a billable item and its stock item; a code already set up is matched, never duplicated. "
+    + "The prices go into one price change for the finance manager to approve. Running a file again changes nothing.",
+  middleware: [adminOnly] as const,
+  request: { headers: facilityHeaders, body: jsonContentRequired(ImportBodySchema, "The file") },
+  responses: {
+    [HttpStatusCodes.CREATED]: jsonContent(z.object({
+      created: z.number(),
+      stockItemsAdded: z.number(),
+      unchanged: z.number(),
+      /** Awaiting approval; null when no price changed. */
+      priceChangeId: z.uuid().nullable(),
+    }), "Imported"),
+    [HttpStatusCodes.CONFLICT]: jsonContent(ImportRefusalSchema, "Not imported"),
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(ImportBodySchema), "No file"),
+    ...tenantResponses,
+  },
+});
+
 export type ListStockItemsRoute = typeof listStockItems;
+export type PreviewImportRoute = typeof previewImport;
+export type ImportItemsRoute = typeof importItems;
 export type CreateStockItemRoute = typeof createStockItem;
 export type UpdateStockItemRoute = typeof updateStockItem;

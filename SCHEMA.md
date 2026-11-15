@@ -845,6 +845,25 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - `goods.received` and `stock_batch.reversed` are audited.
 - **Not yet:** opening balances (P6); transfers (2); dispensing (3a); adjustments and write-offs (3b).
 
+**As built (P4, slice 1c): the item import.** Decided 2026-11-15 (`ROADMAP.md` P4, slice 1c). `src/lib/item-import.ts`; no table of its own.
+
+- **The file** is this system's CSV: `code,name,category,drug_code,base_unit,pack_size,unit_price`. It holds at most 5,000 rows and is sent as `{ csv }`, read by the drug loader's RFC 4180 parser.
+  - `unit_price` is per base unit, in shillings with at most two decimals (`2.50` is 250 cents). Empty means not priced yet.
+  - A file it cannot read (the wrong header, no rows, too many, a broken quote) is refused as `unreadable`.
+- **`POST /stock-items/import/preview`** writes nothing. It returns each row's action (`create`, `add_stock_item` or `unchanged`), the price it would request, and every problem.
+  - A drug row with no `drug_code` lists up to three catalogue drugs found by the first word of its name. Suggestions are given for the first 200 such rows, since each one is a search.
+- **`POST /stock-items/import`** imports the whole file or none of it. Any row with a problem refuses the file (`has_problems`), listing every such row.
+  - Each row becomes a billable item (unless its code is already one) and that item's stock item.
+  - The prices go into one price change, effective from today or a later `effectiveFrom`, for a second person to approve (rule 24).
+  - One `stock_items.imported` audit entry names the codes created, beside the price change's own entry.
+- **Running a file again changes nothing:**
+  - a code already set up is matched;
+  - a price is requested only if it differs from today's and no pending change already asks for it;
+  - an existing item keeps its name;
+  - a row that disagrees with what's set up (another category, drug, base unit or pack size, or a retired item) is a problem, never applied.
+- **Who:** the facility admin only, since an import creates billable items as well as stock items.
+- **Not yet:** reorder levels and opening stock (set per store; P6's cutover); matching drugs by anything cleverer than a name's first word.
+
 ---
 
 ## 9. Payers and claims

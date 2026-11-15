@@ -237,6 +237,15 @@ Main store, pharmacy and ward sub-stores; transfers; goods received; batches and
 8. **Into any active store**, since a small hospital may receive straight into its pharmacy. A store or item still holding stock cannot be retired.
 9. **The stock view:** each store's items with stock or a reorder level, on hand, batches by expiry (expired ones marked) and value at cost. Read by stock keepers, pharmacy technicians, the finance manager and the auditor.
 
+**Slice 1c, item import** (decided 2026-11-15, as recommended):
+1. **The file** is this system's own CSV: `code,name,category,drug_code,base_unit,pack_size,unit_price`, one row per item, `category` `drug` or `consumable`, `unit_price` per base unit in shillings with up to two decimals. At most 5,000 rows.
+2. **A preview first**, writing nothing: every problem in the file, and for a drug row with no `drug_code` up to three catalogue drugs its name suggests. The import itself needs every drug row matched: the system never guesses a drug.
+3. **Run by the facility admin**, since it creates billable items as well as stock items.
+4. **Prices** go into one price change, effective from the import's day unless a later one is given, for the finance manager to approve (rule 24). A row with no price leaves the item unpriced, so it cannot be dispensed until it is priced.
+5. **All or nothing:** one bad row refuses the file, and the report lists every bad row.
+6. **Running it again changes nothing:** a code already set up is matched, not duplicated, and its price is requested only if it differs from today's. A row that disagrees with what is there (another category, drug, base unit or pack size) is refused, never applied; an existing item keeps its name.
+7. **Reorder levels are not in the file**; they are set per store. Opening stock waits for P6.
+
 ### P5 · Inpatient clinical
 
 **Size:** L.
