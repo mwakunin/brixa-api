@@ -121,9 +121,7 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
 - **From the ecc healthcare guidance:**
   - The ordering clinician gets a results-to-review list and acknowledges each result.
   - Abnormal vital signs are flagged for adults; children's thresholds depend on age and need care.
-  - Sensitive billable items print under a neutral name.
-  - Sensitivity comes from ICD codes, lab tests and clinics.
-  - Break-glass alerts go to an in-app list for the attending clinician and the facility admin.
+  - Sensitive billable items, where sensitivity comes from, and the break-glass alerts were decided for slice 7 (2026-11-15, below).
 
 **Decided 2026-11-10:** diagnoses are coded in ICD-11 (`SPEC.md` §4, question 8).
 
@@ -167,6 +165,15 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
 - **The reminder is an outbox job held back to its time** (`available_at`) and delivered by the minute's sweep, not a Cloud Task scheduled at booking: Cloud Tasks schedules at most 30 days ahead, and chronic clinics book months ahead. It re-reads the appointment when it runs and is skipped if it no longer fits.
 - **Africa's Talking** is one account for the platform, configured in the environment, with each message's cost recorded per facility; a facility may have its own sender ID. Delivery reports wait for a public callback.
 - **A review visit's fee** is still charged as today (the pilot is asked whether to waive it); the visit a follow-up was booked from is recorded, so a waiver can come later.
+
+**Decided 2026-11-15** (product owner, for 7; recommendations accepted):
+- **Sensitive categories** are HIV, mental health and gender-based violence (rule 27). An item is sensitive when it is a diagnosis under a code on this system's list (HIV 1C60–1C62, mental health chapter 06, and the GBV codes a clinician names; the list is to be confirmed by a clinician), a result of a lab test the catalogue's keepers mark, a note its author marks, or anything recorded during a visit to a clinic the facility admin marks.
+- **What is hidden:** a sensitive item on its own (a diagnosis, a result, a marked note), and everything clinical recorded in a visit to a sensitive clinic (notes, diagnoses, orders, prescriptions, results and their printed documents). Vital signs, allergies, queues, appointments and the bill are not hidden. A hidden item shows as a restricted record with its date and no category, since a category alone discloses.
+- **Who sees it without breaking the glass:** whoever recorded it; staff the facility admin assigns to its category (the HIV clinic's staff to HIV), each assignment audited; and the lab on its own worklist. Every other clinician breaks the glass; non-clinical roles read no clinical content at all.
+- **Breaking the glass** is open to any clinical member with a current licence, always with a reason, emergencies included. It opens that one patient's sensitive items for 12 hours; each read during it is audited, and marked as one.
+- **The alert** is an in-app list for the facility admin and for the clinicians who recorded what was opened, not an SMS or email. The facility admin marks each one reviewed.
+- **Medicines:** an HIV medicine prescribed outside a sensitive clinic is not caught, since the drug list carries no classes. P4's per-facility stock items can carry the mark.
+- **Neutral names on bills:** a billable item may have a neutral printed name ("Laboratory test"), which invoices and receipts print. The charge copies it at capture, as it copies the price.
 
 **Still open:** whether the MOH 705 report's grouping of ICD-11 codes into MOH's condition list needs WHO's written agreement, since WHO's licence puts mappings between classifications outside it (`SCHEMA.md` §8, slice 3a); the pilot's MOH 705 and 717 forms, so P3 captures what P6 reports need (§9, question 10); whether SMS reminders legally need the patient's consent (they are asked for it anyway, decided 2026-11-13); drug-interaction and dose data (none in v1 without a licensed source).
 
