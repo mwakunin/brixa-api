@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import db from "@/db";
 import { facilities, memberships } from "@/db/schema";
-import { isCheckViolation, pgConstraintName } from "@/lib/db-errors";
+import { isCheckViolation, isForeignKeyViolation, pgConstraintName } from "@/lib/db-errors";
 import { addMembership, makeFacility, resetDb, signedInUser } from "@/test/helpers";
 
 /**
@@ -20,6 +20,16 @@ import { addMembership, makeFacility, resetDb, signedInUser } from "@/test/helpe
  */
 
 const SCHEMA = path.resolve(import.meta.dirname, "schema.ts");
+
+/**
+ * Columns whose values are the rows of a lookup table, enforced by a foreign
+ * key instead of a CHECK. A CHECK on a table this large is rewritten for each
+ * new value, and the whole table re-read under a lock that blocks its writes
+ * (schema.ts, `auditActions`). Keyed by table and schema property.
+ */
+const LOOKUP_ENFORCED: Record<string, { lookup: string; column: string }> = {
+  "audit_log.action": { lookup: "audit_actions", column: "action" },
+};
 
 type Kind = "scalar" | "array";
 
@@ -233,6 +243,9 @@ describe("union-typed columns", () => {
     const { columns, constraints } = await schema();
 
     for (const column of columns) {
+      if (`${column.table}.${column.property}` in LOOKUP_ENFORCED)
+        continue;
+
       const found = constraints.find(
         con => con.table === column.table && con.property === column.property,
       );
@@ -282,6 +295,42 @@ describe("union-typed columns", () => {
     }
   });
 
+  describe("enforced by a lookup table", () => {
+    it("references its lookup table, validated", async () => {
+      for (const [key, { lookup, column }] of Object.entries(LOOKUP_ENFORCED)) {
+        const table = key.split(".")[0];
+        const { rows } = await db.$client.query<{ convalidated: boolean; def: string }>(`
+          SELECT convalidated, pg_get_constraintdef(oid) AS def FROM pg_constraint
+          WHERE contype = 'f' AND conrelid = $1::regclass AND confrelid = $2::regclass
+        `, [table, lookup]);
+
+        expect(rows.map(r => r.def), `${key} has no foreign key to ${lookup}`)
+          .toEqual([`FOREIGN KEY (${column}) REFERENCES ${lookup}(${column})`]);
+        expect(rows[0].convalidated, `${key}'s foreign key is NOT VALID`).toBe(true);
+      }
+    });
+
+    it("holds exactly the values the column's type lists", async () => {
+      const { columns } = await schema();
+
+      for (const [key, { lookup, column }] of Object.entries(LOOKUP_ENFORCED)) {
+        const typed = columns.find(c => `${c.table}.${c.property}` === key);
+        expect(typed, `${key} has no union to compare ${lookup} with`).toBeDefined();
+
+        const { rows } = await db.$client.query<{ value: string }>(
+          `SELECT ${column} AS value FROM ${lookup} ORDER BY 1`,
+        );
+
+        // Rows have no order, so both sides are sorted. A value in the type
+        // and not the table is one a migration forgot to insert.
+        expect(
+          rows.map(r => r.value),
+          `${lookup} differs from ${key}'s type: insert the new value into ${lookup} in a migration`,
+        ).toEqual([...typed!.union].sort());
+      }
+    });
+  });
+
   describe("in the database", () => {
     beforeEach(async () => {
       await resetDb();
@@ -301,6 +350,18 @@ describe("union-typed columns", () => {
 
       expect(isCheckViolation(err)).toBe(true);
       expect(pgConstraintName(err)).toBe("facilities_status_known");
+    });
+
+    it("refuses an audit action no part of this codebase would recognise", async () => {
+      const facility = await makeFacility();
+
+      const err = await refusalOf(() => db.$client.query(
+        "INSERT INTO audit_log (facility_id, action, entity_type, summary) VALUES ($1, 'patient.deleted', 'patient', 'Deleted')",
+        [facility.id],
+      ));
+
+      expect(isForeignKeyViolation(err)).toBe(true);
+      expect(pgConstraintName(err)).toBe("audit_log_action_audit_actions_action_fk");
     });
 
     it("refuses a role no guard would recognise, even alongside a real one", async () => {

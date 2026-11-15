@@ -512,6 +512,13 @@
       "when": 1794732874214,
       "tag": "0072_refusal_audits",
       "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "7",
+      "when": 1794748286624,
+      "tag": "0073_audit_actions_outbox_claim",
+      "breakpoints": true
     }
   ]
 }

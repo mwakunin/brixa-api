@@ -462,6 +462,19 @@ describe("row-level security", () => {
       expect(pgErrorCode(err)).toBe(INSUFFICIENT_PRIVILEGE);
     });
 
+    it("lets the runtime role read the known actions and never add one", async () => {
+      // A request that could insert an action could log under any name it liked.
+      for (const privilege of ["INSERT", "UPDATE", "DELETE", "TRUNCATE"]) {
+        const { rows } = await appPool.query<{ has: boolean }>(
+          "SELECT has_table_privilege(current_user, 'audit_actions', $1) AS has",
+          [privilege],
+        );
+        expect(rows[0].has, `hospital_app has ${privilege} on audit_actions`).toBe(false);
+      }
+      const { rows } = await appPool.query("SELECT 1 FROM audit_actions WHERE action = 'facility.created'");
+      expect(rows).toHaveLength(1);
+    });
+
     it("refuses UPDATE and DELETE even from the owner", async () => {
       // The privilege covers the app; the trigger covers everyone else, so a
       // migration or a hand-run correction cannot rewrite history either.
