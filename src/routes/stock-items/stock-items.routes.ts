@@ -105,10 +105,12 @@ export const updateStockItem = createRoute({
   method: "patch",
   path: "/stock-items/{id}",
   summary: "Change a stock item's pack size, or retire it",
+  description: "An item still in stock in any store cannot be retired.",
   middleware: [stockKeepers] as const,
   request: { headers: facilityHeaders, params: IdParamsSchema, body: jsonContentRequired(UpdateBodySchema, "What changes") },
   responses: {
     [HttpStatusCodes.OK]: jsonContent(StockItemSchema, "Updated"),
+    [HttpStatusCodes.CONFLICT]: jsonContent(RefusalSchema, "Still in stock"),
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(UpdateBodySchema), "Invalid change"),
     ...tenantResponses,
   },

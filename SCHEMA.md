@@ -812,6 +812,39 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - prices shown with the items (the billable-item list has them);
   - sensitive medicines (question 12, slice 3a).
 
+**As built (P4, slice 1b): goods received, batches and the stock ledger.** Decided 2026-11-15 (`ROADMAP.md` P4, slice 1b).
+
+- **`goods_received`**: one note per delivery. It holds:
+  - the store, the supplier as text (the donor, for donated stock), and the supplier's delivery-note number;
+  - the Kenyan day it arrived (today unless given, never later), and who received it;
+  - a number from the yearly `GRN-` series, registered at onboarding and backfilled by migration 0077.
+
+  It is written once and never edited.
+- **`stock_batches`**: one per line, so each batch has one cost.
+  - The supplier's batch number and expiry are needed for a drug and optional for a consumable.
+  - The quantity is stored in base units, with the pack size it came at. A line gives whole `packs` or loose `units`, never both.
+  - The line's `total_cost_cents` may be zero (donated). The unit cost is derived, never stored.
+  - An expired batch is refused. One expiring within 90 days (`EXPIRY_WARNING_DAYS`) is taken, and the response lists a warning for it.
+  - A refused line refuses the whole note, naming the line, and the series number it would have taken is still the next one.
+- **`stock_movements`**: append-only. The app role has `INSERT` and `SELECT`, and a trigger refuses `UPDATE` and `DELETE` for every role.
+  - Each row is a signed quantity in base units per store and batch. The kinds so far are `receipt` and `receipt_reversed`, each with its note as a typed source. `stock_movements_shape` holds each kind's sign, source and reason.
+  - **On hand per store and batch is the sum of the movements, never stored and never negative.** `stock_movements_never_negative`, an after-insert trigger, holds this for any writer. The services also check it under the batch's lock.
+- **The lock order for stock** (`src/lib/stock-levels.ts`): store, then stock items by id, then batches by id.
+  - A batch is written once, so it is locked with a transaction advisory lock, not a row lock.
+  - A delivery holds its store and items shared. Retiring either waits for the delivery to commit, then sees its stock (tested).
+- **Reversing a line** (`POST /stock-batches/{id}/reverse`, with a reason) takes the whole line back off the shelf while none of its stock has moved. A line is reversed at most once (a partial unique index). One whose stock has moved is corrected by an adjustment (3b).
+- **A store or item holding stock cannot be retired** (`holds_stock`).
+- **`GET /stores/{id}/stock`** lists each item the store holds or has a reorder level for, with:
+  - on hand;
+  - its batches, earliest expiry first (expired ones marked);
+  - the value at each batch's cost, rounded once per batch.
+- **Who:**
+  - storekeepers, pharmacists and pharmacy technicians receive and reverse (`RECEIVERS`);
+  - they, the facility admin, the finance manager and the auditor read notes and stock (`STOCK_READERS`);
+  - no licence is asked, and nothing here is patient data, so reads are not audited;
+  - `goods.received` and `stock_batch.reversed` are audited.
+- **Not yet:** opening balances (P6); transfers (2); dispensing (3a); adjustments and write-offs (3b).
+
 ---
 
 ## 9. Payers and claims

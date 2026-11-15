@@ -533,6 +533,20 @@
       "when": 1794750059946,
       "tag": "0075_stores_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "7",
+      "when": 1794751435568,
+      "tag": "0076_goods_received",
+      "breakpoints": true
+    },
+    {
+      "idx": 77,
+      "version": "7",
+      "when": 1794751441682,
+      "tag": "0077_goods_received_rls",
+      "breakpoints": true
     }
   ]
 }

@@ -12,6 +12,7 @@ import diagnoses from "@/routes/diagnoses/diagnoses.index";
 import documents from "@/routes/documents/documents.index";
 import encounters from "@/routes/encounters/encounters.index";
 import facility from "@/routes/facility/facility.index";
+import goodsReceived from "@/routes/goods-received/goods-received.index";
 import health from "@/routes/health.route";
 import index from "@/routes/index.route";
 import internal from "@/routes/internal.route";
@@ -104,6 +105,7 @@ const tenantRoutes = [
   lab,
   stores,
   stockItems,
+  goodsReceived,
   wards,
   prices,
   charges,

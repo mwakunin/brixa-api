@@ -8,7 +8,7 @@ import { facilities, priceLists } from "@/db/schema";
 import { recordAudit } from "@/lib/audit";
 import { isUniqueViolation, pgConstraintName } from "@/lib/db-errors";
 import { createInvitation } from "@/lib/invitations";
-import { ACCESSION_SERIES, CLINICAL_SERIES, FISCAL_SERIES, registerSeries } from "@/lib/number-series";
+import { ACCESSION_SERIES, CLINICAL_SERIES, FISCAL_SERIES, registerSeries, STOCK_SERIES } from "@/lib/number-series";
 import { nudgingAfterCommit } from "@/lib/outbox-nudge";
 
 import type { CreateFacilityRoute, ListFacilitiesRoute, SetSmsSenderRoute } from "./superadmin.routes";
@@ -64,6 +64,9 @@ export const createFacility: AppRouteHandler<CreateFacilityRoute> = async (c) =>
         await registerSeries(tx, { facilityId: facility.id, kind, prefix, padding: 6, resetPeriod: "yearly" });
       // Clinical documents, numbered as they are issued: RX-2026-000123.
       for (const [kind, prefix] of CLINICAL_SERIES)
+        await registerSeries(tx, { facilityId: facility.id, kind, prefix, padding: 6, resetPeriod: "yearly" });
+      // Deliveries into the stores, numbered as they are entered: GRN-2026-000123.
+      for (const [kind, prefix] of STOCK_SERIES)
         await registerSeries(tx, { facilityId: facility.id, kind, prefix, padding: 6, resetPeriod: "yearly" });
       // Specimens, numbered as they are taken: L-20261111-017.
       await registerSeries(tx, { facilityId: facility.id, ...ACCESSION_SERIES });

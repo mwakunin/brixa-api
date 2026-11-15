@@ -9,6 +9,7 @@ import type { PatientActor } from "./patients";
 
 import { recordAudit } from "./audit";
 import { isUniqueViolation } from "./db-errors";
+import { itemOnHand } from "./stock-levels";
 
 /**
  * What the facility stocks (SCHEMA.md §8, P4 slice 1a): each a `drug` or
@@ -32,7 +33,8 @@ export type StockItemErrorCode
     | "already_a_stock_item"
     | "drug_needed"
     | "not_a_drug_item"
-    | "drug_not_found";
+    | "drug_not_found"
+    | "holds_stock";
 
 export class StockItemError extends Error {
   constructor(readonly code: StockItemErrorCode) {
@@ -43,6 +45,7 @@ export class StockItemError extends Error {
       drug_needed: "A drug item names the catalogue drug it is",
       not_a_drug_item: "A consumable names no catalogue drug; only a drug item does",
       drug_not_found: "No such drug in the catalogue, or it is retired",
+      holds_stock: "Some of this item is still in stock; use it up, move it or write it off before retiring the item",
     }[code]);
     this.name = "StockItemError";
   }
@@ -101,7 +104,7 @@ export async function createStockItem(tx: AppDb, facilityId: string, input: Stoc
   return stockItem;
 }
 
-/** Changes a stock item's pack size, or retires it or brings it back. */
+/** Changes a stock item's pack size, or retires it or brings it back. An item still in stock stays open. */
 export async function updateStockItem(
   tx: AppDb,
   facilityId: string,
@@ -112,6 +115,9 @@ export async function updateStockItem(
   const [current] = await tx.select().from(stockItems).where(eq(stockItems.id, id)).for("update").limit(1);
   if (!current)
     throw new StockItemError("not_found");
+  // The row lock queues this behind any delivery of it still going in (it holds the item shared).
+  if (input.isActive === false && current.isActive && await itemOnHand(tx, id) > 0)
+    throw new StockItemError("holds_stock");
   const [updated] = await tx.update(stockItems).set(input).where(eq(stockItems.id, id)).returning();
 
   await recordAudit(tx, {

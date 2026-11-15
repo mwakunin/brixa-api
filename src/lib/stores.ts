@@ -8,6 +8,7 @@ import type { PatientActor } from "./patients";
 
 import { recordAudit } from "./audit";
 import { isUniqueViolation } from "./db-errors";
+import { storeOnHand } from "./stock-levels";
 
 /**
  * The places stock is kept (SCHEMA.md §8, P4 slice 1a): the main store, the
@@ -18,7 +19,7 @@ import { isUniqueViolation } from "./db-errors";
 type StoreRow = typeof stores.$inferSelect;
 export type StoreKind = StoreRow["kind"];
 
-export type StoreErrorCode = "not_found" | "name_taken" | "item_not_found";
+export type StoreErrorCode = "not_found" | "name_taken" | "item_not_found" | "holds_stock";
 
 export class StoreError extends Error {
   constructor(readonly code: StoreErrorCode) {
@@ -26,6 +27,7 @@ export class StoreError extends Error {
       not_found: "No such store",
       name_taken: "Another store has that name",
       item_not_found: "One of these is not a stock item of this facility",
+      holds_stock: "This store still holds stock; move or write it off before retiring the store",
     }[code]);
     this.name = "StoreError";
   }
@@ -57,7 +59,7 @@ export async function createStore(tx: AppDb, facilityId: string, input: { name: 
   return store;
 }
 
-/** Renames a store, or retires it or brings it back. Its kind is fixed. */
+/** Renames a store, or retires it or brings it back. Its kind is fixed, and a store holding stock stays open. */
 export async function updateStore(
   tx: AppDb,
   facilityId: string,
@@ -68,6 +70,9 @@ export async function updateStore(
   const [current] = await tx.select().from(stores).where(eq(stores.id, id)).for("update").limit(1);
   if (!current)
     throw new StoreError("not_found");
+  // The row lock queues this behind any delivery still going in (it holds the store shared).
+  if (input.isActive === false && current.isActive && await storeOnHand(tx, id) > 0)
+    throw new StoreError("holds_stock");
   const store = await insertOrRefuse(tx, () => tx.update(stores).set(input).where(eq(stores.id, id)).returning());
 
   await recordAudit(tx, {

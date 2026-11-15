@@ -5,10 +5,12 @@ import * as HttpStatusPhrases from "stoker/http-status-phrases";
 
 import type { TenantBindings, TenantRouteHandler } from "@/lib/types";
 
+import { storeStock } from "@/lib/stock-levels";
 import * as stores from "@/lib/stores";
 
 import type {
   CreateStoreRoute,
+  GetStoreStockRoute,
   ListReorderLevelsRoute,
   ListStoresRoute,
   SetReorderLevelsRoute,
@@ -56,6 +58,14 @@ export const updateStore: TenantRouteHandler<UpdateStoreRoute> = async (c) => {
   const { id } = c.req.valid("param");
   const body = c.req.valid("json");
   return answer(c, async () => shown(await stores.updateStore(c.var.db, c.var.facility.id, id, body, actorOf(c)))) as never;
+};
+
+export const getStoreStock: TenantRouteHandler<GetStoreStockRoute> = async (c) => {
+  const { id } = c.req.valid("param");
+  return answer(c, async () => {
+    await stores.storeShown(c.var.db, id);
+    return { items: await storeStock(c.var.db, id) };
+  }) as never;
 };
 
 export const listReorderLevels: TenantRouteHandler<ListReorderLevelsRoute> = async (c) => {

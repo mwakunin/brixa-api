@@ -3,6 +3,7 @@ import * as HttpStatusCodes from "stoker/http-status-codes";
 import { jsonContent, jsonContentRequired } from "stoker/openapi/helpers";
 import { createErrorSchema } from "stoker/openapi/schemas";
 
+import { STOCK_READERS } from "@/lib/goods-received";
 import { STOCK_KEEPERS } from "@/lib/stock-items";
 import { requireMembershipRole } from "@/middlewares/auth";
 import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
@@ -13,6 +14,7 @@ import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.rou
  */
 const tags = ["Stores"];
 const stockKeepers = requireMembershipRole(...STOCK_KEEPERS);
+const stockReaders = requireMembershipRole(...STOCK_READERS);
 
 const RefusalSchema = z.object({ message: z.string(), code: z.string() });
 const IdParamsSchema = z.object({ id: z.uuid() });
@@ -140,7 +142,54 @@ export const setReorderLevels = createRoute({
   },
 });
 
+const BatchStockSchema = z.object({
+  batchId: z.uuid(),
+  batchNumber: z.string().nullable(),
+  expiresOn: z.string().nullable(),
+  /** Its last day has passed: never dispensed, waiting to be written off. */
+  expired: z.boolean(),
+  onHand: z.number(),
+  valueCents: z.number(),
+});
+
+const StockSchema = z.object({
+  items: z.array(z.object({
+    stockItemId: z.uuid(),
+    code: z.string(),
+    name: z.string(),
+    baseUnit: z.string(),
+    packSize: z.number(),
+    /** In base units. */
+    onHand: z.number(),
+    /** At each batch's own cost. */
+    valueCents: z.number(),
+    reorderLevel: z.number().nullable(),
+    /** Earliest expiry first, the order they are used in. */
+    batches: z.array(BatchStockSchema),
+  })),
+});
+
+export const getStoreStock = createRoute({
+  tags,
+  method: "get",
+  path: "/stores/{id}/stock",
+  summary: "What a store holds",
+  description:
+    "Each item it holds or has a reorder level for, by code: on hand in base "
+    + "units, its batches earliest expiry first (expired ones marked), and "
+    + "its value at each batch's cost. Read by stock keepers, pharmacy "
+    + "technicians, the finance manager and the auditor.",
+  middleware: [stockReaders] as const,
+  request: { headers: facilityHeaders, params: IdParamsSchema },
+  responses: {
+    [HttpStatusCodes.OK]: jsonContent(StockSchema, "Its stock"),
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(IdParamsSchema), "Not a store id"),
+    ...tenantResponses,
+  },
+});
+
 export type ListStoresRoute = typeof listStores;
+export type GetStoreStockRoute = typeof getStoreStock;
 export type CreateStoreRoute = typeof createStore;
 export type UpdateStoreRoute = typeof updateStore;
 export type ListReorderLevelsRoute = typeof listReorderLevels;

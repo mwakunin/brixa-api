@@ -226,6 +226,17 @@ Main store, pharmacy and ward sub-stores; transfers; goods received; batches and
 11. **Consumables on orders** (deferred from P3 slice 4a): stock items that are not drugs, charged when issued against an order item (a crepe bandage for a dressing). Stock for a ward or a department goes by transfer and is charged to no patient. Ward issues per inpatient wait for P5's medication administration record.
 12. **Medicines that disclose a condition** (left to P4 by P3 slice 7: an HIV medicine prescribed outside a sensitive clinic is not hidden): decided with slice 3a, dispensing. Slice 1a adds nothing for it until something reads it; bills already print a neutral name.
 
+**Slice 1b, goods received** (decided 2026-11-15, as recommended):
+1. **Who receives:** storekeepers, pharmacists and pharmacy technicians. It is not a clinical act, so no licence is asked.
+2. **A goods-received note per delivery:** the store, the supplier as text, the supplier's delivery-note or invoice number, the date received, and its lines: item, batch number, expiry, quantity and the line's total cost. A quantity is given in whole packs or in loose units, and stored in base units with the pack size it was received at.
+3. **Numbered** from a yearly `GRN-` series (`GRN-2026-000123`). No printed document in v1.
+4. **Each line is its own batch**, carrying the supplier's batch number and expiry, so its cost is exact. Two deliveries of one supplier batch are two batches with the same number, which earliest-expiry-first handles.
+5. **Expiry:** required for a drug, optional for a consumable. An expired batch is refused; one expiring within 90 days is taken with a warning. A drug's batch number is required too, a consumable's optional.
+6. **A cost of zero** is allowed, for donated stock, with the donor as the supplier.
+7. **A mistyped line** is reversed as a whole, with a reason, while none of its stock has moved. Anything later is an adjustment (3b, second person).
+8. **Into any active store**, since a small hospital may receive straight into its pharmacy. A store or item still holding stock cannot be retired.
+9. **The stock view:** each store's items with stock or a reorder level, on hand, batches by expiry (expired ones marked) and value at cost. Read by stock keepers, pharmacy technicians, the finance manager and the auditor.
+
 ### P5 · Inpatient clinical
 
 **Size:** L.
