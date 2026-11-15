@@ -174,7 +174,7 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
 - **Who sees it without breaking the glass:** whoever recorded it; staff the facility admin assigns to its category (the HIV clinic's staff to HIV), each assignment audited; and the lab on its own worklist. Every other clinician breaks the glass; non-clinical roles read no clinical content at all.
 - **Breaking the glass** is open to any clinical member with a current licence, always with a reason, emergencies included. It opens that one patient's sensitive items for 12 hours; each read during it is audited, and marked as one.
 - **The alert** is an in-app list for the facility admin and for the clinicians who recorded what was opened, not an SMS or email. The facility admin marks each one reviewed.
-- **Medicines:** an HIV medicine prescribed outside a sensitive clinic is not caught, since the drug list carries no classes. P4's per-facility stock items can carry the mark.
+- ~~**Medicines:** an HIV medicine prescribed outside a sensitive clinic is not caught, since the drug list carries no classes.~~ Done in P4 slice 3c: the facility marks catalogue drugs sensitive, and their prescriptions are restricted.
 - **Neutral names on bills:** a billable item may have a neutral printed name ("Laboratory test"), which invoices and receipts print. The charge copies it at capture, as it copies the price.
 
 **Still open after P3** (2026-11-15), each for its owner:
@@ -280,6 +280,14 @@ Main store, pharmacy and ward sub-stores; transfers; goods received; batches and
 7. **Store staff ask; the finance manager or a pharmacist approves**, never the person who asked (rule 24, a `CHECK` as well as the service). No value threshold in v1.
 8. **Each adjustment carries its value** at the batch's cost, for the loss report.
 9. **A controlled drug** is returned or adjusted only by a pharmacist with a pharmacy licence, as it is dispensed; its register entries come with slice 4.
+
+**Slice 3c, sensitive medicines** (decided 2026-11-15, as recommended; question 12):
+1. **The facility admin and pharmacists** mark a catalogue drug HIV, mental health or GBV, per strength and form.
+2. **A prescription naming a marked drug is restricted as a whole**, as a sensitive lab test restricts its order: clinicians' order views and the printed prescription. The pharmacy still sees and dispenses it (P3 slice 7).
+3. **Past prescriptions follow the mark**, as for a lab test; unmarking lifts it.
+4. **Bills are untouched**: the item's neutral printed name is set with the existing route.
+5. **Nothing is shipped**: the pilot's clinician supplies the drugs, with the sensitive ICD-11 codes still owed.
+6. **Marking and unmarking are audited** with the old and new category.
 
 ### P5 · Inpatient clinical
 

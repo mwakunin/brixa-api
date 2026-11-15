@@ -34,6 +34,7 @@ import prescriptions from "@/routes/prescriptions/prescriptions.index";
 import prices from "@/routes/prices/prices.index";
 import queues from "@/routes/queues/queues.index";
 import refunds from "@/routes/refunds/refunds.index";
+import sensitiveDrugs from "@/routes/sensitive-drugs/sensitive-drugs.index";
 import shifts from "@/routes/shifts/shifts.index";
 import staff from "@/routes/staff/staff.index";
 import stockAdjustments from "@/routes/stock-adjustments/stock-adjustments.index";
@@ -114,6 +115,7 @@ const tenantRoutes = [
   dispensing,
   dispenseReturns,
   stockAdjustments,
+  sensitiveDrugs,
   wards,
   prices,
   charges,

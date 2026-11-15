@@ -782,7 +782,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 - **The alert list** (`GET /break-glass`, audited): every grant for the facility admin, and for a clinician those that alerted them, latest first, 100 a page, `unreviewed=true` for those still to review. The facility admin reviews each once, with a note if wanted (`POST /break-glass/{id}/review`).
 - **Triggers (0071):** a grant changes only by its review, once, and none is deleted; alerts are added, never changed; a note's mark is set once, as a change of its own, on a draft or signed note, and never taken off or changed.
 - **Neutral names on bills:** `billable_items.printed_name` (set at creation or with `PUT /billable-items/{id}/printed-name`, by the price keepers, audited) prints in place of the name. `charges.printed_name` copies it, or the name, at capture: a trigger sets it on every insert, so no capture path can leave it out, and the charge's cancel-only trigger freezes it. Invoice lines print the charge's copy, so a later change never alters a bill (rule 7). Migration 0070 fills it for charges captured before. The bill also prints the item's code, so a facility should choose codes that do not name the test.
-- **Not yet:** medicines that disclose a condition outside a sensitive clinic (no drug classes; P4's stock items can carry the mark); the GBV codes; ward and department scoping (later, D5).
+- **Not yet:** the GBV codes; ward and department scoping (later, D5). Medicines that disclose a condition came with P4 slice 3c.
 
 **Clinical record.** `observations` (vitals and charted values, with `entered_in_error` instead of deletion), `diagnoses` (ICD code, provisional \| final \| secondary), `clinical_notes` (`signed_at`, `addendum_of`: a signed note is corrected only by an addendum), `orders` and `order_items` (lab, imaging, procedure, medication, service; medication items carry dose, route, frequency and duration). Every clinical act records the acting membership, whose licence details live on `memberships` (rule 25).
 
@@ -930,6 +930,12 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - `stock_adjustments_decision` holds who decides in the database (rule 24).
 - **The stock ledger** gains `dispense_returned` (against its dispense line) and `adjustment` (against its line), keeping one source per movement.
 - **Not yet:** the controlled-drug register's entries for returns and write-offs (4); the stock-take that adjusts by count (5); a loss report built on the adjustments' values (P6's stock reports).
+
+**As built (P4, slice 3c): sensitive medicines.** Decided 2026-11-15 (`ROADMAP.md` P4, slice 3c; question 12). `sensitive_drugs` and `src/lib/sensitive-drugs.ts`.
+
+- **`PUT /sensitive-drugs`** (facility admin, pharmacists) marks a catalogue drug `hiv`, `mental_health` or `gbv`, changes it, or unmarks it (a null category: a mark is changed, never removed). Each change is audited (`drug.sensitivity_set`) with the old and new category. `GET /sensitive-drugs` lists those marked. Nothing is shipped.
+- **`orderGuards`** (`src/lib/sensitivity.ts`) now takes a medicine's category from the facility's mark beside a lab test's. A prescription naming a marked drug is restricted as a whole, wherever an order is shown or printed, its past ones included, by the same rules as a sensitive test (rule 27, break-glass). The pharmacy's own work is unaffected: it opens prescriptions as P3 slice 7 allowed, and its list is not filtered.
+- **Not yet:** marking every strength of a generic in one call (the screen does it a drug at a time); the pilot clinician's list.
 
 ---
 

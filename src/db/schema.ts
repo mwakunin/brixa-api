@@ -476,6 +476,7 @@ export const auditLog = pgTable("audit_log", {
     | "stock_adjustment.approved"
     | "stock_adjustment.rejected"
     | "stock_adjustment.withdrawn"
+    | "drug.sensitivity_set"
   >().notNull().references(() => auditActions.action),
   /** What it happened to. Not a foreign key: the log outlives what it names. */
   entityType: text().notNull(),
@@ -2363,6 +2364,29 @@ export const stockItems = pgTable("stock_items", {
 ]);
 
 /**
+ * A catalogue drug whose prescription discloses a condition at this
+ * facility (P4 slice 3c, decided 2026-11-15): an HIV medicine, say. A
+ * prescription naming one is restricted as a whole, as a sensitive lab test
+ * restricts its order (rule 27), its past prescriptions included. Marked by
+ * the facility admin or a pharmacist; a null category unmarks it, since a
+ * mark is changed, never removed.
+ */
+export const sensitiveDrugs = pgTable("sensitive_drugs", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  drugCode: text().notNull(),
+  /** Null once unmarked. */
+  category: text().$type<"hiv" | "mental_health" | "gbv">(),
+  markedBy: uuid().notNull(),
+  markedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+}, t => [
+  unique("sensitive_drugs_drug_key").on(t.facilityId, t.drugCode),
+  foreignKey({ name: "sensitive_drugs_drug_fk", columns: [t.drugCode], foreignColumns: [drugCatalogue.code] }),
+  foreignKey({ name: "sensitive_drugs_marked_by_fk", columns: [t.facilityId, t.markedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  oneOf("sensitive_drugs_category_known", t.category, ["hiv", "mental_health", "gbv"]),
+]);
+
+/**
  * Below this many base units on hand, an item is flagged in that store (the
  * low-stock alert, slice 6). One per item per store; zero flags nothing, so
  * a level is set to zero rather than removed.
@@ -3631,4 +3655,5 @@ export const TENANT_TABLES = [
   "dispense_returns",
   "stock_adjustments",
   "stock_adjustment_lines",
+  "sensitive_drugs",
 ] as const;
