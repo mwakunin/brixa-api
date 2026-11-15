@@ -561,6 +561,20 @@
       "when": 1794755996468,
       "tag": "0079_stock_written_once",
       "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "7",
+      "when": 1794760715947,
+      "tag": "0080_stock_transfers",
+      "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "7",
+      "when": 1794760721148,
+      "tag": "0081_stock_transfers_rls",
+      "breakpoints": true
     }
   ]
 }

@@ -246,6 +246,17 @@ Main store, pharmacy and ward sub-stores; transfers; goods received; batches and
 6. **Running it again changes nothing:** a code already set up is matched, not duplicated, and its price is requested only if it differs from today's. A row that disagrees with what is there (another category, drug, base unit or pack size) is refused, never applied; an existing item keeps its name.
 7. **Reorder levels are not in the file**; they are set per store. Opening stock waits for P6.
 
+**Slice 2, transfers** (decided 2026-11-15, as recommended):
+1. **Request, send, receive.** Approving and sending are one act by the sending store's staff; a store may also send without a request (the main store topping up a ward). The pilot's answer on who approves ward transfers (`SPEC.md` §9, question 9) may add an approval step.
+2. **Batches:** the sender picks them, earliest expiry first unless they choose. Stock leaves the sending store when sent and enters the receiving store when received; on the way, it shows on the transfer and in neither store.
+3. **A shortfall** is entered per batch on receipt, with a reason; more than was sent is refused. A second person (the finance manager or a pharmacist, never the receiver) accepts the loss; until then the transfer shows short, awaiting approval. One receipt per transfer: what is still to come is a new transfer.
+4. **Who:** storekeepers, pharmacists and pharmacy technicians request, send and receive, for any store; nurses and ward nurses request for and receive into a ward's store only. **One person cannot both send and receive a transfer.**
+5. **Numbered** from a yearly `TRF-` series. No printed issue voucher in v1.
+6. **Less may be sent** than was asked for; no back-orders, so the rest is a new request.
+7. **Before it is sent**, the requester may cancel a request and the sending store may decline it, each with a reason. Once sent, a transfer is only received.
+8. **An expired batch is never sent**; it is written off where it is (3b).
+9. **Controlled drugs:** nothing special yet; slice 4 writes their register entries for transfers as for dispensing, before anything is live (P6).
+
 ### P5 · Inpatient clinical
 
 **Size:** L.

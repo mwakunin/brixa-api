@@ -35,6 +35,7 @@ import refunds from "@/routes/refunds/refunds.index";
 import shifts from "@/routes/shifts/shifts.index";
 import staff from "@/routes/staff/staff.index";
 import stockItems from "@/routes/stock-items/stock-items.index";
+import stockTransfers from "@/routes/stock-transfers/stock-transfers.index";
 import stores from "@/routes/stores/stores.index";
 import superadmin from "@/routes/superadmin/superadmin.index";
 import verify from "@/routes/verify/verify.index";
@@ -106,6 +107,7 @@ const tenantRoutes = [
   stores,
   stockItems,
   goodsReceived,
+  stockTransfers,
   wards,
   prices,
   charges,

@@ -865,6 +865,29 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 - **Who:** the facility admin only, since an import creates billable items as well as stock items.
 - **Not yet:** reorder levels and opening stock (set per store; P6's cutover); matching drugs by anything cleverer than a name's first word.
 
+**As built (P4, slice 2): transfers.** Decided 2026-11-15 (`ROADMAP.md` P4, slice 2). `stock_transfers` (built as `stock_transfers`, with `stock_transfer_items` for what a request asks and `stock_transfer_batches` for what each batch sent and received). Numbered from a yearly `TRF-` series, registered at onboarding and backfilled by migration 0081.
+
+- **Lifecycle:** `requested` → `sent` → `received`, or a request `cancelled` (by its requester) or `declined` (by the sending store), with a reason, before it is sent. A store may also send without a request (`POST /stock-transfers/send`). `stock_transfers_lifecycle` holds which steps each status has reached, each step's who and when together; the app role may update only the lifecycle columns.
+- **Sending** takes each line by quantity, earliest expiry first, or by the batches named, through `allocate` (`src/lib/stock-allocation.ts`), which dispensing will share:
+  - an expired batch is never taken, nor a batch of another item or not in the store;
+  - a line the store cannot fill from stock in date is refused, naming the line;
+  - every batch the item has had in the store is locked before its balance is read, so two sends from one batch queue (tested).
+
+  Each batch's `transfer_out` movement leaves the sending store. Less may be sent than was asked for; the request is then closed as sent.
+- **Receiving** happens once, by someone other than the sender (`stock_transfers_received_by_another`).
+  - A batch not named arrived whole, and more than was sent is refused.
+  - Less needs a `shortfall_reason`. Each batch that arrived gets a `transfer_in` movement into the receiving store.
+  - On its way, stock is in neither store: the transfer shows it.
+- **A shortfall's loss** is accepted by the finance manager or a pharmacist, never the receiver (`stock_transfers_shortfall`, rule 24). Until then the transfer is `awaitingAcceptance`, and `GET /stock-transfers?awaitingAcceptance=true` is the approvers' list.
+- **Who:**
+  - storekeepers, pharmacists and pharmacy technicians request, send and receive for any store;
+  - nurses and ward nurses request for and receive into a ward's store only (`ward_store_only`, 403);
+  - the stores' staff, nurses, the facility admin, the finance manager and the auditor read transfers;
+  - every step is audited (`stock_transfer.*`).
+- **A store with a transfer still open** from or to it cannot be retired (`open_transfers`). A batch some of which has been sent can no longer have its receipt reversed (`batch_moved`).
+- **The stock ledger** gains `transfer_out` and `transfer_in`, each with the transfer as its typed source. One of each per transfer and batch.
+- **Not yet:** the controlled-drug register's entries for transfers (slice 4); an approval step for ward transfers, if the pilot wants one (`SPEC.md` §9, question 9).
+
 ---
 
 ## 9. Payers and claims

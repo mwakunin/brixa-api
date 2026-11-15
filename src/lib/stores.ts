@@ -9,6 +9,7 @@ import type { PatientActor } from "./patients";
 import { recordAudit } from "./audit";
 import { isUniqueViolation } from "./db-errors";
 import { storeOnHand } from "./stock-levels";
+import { hasOpenTransfers } from "./transfers";
 
 /**
  * The places stock is kept (SCHEMA.md §8, P4 slice 1a): the main store, the
@@ -19,7 +20,7 @@ import { storeOnHand } from "./stock-levels";
 type StoreRow = typeof stores.$inferSelect;
 export type StoreKind = StoreRow["kind"];
 
-export type StoreErrorCode = "not_found" | "name_taken" | "item_not_found" | "holds_stock";
+export type StoreErrorCode = "not_found" | "name_taken" | "item_not_found" | "holds_stock" | "open_transfers";
 
 export class StoreError extends Error {
   constructor(readonly code: StoreErrorCode) {
@@ -28,6 +29,7 @@ export class StoreError extends Error {
       name_taken: "Another store has that name",
       item_not_found: "One of these is not a stock item of this facility",
       holds_stock: "This store still holds stock; move or write it off before retiring the store",
+      open_transfers: "A transfer from or to this store is still open; send, receive, cancel or decline it first",
     }[code]);
     this.name = "StoreError";
   }
@@ -73,6 +75,9 @@ export async function updateStore(
   // The row lock queues this behind any delivery still going in (it holds the store shared).
   if (input.isActive === false && current.isActive && await storeOnHand(tx, id) > 0)
     throw new StoreError("holds_stock");
+  // A request or stock on its way would have nowhere to go.
+  if (input.isActive === false && current.isActive && await hasOpenTransfers(tx, id))
+    throw new StoreError("open_transfers");
   const store = await insertOrRefuse(tx, () => tx.update(stores).set(input).where(eq(stores.id, id)).returning());
 
   await recordAudit(tx, {
