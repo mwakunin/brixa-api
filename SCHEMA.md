@@ -792,6 +792,26 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 
 **Pharmacy and stores.** `inventory_items` reference the shared `drug_catalogue` (or describe a non-drug consumable) and a billable item. `stores` covers the main store, the pharmacy, wards and other sub-stores. `stock_batches` hold batch number and expiry; a batch's cost is its goods-received line's total, with the unit cost derived (`ROADMAP.md` P4, question 2). `stock_movements` are append-only signed quantities (opening balance, receipt, dispense, transfer out/in, adjustment, write-off, return) with typed source FKs. An opening balance loads counted stock at go-live; it is its own kind so it never reads as a purchase. Each item has a reorder level per store, which drives the low-stock alert. **On hand per store and batch = Σ movements, never stored, never negative** (checked under a batch lock). `dispenses` take stock first-expiry-first-out and raise the charge. `controlled_drug_register` is append-only with a running balance per catalogue drug and store, so two brands of one drug share a page, as on paper (question 8). `goods_received` records the supplier as text in v1, since supplier payables come later. Units of sale: loose units (decided 2026-11-15, `SPEC.md` §4, question 2): each item has a base unit and a pack size, and stock is counted in the base unit.
 
+**As built (P4, slice 1a): stores, stock items and reorder levels.** Decided 2026-11-15 (`ROADMAP.md` P4). `inventory_items` above is built as `stock_items`.
+
+- **`stores`:** a name unique in the facility, and a `kind`: `main`, `pharmacy` (which will dispense, slice 3a), `ward` or `other`. A store is renamed or retired, and never changes kind.
+- **`stock_items`:** each sits on an active `drug` or `consumable` billable item, one per item (`stock_items_billable_item_key`). It goes by the item's code and name, and sells at the item's price per base unit through `resolvePrice` (rule 21), so the shelf and the bill never disagree.
+  - A `drug` item names its catalogue drug (`drug_code`), current when set up. A consumable names none.
+  - **`base_unit`** (what one is counted in: `tablet`, `mL`, `vial`, `pair`) and **`pack_size`** (base units per pack) are always given. They are not derived from the drug's dose unit, which for a cream is an "application" and cannot be counted on a shelf.
+  - The billable item, the drug and the base unit are fixed once set, held by column privileges as well as the routes. Stock will be counted in that unit (1b), so a different unit is a new stock item. The pack size may change, and the item may be retired.
+  - Controlled drugs are known from the catalogue's schedule, which the list shows with each drug. Nothing about them is copied onto the item.
+- **`reorder_levels`:** one per item per store, in base units. Zero flags nothing, so a level is set to zero, never removed. `PUT /stores/{id}/reorder-levels` sets the items given and leaves the store's others. Each change is audited with its old and new level, and a request that changes nothing writes nothing. The store's row is locked first, so two changes at once each audit what they replaced.
+- **Audit actions:** `store.created`, `store.updated`, `stock_item.created`, `stock_item.updated` and `reorder_levels.set`, each with its old and new values where something changed. They are the first actions added as rows of `audit_actions` (migration 0075), not a CHECK rewrite.
+- **Who** (`STOCK_KEEPERS`, `src/lib/stock-items.ts`):
+  - the facility admin, pharmacists and storekeepers set up stores, stock items and levels. These aren't clinical acts, so no licence is asked;
+  - every member reads them, since they hold no patient data;
+  - `GET /drugs` is now open to the facility admin and storekeepers as well as clinical roles, so they can name an item's drug.
+- **Not yet:**
+  - a store linked to its ward (P5);
+  - refusing to retire a store or item that still holds stock (1b, once stock exists);
+  - prices shown with the items (the billable-item list has them);
+  - sensitive medicines (question 12, slice 3a).
+
 ---
 
 ## 9. Payers and claims

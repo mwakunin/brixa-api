@@ -33,6 +33,8 @@ import queues from "@/routes/queues/queues.index";
 import refunds from "@/routes/refunds/refunds.index";
 import shifts from "@/routes/shifts/shifts.index";
 import staff from "@/routes/staff/staff.index";
+import stockItems from "@/routes/stock-items/stock-items.index";
+import stores from "@/routes/stores/stores.index";
 import superadmin from "@/routes/superadmin/superadmin.index";
 import verify from "@/routes/verify/verify.index";
 import wards from "@/routes/wards/wards.index";
@@ -100,6 +102,8 @@ const tenantRoutes = [
   orders,
   prescriptions,
   lab,
+  stores,
+  stockItems,
   wards,
   prices,
   charges,

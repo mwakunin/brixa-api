@@ -519,6 +519,20 @@
       "when": 1794748286624,
       "tag": "0073_audit_actions_outbox_claim",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1794750056723,
+      "tag": "0074_stores",
+      "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "7",
+      "when": 1794750059946,
+      "tag": "0075_stores_rls",
+      "breakpoints": true
     }
   ]
 }

@@ -450,6 +450,11 @@ export const auditLog = pgTable("audit_log", {
     | "billable_item.updated"
     | "patient.break_glass_refused"
     | "document.view_refused"
+    | "store.created"
+    | "store.updated"
+    | "stock_item.created"
+    | "stock_item.updated"
+    | "reorder_levels.set"
   >().notNull().references(() => auditActions.action),
   /** What it happened to. Not a foreign key: the log outlives what it names. */
   entityType: text().notNull(),
@@ -2278,6 +2283,86 @@ export const labReports = pgTable("lab_reports", {
 ]);
 
 // ---------------------------------------------------------------------------
+// Pharmacy and stores (SCHEMA.md §8, P4)
+// ---------------------------------------------------------------------------
+
+/**
+ * A place stock is kept and counted: the main store, the pharmacy, a ward's
+ * or another department's sub-store (P4 slice 1a). Its stock is derived from
+ * the movements into and out of it, per batch (slice 1b). Retired, never
+ * removed.
+ */
+export const stores = pgTable("stores", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  name: text().notNull(),
+  /** What it is for: the pharmacy dispenses (slice 3a), a ward's store holds ward stock. */
+  kind: text().$type<"main" | "pharmacy" | "ward" | "other">().notNull(),
+  isActive: boolean().default(true).notNull(),
+  createdAt: createdAt(),
+}, t => [
+  unique("stores_facility_id_id_key").on(t.facilityId, t.id),
+  unique("stores_facility_id_name_key").on(t.facilityId, t.name),
+  check("stores_name_present", sql`length(btrim(${t.name})) > 0`),
+  oneOf("stores_kind_known", t.kind, ["main", "pharmacy", "ward", "other"]),
+]);
+
+/**
+ * Something the facility stocks: a catalogue drug, or a consumable that is
+ * not one (P4 slice 1a). It is a `drug` or `consumable` billable item with
+ * stock details, going by the item's code and name and sold at its price per
+ * base unit, so the bill and the shelf never disagree.
+ *
+ * Counted in its base unit (a tablet, a mL, a vial, a piece; decided
+ * 2026-11-15), and received in packs of `pack_size` of them. The base unit
+ * and the drug are fixed once set: stock is counted in the one and
+ * dispensed as the other. Retired, never removed.
+ */
+export const stockItems = pgTable("stock_items", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  billableItemId: uuid().notNull(),
+  /** The catalogue drug a drug item is; null for a consumable. */
+  drugCode: text(),
+  /** What one is counted in: `tablet`, `mL`, `vial`, `piece`. */
+  baseUnit: text().notNull(),
+  /** How many base units a pack holds: received in packs, counted in units. */
+  packSize: integer().notNull(),
+  isActive: boolean().default(true).notNull(),
+  createdAt: createdAt(),
+}, t => [
+  unique("stock_items_facility_id_id_key").on(t.facilityId, t.id),
+  // One stock item per billable item, so each has its own price per base unit.
+  unique("stock_items_billable_item_key").on(t.facilityId, t.billableItemId),
+  foreignKey({ name: "stock_items_billable_item_fk", columns: [t.facilityId, t.billableItemId], foreignColumns: [billableItems.facilityId, billableItems.id] }),
+  foreignKey({ name: "stock_items_drug_fk", columns: [t.drugCode], foreignColumns: [drugCatalogue.code] }),
+  index("stock_items_drug_index").on(t.facilityId, t.drugCode),
+  check("stock_items_base_unit_shape", sql`length(btrim(${t.baseUnit})) BETWEEN 1 AND 20`),
+  check("stock_items_pack_size_positive", sql`${t.packSize} > 0`),
+]);
+
+/**
+ * Below this many base units on hand, an item is flagged in that store (the
+ * low-stock alert, slice 6). One per item per store; zero flags nothing, so
+ * a level is set to zero rather than removed.
+ */
+export const reorderLevels = pgTable("reorder_levels", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  storeId: uuid().notNull(),
+  stockItemId: uuid().notNull(),
+  /** In the item's base unit. */
+  level: integer().notNull(),
+  createdAt: createdAt(),
+}, t => [
+  unique("reorder_levels_store_item_key").on(t.facilityId, t.storeId, t.stockItemId),
+  foreignKey({ name: "reorder_levels_store_fk", columns: [t.facilityId, t.storeId], foreignColumns: [stores.facilityId, stores.id] }),
+  foreignKey({ name: "reorder_levels_stock_item_fk", columns: [t.facilityId, t.stockItemId], foreignColumns: [stockItems.facilityId, stockItems.id] }),
+  index("reorder_levels_stock_item_index").on(t.facilityId, t.stockItemId),
+  check("reorder_levels_level_nonnegative", sql`${t.level} >= 0`),
+]);
+
+// ---------------------------------------------------------------------------
 // Charges (SCHEMA.md §7.2)
 // ---------------------------------------------------------------------------
 
@@ -3077,4 +3162,7 @@ export const TENANT_TABLES = [
   "mpesa_transactions",
   "mpesa_stk_requests",
   "gateway_exchanges",
+  "stores",
+  "stock_items",
+  "reorder_levels",
 ] as const;
