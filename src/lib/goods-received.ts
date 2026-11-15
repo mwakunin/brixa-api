@@ -96,6 +96,51 @@ export interface ReceiptWarning {
   expiresOn: string;
 }
 
+interface ItemForReceipt { id: string; drugCode: string | null; packSize: number; isActive: boolean }
+type PreparedBatch = Omit<typeof stockBatches.$inferInsert, "facilityId" | "goodsReceivedId">;
+
+/**
+ * The store, then the lines' items by id, both held shared: the lock order
+ * for stock (lib/stock-levels.ts). Deliveries run side by side; retiring
+ * either waits for them.
+ */
+async function lockStoreAndItems(tx: AppDb, storeId: string, itemIds: string[]): Promise<{ store: { id: string; name: string }; itemOf: Map<string, ItemForReceipt> }> {
+  const [store] = await tx.select({ id: stores.id, name: stores.name, isActive: stores.isActive }).from(stores).where(eq(stores.id, storeId)).for("share").limit(1);
+  if (!store)
+    throw new GoodsReceivedError("store_not_found");
+  if (!store.isActive)
+    throw new GoodsReceivedError("store_retired");
+  const items = await tx
+    .select({ id: stockItems.id, drugCode: stockItems.drugCode, packSize: stockItems.packSize, isActive: stockItems.isActive })
+    .from(stockItems)
+    .where(inArray(stockItems.id, [...new Set(itemIds)].sort()))
+    .orderBy(asc(stockItems.id))
+    .for("share");
+  return { store, itemOf: new Map(items.map(i => [i.id, i])) };
+}
+
+/** One line checked and made a batch, or refused naming its line. Warns of one expiring soon. */
+function prepareBatch(line: ReceivedLine, number: number, item: ItemForReceipt | undefined, today: string, warnings: ReceiptWarning[]): PreparedBatch {
+  if (!item)
+    throw new GoodsReceivedError("item_not_found", number);
+  if (!item.isActive)
+    throw new GoodsReceivedError("item_retired", number);
+  const batchNumber = line.batchNumber ?? null;
+  const expiresOn = line.expiresOn ?? null;
+  if (item.drugCode && !batchNumber)
+    throw new GoodsReceivedError("batch_number_needed", number);
+  if (item.drugCode && !expiresOn)
+    throw new GoodsReceivedError("expiry_needed", number);
+  if (expiresOn && expiresOn < today)
+    throw new GoodsReceivedError("already_expired", number);
+  if (expiresOn && expiresOn < addDays(today, EXPIRY_WARNING_DAYS))
+    warnings.push({ line: number, code: "expires_soon", expiresOn });
+  const quantity = line.packs !== undefined ? line.packs * item.packSize : line.units!;
+  if (quantity > MAX_LINE_QUANTITY)
+    throw new GoodsReceivedError("quantity_too_large", number);
+  return { line: number, stockItemId: item.id, batchNumber, expiresOn, quantityReceived: quantity, packSize: item.packSize, totalCostCents: line.totalCostCents };
+}
+
 /**
  * Receives a delivery: numbers the note, writes each line as a batch, and
  * puts each on the store's shelf with a `receipt` movement. A refused line
@@ -112,48 +157,12 @@ export async function receiveGoods(
   if (receivedOn > today)
     throw new GoodsReceivedError("received_in_future");
 
-  // The lock order for stock (lib/stock-levels.ts): the store, then its items by id.
-  // Shared, so deliveries run side by side while retiring either waits.
-  const [store] = await tx.select({ id: stores.id, name: stores.name, isActive: stores.isActive }).from(stores).where(eq(stores.id, input.storeId)).for("share").limit(1);
-  if (!store)
-    throw new GoodsReceivedError("store_not_found");
-  if (!store.isActive)
-    throw new GoodsReceivedError("store_retired");
-
   // Postgres answers a uuid in lowercase, however it was asked for.
   const lines = input.lines.map(l => ({ ...l, stockItemId: l.stockItemId.toLowerCase() }));
-  const ids = [...new Set(lines.map(l => l.stockItemId))].sort();
-  const items = await tx
-    .select({ id: stockItems.id, drugCode: stockItems.drugCode, packSize: stockItems.packSize, isActive: stockItems.isActive })
-    .from(stockItems)
-    .where(inArray(stockItems.id, ids))
-    .orderBy(asc(stockItems.id))
-    .for("share");
-  const itemOf = new Map(items.map(i => [i.id, i]));
-
+  const { store, itemOf } = await lockStoreAndItems(tx, input.storeId, lines.map(l => l.stockItemId));
+  // Every line is checked before the note takes a number or anything is written.
   const warnings: ReceiptWarning[] = [];
-  const batches = lines.map((line, index) => {
-    const number = index + 1;
-    const item = itemOf.get(line.stockItemId);
-    if (!item)
-      throw new GoodsReceivedError("item_not_found", number);
-    if (!item.isActive)
-      throw new GoodsReceivedError("item_retired", number);
-    const batchNumber = line.batchNumber ?? null;
-    const expiresOn = line.expiresOn ?? null;
-    if (item.drugCode && !batchNumber)
-      throw new GoodsReceivedError("batch_number_needed", number);
-    if (item.drugCode && !expiresOn)
-      throw new GoodsReceivedError("expiry_needed", number);
-    if (expiresOn && expiresOn < today)
-      throw new GoodsReceivedError("already_expired", number);
-    if (expiresOn && expiresOn < addDays(today, EXPIRY_WARNING_DAYS))
-      warnings.push({ line: number, code: "expires_soon", expiresOn });
-    const quantity = line.packs !== undefined ? line.packs * item.packSize : line.units!;
-    if (quantity > MAX_LINE_QUANTITY)
-      throw new GoodsReceivedError("quantity_too_large", number);
-    return { line: number, stockItemId: item.id, batchNumber, expiresOn, quantityReceived: quantity, packSize: item.packSize, totalCostCents: line.totalCostCents };
-  });
+  const batches = lines.map((line, index) => prepareBatch(line, index + 1, itemOf.get(line.stockItemId), today, warnings));
 
   const [note] = await tx.insert(goodsReceived).values({
     facilityId,

@@ -46,7 +46,7 @@ const LevelSchema = z.number().int().min(0).max(100_000_000);
 
 const LevelsBodySchema = z.strictObject({
   levels: z.array(z.strictObject({ stockItemId: z.uuid(), level: LevelSchema })).min(1).max(500),
-}).refine(b => new Set(b.levels.map(l => l.stockItemId)).size === b.levels.length, {
+}).refine(b => new Set(b.levels.map(l => l.stockItemId.toLowerCase())).size === b.levels.length, {
   message: "Each item once",
   path: ["levels"],
 });

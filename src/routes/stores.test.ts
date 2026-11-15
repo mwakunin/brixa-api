@@ -261,6 +261,8 @@ describe("reorder levels", () => {
     expect((await set([{ stockItemId: paracetamol, level: 10 }], pharmacist, randomUUID())).status).toBe(404);
     expect((await call("GET", `/stores/${randomUUID()}/reorder-levels`, h.facility.id, pharmacist)).status).toBe(404);
     expect((await set([{ stockItemId: paracetamol, level: 10 }, { stockItemId: paracetamol, level: 20 }])).status).toBe(422);
+    // The same item, spelled in capitals the second time, is still given twice.
+    expect((await set([{ stockItemId: paracetamol, level: 10 }, { stockItemId: paracetamol.toUpperCase(), level: 20 }])).status).toBe(422);
     expect((await set([{ stockItemId: paracetamol, level: -1 }])).status).toBe(422);
     expect((await set([{ stockItemId: paracetamol, level: 10 }], h.nurse)).status).toBe(403);
   });

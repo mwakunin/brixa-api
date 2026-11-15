@@ -267,8 +267,7 @@ function datesOf(options: ImportOptions): { today: string; effectiveFrom: string
 }
 
 /** Each row's plan, with the fields it was read from. */
-async function planRows(tx: AppDb, csv: string, options: ImportOptions): Promise<{ planned: PlannedRow; parsed: ParsedRow }[]> {
-  const { today, effectiveFrom } = datesOf(options);
+async function planRows(tx: AppDb, csv: string, { today, effectiveFrom }: { today: string; effectiveFrom: string }): Promise<{ planned: PlannedRow; parsed: ParsedRow }[]> {
   const rows = readFile(csv);
   markDuplicates(rows);
   const snapshot = await loadSnapshot(tx, rows, today, effectiveFrom);
@@ -283,7 +282,7 @@ async function planRows(tx: AppDb, csv: string, options: ImportOptions): Promise
  * patient data, so not audited.
  */
 export async function planImport(tx: AppDb, csv: string, options: ImportOptions = {}): Promise<PlannedRow[]> {
-  return (await planRows(tx, csv, options)).map(p => p.planned);
+  return (await planRows(tx, csv, datesOf(options))).map(p => p.planned);
 }
 
 export interface ImportResult {
@@ -331,7 +330,9 @@ async function writeItems(tx: AppDb, facilityId: string, rows: { planned: Planne
 export async function importItems(tx: AppDb, facilityId: string, csv: string, actor: PatientActor, options: ImportOptions = {}): Promise<ImportResult> {
   // One import at a time per facility, so a second waits and then sees the first's items and pending prices.
   await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`item_import:${facilityId}`}, 0))`);
-  const rows = await planRows(tx, csv, options);
+  // Read once, after the lock: the prices are compared on the very day they are then asked from.
+  const dates = datesOf(options);
+  const rows = await planRows(tx, csv, dates);
   const plan = rows.map(r => r.planned);
   const refused = plan.filter(p => p.problems.length > 0);
   if (refused.length > 0)
@@ -342,7 +343,7 @@ export async function importItems(tx: AppDb, facilityId: string, csv: string, ac
   const change = priced.length === 0
     ? null
     : await requestPriceChange(tx, facilityId, {
-        effectiveFrom: datesOf(options).effectiveFrom,
+        effectiveFrom: dates.effectiveFrom,
         reason: "Item import",
         lines: priced.map(p => ({ billableItemId: idOf.get(p.code)!, unitPriceCents: p.requestedPriceCents! })),
       }, actor);
