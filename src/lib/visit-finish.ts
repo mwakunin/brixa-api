@@ -12,9 +12,10 @@ import { withMoneyDue } from "./cashier";
  * 2026-11-10 and 2026-11-11). An open outpatient visit is finished when:
  *
  *   - its patient is in no queue;
- *   - every lab test is resulted (released or verified) or cancelled, and
- *     every service done or cancelled. A medicine is not waited for: it is
- *     dispensed in P4, and a patient may take the paper elsewhere;
+ *   - every lab test is resulted (released or verified) or cancelled, every
+ *     service done or cancelled, and every medicine dispensed, marked not
+ *     supplied or cancelled (P4 slice 3a): one prepared and not yet handed
+ *     over is still waited for;
  *   - no money is due from the patient, as the cashier's list counts it;
  *   - the patient was seen (a queue turn finished) or tested (an order item
  *     done), so a visit opened a moment ago is not closed before anything
@@ -48,7 +49,7 @@ async function settledOtherwise(tx: AppDb, options: { ids?: string[]; after?: Ca
       AND NOT EXISTS (SELECT 1 FROM queue_entries q WHERE q.encounter_id = e.id AND q.status IN ('waiting', 'serving'))
       AND NOT EXISTS (
         SELECT 1 FROM order_items i JOIN orders o ON o.id = i.order_id
-        WHERE o.encounter_id = e.id AND i.status <> 'cancelled' AND i.drug_code IS NULL
+        WHERE o.encounter_id = e.id AND i.status <> 'cancelled'
           AND (i.status = 'ordered'
             OR (i.lab_test_id IS NOT NULL AND NOT EXISTS (
               SELECT 1 FROM lab_results r WHERE r.order_item_id = i.id AND r.status IN ('released', 'verified'))))

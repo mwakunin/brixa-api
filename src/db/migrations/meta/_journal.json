@@ -575,6 +575,20 @@
       "when": 1794760721148,
       "tag": "0081_stock_transfers_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1794764068430,
+      "tag": "0082_dispensing",
+      "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1794764073054,
+      "tag": "0083_dispensing_rls",
+      "breakpoints": true
     }
   ]
 }

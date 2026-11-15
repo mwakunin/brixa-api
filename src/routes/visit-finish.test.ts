@@ -21,6 +21,7 @@ let h: Hospital;
 let doctor: StaffMember;
 let labTech: StaffMember;
 let supervisor: StaffMember;
+let pharmacist: StaffMember;
 let mrdt: { id: string; analyteId: string };
 
 async function staff(roles: Parameters<typeof addMembership>[2]): Promise<StaffMember> {
@@ -36,6 +37,7 @@ beforeEach(async () => {
   doctor = await staff(["doctor"]);
   labTech = await staff(["lab_tech"]);
   supervisor = await staff(["lab_supervisor"]);
+  pharmacist = await staff(["pharmacist"]);
   // The facility's one triage point, which every visit joins as it opens.
   await call("POST", "/service-points", h.facility.id, h.admin, { name: "Triage", kind: "triage" });
   const item = (await (await call("POST", "/billable-items", h.facility.id, h.admin, { code: "MRDT", name: "Malaria RDT", category: "lab" })).json()).id;
@@ -79,11 +81,12 @@ describe("a visit with nothing pending", () => {
     expect(await closeFinishedVisits()).toMatchObject({ closed: 0 });
   });
 
-  it("waits for its lab test to be resulted and paid for, but not for a medicine to be dispensed", async () => {
+  it("waits for its lab test to be resulted and paid for, and its medicine dispensed or marked not supplied", async () => {
     const { patientId, encounterId } = await visit();
     const order = await (await call("POST", `/encounters/${encounterId}/orders`, h.facility.id, doctor, { items: [{ labTestId: mrdt.id }] })).json();
     const prescribed = await call("POST", `/encounters/${encounterId}/prescriptions`, h.facility.id, doctor, { items: [{ drugCode: "PCM-500-TAB", doseAmount: "1", frequency: "tds", durationDays: 3 }] });
     expect(prescribed.status).toBe(201);
+    const medicine = (await prescribed.json()).items[0].id;
 
     expect(await closeFinishedVisits()).toMatchObject({ closed: 0 });
     const specimen = await (await call("POST", `/orders/${order.id}/specimens`, h.facility.id, labTech, { specimenType: "blood" })).json();
@@ -99,6 +102,10 @@ describe("a visit with nothing pending", () => {
     expect(await closeFinishedVisits()).toMatchObject({ closed: 0 });
     const bill = await (await call("POST", `/encounters/${encounterId}/bill-now`, h.facility.id, h.cashier)).json();
     await call("POST", "/payments", h.facility.id, h.cashier, { patientId, method: "bank", reference: "BANK 0001", amountCents: bill.totalCents, invoiceId: bill.id });
+
+    // Paid, but the medicine is neither dispensed nor marked not supplied (P4 slice 3a).
+    expect(await closeFinishedVisits()).toMatchObject({ closed: 0 });
+    expect((await call("POST", `/order-items/${medicine}/not-supplied`, h.facility.id, pharmacist, { reason: "buying_elsewhere" })).status).toBe(204);
 
     expect(await closeFinishedVisits()).toMatchObject({ closed: 1 });
     expect((await status(encounterId)).status).toBe("closed");

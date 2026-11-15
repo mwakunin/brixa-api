@@ -208,6 +208,7 @@ Main store, pharmacy and ward sub-stores; transfers; goods received; batches and
 | B | 2 Transfers | Requested, approved, sent and received between stores, with a difference on receipt explained and adjusted |
 | B | 3a Dispensing | The pharmacy's list of prescriptions waiting. Prepared from the pharmacy's stock, earliest expiry first. Raises the charge, then is handed over (question 5). Partly dispensed, or marked not supplied. Visits close only once each medicine is dispensed or marked not supplied |
 | B | 3b Returns and adjustments | A patient's return credits its charge while unbilled, and is credited or refunded once billed. Write-offs (expired, damaged) and other adjustments need a reason and a second person (rule 24) |
+| B | 3c Sensitive medicines | Catalogue drugs a facility marks sensitive; their prescriptions restricted as a sensitive lab test restricts its order (question 12, decided 2026-11-15) |
 | C | 4 Controlled drugs | The register, per item and store, with a running balance (rule 12). Who may dispense them. Its entries balance against the movements |
 | C | 5 Stock take | A count per store, then the variances, each an adjustment approved by a second person |
 | C | 6 Alerts and exit | The nightly expiry and low-stock scan (`CLAUDE.md` §7) and the lists they feed. The OPD journey extended through the pharmacy. The stock identity and the register checked as P4's exit |
@@ -256,6 +257,18 @@ Main store, pharmacy and ward sub-stores; transfers; goods received; batches and
 7. **Before it is sent**, the requester may cancel a request and the sending store may decline it, each with a reason. Once sent, a transfer is only received.
 8. **An expired batch is never sent**; it is written off where it is (3b).
 9. **Controlled drugs:** nothing special yet; slice 4 writes their register entries for transfers as for dispensing, before anything is live (P6).
+
+**Slice 3a, dispensing** (decided 2026-11-15, as recommended; P4 questions 4–7 already applied):
+1. **The pharmacy's list is the facility's**; the pharmacist dispenses from a store of kind `pharmacy`, the facility's only one unless they name another.
+2. **A dispense is one prescription handed over**, a line per medicine, each line drawing on as many batches as it needs. A medicine may be given part now and the rest later, until its quantity is met or the rest is marked not supplied.
+3. **Preparing raises one charge per line**: the item's cash price per base unit times the quantity, rounded to whole shillings once (D2).
+4. **The quantity**, where the item's base unit is the prescription's dose unit, defaults to what is still owed and may not exceed it. Where the units differ (a 100 mL bottle for 75 mL), the pharmacist gives it.
+5. **A medicine is finished** when its quantity is met, or, in other units, when the pharmacist marks its line as completing it; either way its rest may be marked not supplied.
+6. **Open visits only.** The nightly close takes a visit with undispensed medicines off the list, which then show as never dispensed. A visit no longer finishes early while a medicine is neither dispensed nor marked not supplied.
+7. **Cancelling a prepared dispense** returns its stock and cancels its charges while none is billed; once billed, it is a return (3b).
+8. **Inpatients** are dispensed the same way until P5's ward stock and medication administration record.
+9. **No dispensing label** in 3a; it needs label printers.
+10. **Medicines that disclose a condition** (question 12) become their own slice, **3c**, after 3b: the facility admin marks catalogue drugs sensitive, and a prescription of one is restricted as a sensitive lab test restricts its order. It changes P3's prescriptions, so it is not folded into dispensing.
 
 ### P5 · Inpatient clinical
 

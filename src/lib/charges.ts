@@ -1,4 +1,4 @@
-import { and, asc, count, eq, isNotNull, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, count, eq, inArray, isNotNull, isNull, notInArray, sql } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 
@@ -291,6 +291,66 @@ export async function cancelOrderItemCharge(tx: AppDb, facilityId: string, order
     .for("update")
     .limit(1);
   return cancelUnbilled(tx, facilityId, charge, reason, actor, `Cancelled an order's charge: ${reason}`, { orderItemId });
+}
+
+// ---------------------------------------------------------------------------
+// Dispensing
+// ---------------------------------------------------------------------------
+
+/**
+ * Charges a dispense line as it is prepared (P4 slice 3a): the stock item's
+ * cash price per base unit on the day, times the quantity, rounded to whole
+ * shillings once (D2). The caller holds the encounter's lock (M8) and has
+ * priced the item: one with no price is refused before anything is taken.
+ */
+export async function captureDispenseCharge(
+  tx: AppDb,
+  facilityId: string,
+  input: { encounterId: string; dispenseLineId: string; billableItemId: string; code: string; quantity: number; price: { priceListItemId: string; unitPriceCents: number }; serviceDate: string },
+  actor: PatientActor,
+): Promise<ChargeRow> {
+  const quantity = String(input.quantity);
+  const [charge] = await tx.insert(charges).values({
+    facilityId,
+    encounterId: input.encounterId,
+    billableItemId: input.billableItemId,
+    quantity,
+    unitPriceCents: input.price.unitPriceCents,
+    amountCents: chargeAmountCents(quantity, input.price.unitPriceCents),
+    priceListItemId: input.price.priceListItemId,
+    serviceDate: input.serviceDate,
+    dispenseLineId: input.dispenseLineId,
+    capturedBy: actor.membershipId,
+  }).returning();
+
+  await recordAudit(tx, {
+    facilityId,
+    actorId: actor.userId,
+    action: "charge.captured",
+    entityType: "charge",
+    entityId: charge.id,
+    summary: `Charged ${input.quantity} of ${input.code} as it was prepared`,
+    detail: { encounterId: input.encounterId, dispenseLineId: input.dispenseLineId, code: input.code, quantity: input.quantity, amountCents: charge.amountCents },
+  });
+  return charge;
+}
+
+/** The standing charges of these dispense lines, locked (after the encounter, M8). */
+export async function dispenseCharges(tx: AppDb, dispenseLineIds: string[]): Promise<ChargeRow[]> {
+  if (dispenseLineIds.length === 0)
+    return [];
+  return tx.select().from(charges).where(and(inArray(charges.dispenseLineId, dispenseLineIds), isNull(charges.cancelledAt))).orderBy(asc(charges.id)).for("update");
+}
+
+/**
+ * Cancels a cancelled dispense's charges. The caller has checked no live
+ * invoice asks for any of them (`assignedByCharge`) and holds their locks.
+ */
+export async function cancelDispenseCharges(tx: AppDb, facilityId: string, found: ChargeRow[], reason: string, actor: PatientActor): Promise<void> {
+  for (const charge of found) {
+    if (!await cancelUnbilled(tx, facilityId, charge, reason, actor, `Cancelled a medicine's charge: ${reason}`, { dispenseLineId: charge.dispenseLineId! }))
+      throw new ChargeError("on_invoice");
+  }
 }
 
 /** Marks an encounter's bed-day failures resolved, except those still missing. */

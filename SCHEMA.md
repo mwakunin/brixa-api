@@ -702,7 +702,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 - **Reading:** `GET /encounters/{id}/lab-results` (clinical roles, audited) shows released and verified results and each order's current report. The lab's worklist adds the results to verify, and keeps a specimen "in the lab" until each of its tests has a result.
 - **A visit closes itself** (`src/lib/visit-finish.ts`; `POST /internal/jobs/finish-visits`, Cloud Scheduler every 15 minutes) once all of these hold:
   - the open outpatient visit's patient is in no queue;
-  - every lab test is resulted or cancelled, and every service done or cancelled. A medicine is not waited for until dispensing exists (P4);
+  - every lab test is resulted or cancelled, and every service done or cancelled. Since P4 slice 3a, every medicine is dispensed, marked not supplied, or cancelled too;
   - no money is due, as the cashier's list counts it (the same SQL, `lib/cashier.ts`);
   - the patient was seen or tested.
   - It is closed by nobody, re-checked under the encounter's lock. Failures are recorded as `visit_finish` by the runner the nightly close shares (`src/jobs/visits.ts`).
@@ -887,6 +887,31 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 - **A store with a transfer still open** from or to it cannot be retired (`open_transfers`). A batch some of which has been sent can no longer have its receipt reversed (`batch_moved`).
 - **The stock ledger** gains `transfer_out` and `transfer_in`, each with the transfer as its typed source. One of each per transfer and batch.
 - **Not yet:** the controlled-drug register's entries for transfers (slice 4); an approval step for ward transfers, if the pilot wants one (`SPEC.md` §9, question 9).
+
+**As built (P4, slice 3a): dispensing.** Decided 2026-11-15 (`ROADMAP.md` P4, slice 3a; questions 4–7). `dispenses`, `dispense_lines` and `medicines_not_supplied`; `src/lib/dispensing.ts` and `src/lib/dispensing-views.ts`.
+
+- **`GET /pharmacy/worklist`**:
+  - lists prescriptions on open visits that still have a medicine to give, oldest first, each medicine with what has been handed over and whether it is prepared;
+  - lists dispenses prepared and not yet collected;
+  - is audited (`pharmacy.worklist_viewed`), since it names patients.
+- **`POST /dispenses`** prepares one prescription from a `pharmacy` store: the facility's only one, unless another is named.
+  - Each line names the medicine and the stock item filling it, which must be the drug prescribed. Its stock is taken through `allocate`: earliest expiry first, never an expired batch, unless batches are named. It gets one `dispense` movement per batch.
+  - Each line gets one charge (`charges.dispense_line_id`, a fourth typed source): the item's cash price per base unit on the day, times the quantity, rounded to whole shillings once. An unpriced item is refused (`not_priced`) before anything is taken.
+  - Where the item's base unit is the dose unit, the quantity defaults to what's still owed and can't exceed it. Otherwise it must be given (`quantity_needed`), and the line completes the medicine unless `complete: false`.
+  - A medicine is on one prepared dispense at a time. A refused line refuses the whole dispense, naming the line.
+- **A controlled drug** is prepared only by a member holding `pharmacist` with a `pharmacy` licence (`controlled_dispenser`, 403). The request's membership now carries `licenceProfession`.
+- **`POST /dispenses/{id}/hand-over`** sets each medicine its lines complete to `done`. A medicine given in part stays on the list with what has been given. The dispense's `unpaid` flag (an outpatient's charges not yet paid) is a warning and never blocks.
+- **`POST /dispenses/{id}/cancel`** (prepared only, with a reason) puts each batch's stock back with a `dispense_cancelled` movement and cancels the charges, while none is on a bill (`billed`, then a return in 3b). A prescription with a prepared dispense cannot be cancelled (`being_dispensed`).
+- **`POST /order-items/{id}/not-supplied`** ends a medicine, or its rest, without a charge for what wasn't given. The reason is `out_of_stock`, `patient_declined`, `buying_elsewhere`, or `other` with a note. The medicine becomes `done`; what was given comes from its dispense lines, and why not from `medicines_not_supplied`.
+- **Open visits only.** A visit no longer finishes early while a medicine is undispensed, so the P3 journey marks its medicine not supplied, and the nightly close still ends whatever is left.
+- **Who:** pharmacists and pharmacy technicians, under a current licence (`requireClinicalRole`), including a nurse who holds the pharmacy technician role.
+- **Lock order:** the encounter (M8), the dispense, its medicines, the store's items and batches, then the charges.
+- **Not yet:**
+  - returns and adjustments (3b);
+  - sensitive medicines (3c);
+  - the controlled-drug register (4);
+  - the pharmacy's outcome on the clinicians' order view;
+  - dispensing labels.
 
 ---
 

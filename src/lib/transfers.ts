@@ -146,7 +146,7 @@ export async function requestTransfer(
 
 /** Takes the lines' stock out of the sending store and onto the transfer, and audits it as sent. */
 async function moveOut(tx: AppDb, transfer: TransferRow, lines: TakeLine[], actor: StockActor, today: string): Promise<void> {
-  const taken = await allocate(tx, transfer.facilityId, transfer.fromStoreId, lines, today);
+  const taken = (await allocate(tx, transfer.facilityId, transfer.fromStoreId, lines, today)).flat();
   // One row per batch, though two lines of one item drew on it.
   const perBatch = new Map<string, number>();
   for (const t of taken)

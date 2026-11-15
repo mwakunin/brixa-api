@@ -9,6 +9,7 @@ import appointments from "@/routes/appointments/appointments.index";
 import breakGlass from "@/routes/break-glass/break-glass.index";
 import charges from "@/routes/charges/charges.index";
 import diagnoses from "@/routes/diagnoses/diagnoses.index";
+import dispensing from "@/routes/dispensing/dispensing.index";
 import documents from "@/routes/documents/documents.index";
 import encounters from "@/routes/encounters/encounters.index";
 import facility from "@/routes/facility/facility.index";
@@ -108,6 +109,7 @@ const tenantRoutes = [
   stockItems,
   goodsReceived,
   stockTransfers,
+  dispensing,
   wards,
   prices,
   charges,

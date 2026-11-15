@@ -35,6 +35,8 @@ export interface Membership {
   roles: MembershipRole[];
   /** The last day their practising licence is valid; null without a clinical role. */
   licenceExpiresOn: string | null;
+  /** The profession that licence is in: a controlled drug is dispensed under a pharmacy one (P4). */
+  licenceProfession: string | null;
 }
 
 export interface AppBindings {

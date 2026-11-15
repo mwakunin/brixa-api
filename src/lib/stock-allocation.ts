@@ -108,25 +108,26 @@ function pickNamed(line: TakeLine, number: number, held: Map<string, Held>, toda
 }
 
 /**
- * The batches each line takes from the store, with how much of each. Refuses
- * a line the store cannot fill from stock in date, naming the line. Lines
- * of one item draw on its batches in turn, never counting a unit twice.
+ * The batches each line takes from the store, with how much of each, line by
+ * line. Refuses a line the store cannot fill from stock in date, naming the
+ * line. Lines of one item draw on its batches in turn, never counting a
+ * unit twice.
  */
-export async function allocate(tx: AppDb, facilityId: string, storeId: string, given: TakeLine[], today: string): Promise<Taken[]> {
+export async function allocate(tx: AppDb, facilityId: string, storeId: string, given: TakeLine[], today: string): Promise<Taken[][]> {
   const lines = given.map(l => ({ ...l, stockItemId: l.stockItemId.toLowerCase() }));
   const ids = [...new Set(lines.map(l => l.stockItemId))].sort();
   const known = new Set((await tx.select({ id: stockItems.id }).from(stockItems).where(inArray(stockItems.id, ids)).orderBy(asc(stockItems.id)).for("share")).map(i => i.id));
   const held = await heldBatches(tx, facilityId, storeId, ids);
   const heldOf = new Map(held.map(b => [b.batchId, b]));
 
-  const taken: Taken[] = [];
+  const taken: Taken[][] = [];
   for (const [index, line] of lines.entries()) {
     if (!known.has(line.stockItemId))
       throw new AllocationError("item_not_found", index + 1);
     const picked = line.batches ? pickNamed(line, index + 1, heldOf, today) : pickEarliest(line, index + 1, held, today);
     for (const p of picked)
       heldOf.get(p.batchId)!.onHand -= p.quantity;
-    taken.push(...picked);
+    taken.push(picked);
   }
   return taken;
 }
