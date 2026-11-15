@@ -116,6 +116,7 @@ export const listReorderLevels = createRoute({
   request: { headers: facilityHeaders, params: IdParamsSchema },
   responses: {
     [HttpStatusCodes.OK]: jsonContent(LevelsSchema, "Levels"),
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(IdParamsSchema), "Not a store id"),
     ...tenantResponses,
   },
 });
