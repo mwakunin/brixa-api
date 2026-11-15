@@ -353,6 +353,44 @@ export async function cancelDispenseCharges(tx: AppDb, facilityId: string, found
   }
 }
 
+/**
+ * A patient returned some of a dispense line before it was billed (P4 slice
+ * 3b): its charge is cancelled, and one raised for what was kept, at the
+ * price first charged (rule 7), never today's. Nothing is raised when
+ * nothing was kept. The caller holds the encounter's lock and the charge's,
+ * and has checked no live invoice asks for it.
+ */
+export async function replaceDispenseCharge(tx: AppDb, facilityId: string, charge: ChargeRow, kept: number, reason: string, actor: PatientActor): Promise<ChargeRow | null> {
+  if (!await cancelUnbilled(tx, facilityId, charge, reason, actor, `Cancelled a medicine's charge: ${reason}`, { dispenseLineId: charge.dispenseLineId! }))
+    throw new ChargeError("on_invoice");
+  if (kept === 0)
+    return null;
+
+  const quantity = String(kept);
+  const [replacement] = await tx.insert(charges).values({
+    facilityId,
+    encounterId: charge.encounterId,
+    billableItemId: charge.billableItemId,
+    quantity,
+    unitPriceCents: charge.unitPriceCents,
+    amountCents: chargeAmountCents(quantity, charge.unitPriceCents),
+    priceListItemId: charge.priceListItemId,
+    serviceDate: charge.serviceDate,
+    dispenseLineId: charge.dispenseLineId,
+    capturedBy: actor.membershipId,
+  }).returning();
+  await recordAudit(tx, {
+    facilityId,
+    actorId: actor.userId,
+    action: "charge.captured",
+    entityType: "charge",
+    entityId: replacement.id,
+    summary: `Charged ${kept} kept of a returned medicine`,
+    detail: { encounterId: charge.encounterId, dispenseLineId: charge.dispenseLineId, replaces: charge.id, quantity: kept, amountCents: replacement.amountCents },
+  });
+  return replacement;
+}
+
 /** Marks an encounter's bed-day failures resolved, except those still missing. */
 async function resolveFailures(tx: AppDb, encounterId: string, stillMissing: string[]) {
   await tx.update(jobFailures)

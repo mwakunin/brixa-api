@@ -913,6 +913,24 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - the pharmacy's outcome on the clinicians' order view;
   - dispensing labels.
 
+**As built (P4, slice 3b): returns and stock adjustments.** Decided 2026-11-15 (`ROADMAP.md` P4, slice 3b). `dispense_returns`, `stock_adjustments` and `stock_adjustment_lines`; `src/lib/dispense-returns.ts` and `src/lib/stock-adjustments.ts`.
+
+- **`POST /dispense-lines/{id}/returns`** takes back what a patient returns of a medicine handed over: at most what was given, less what has come back or is waiting to.
+  - **Fit to sell again**, it goes back on the shelf: into the dispense's pharmacy, latest-expiring batch first, never an expired one (`nowhere_to_return`), and never more into a batch than came out of it for that line. Each batch gets a `dispense_returned` movement against the line. The patient is credited at once.
+  - **Unfit**, nothing goes back on the shelf: it is a write-off, `pending` until the finance manager or a pharmacist other than the receiver approves (`/approve`, which credits) or rejects it (`dispense_returns_lifecycle`).
+  - **The credit:**
+    - While the charge is unbilled, it is cancelled and a replacement charge raised for what was kept, at the price first charged (`replaceDispenseCharge`). A line has one standing charge (`charges_one_standing_per_dispense_line`).
+    - Once billed on a finalised invoice, a credit note is asked for through the existing invoice adjustments, for the difference between what was kept and what is kept now, each rounded as a charge is. Its id is on the return.
+    - The return is refused when the charge is on a draft bill (`on_draft_bill`), split across bills (`split_billed`), or the bill is paid (`bill_paid`: the cashier frees the payment first, and the money goes back as a refund).
+  - A controlled drug is taken back by a pharmacist with a pharmacy licence. `GET /dispense-returns?status=pending` is the approvers' list. Ids and items only, so it is not audited.
+- **`POST /stock-adjustments`** asks for `expired`, `damaged`, `lost`, `found` or `correction`, with a reason, naming batches and signed quantities.
+  - A write-off takes stock off and `found` puts it on (`wrong_sign`). `expired` takes only batches past their date, and a removal can be no more than the store holds.
+  - Each line carries its value at the batch's cost. A controlled drug needs a pharmacist with a pharmacy licence.
+  - Nothing moves until `/approve`, by the finance manager or a pharmacist other than the asker. Approval locks the batches, checks the stock again, and writes an `adjustment` movement per line. `/reject` (another person) and `/withdraw` (the asker) close it unmoved.
+  - `stock_adjustments_decision` holds who decides in the database (rule 24).
+- **The stock ledger** gains `dispense_returned` (against its dispense line) and `adjustment` (against its line), keeping one source per movement.
+- **Not yet:** the controlled-drug register's entries for returns and write-offs (4); the stock-take that adjusts by count (5); a loss report built on the adjustments' values (P6's stock reports).
+
 ---
 
 ## 9. Payers and claims

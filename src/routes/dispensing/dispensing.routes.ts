@@ -45,6 +45,8 @@ const DispenseSchema = z.object({
   /** An outpatient's medicines not yet paid for: a warning, never a block. */
   unpaid: z.boolean(),
   lines: z.array(z.object({
+    /** What a patient's return names (`/dispense-lines/{id}/returns`). */
+    id: z.uuid(),
     orderItemId: z.uuid(),
     description: z.string(),
     stockItemId: z.uuid(),

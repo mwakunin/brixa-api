@@ -589,6 +589,27 @@
       "when": 1794764073054,
       "tag": "0083_dispensing_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
+      "when": 1794766844927,
+      "tag": "0084_returns_adjustments",
+      "breakpoints": true
+    },
+    {
+      "idx": 85,
+      "version": "7",
+      "when": 1794766849688,
+      "tag": "0085_returns_adjustments_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1794768202470,
+      "tag": "0086_returns_by_line",
+      "breakpoints": true
     }
   ]
 }

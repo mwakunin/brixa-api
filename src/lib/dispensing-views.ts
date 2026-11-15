@@ -129,6 +129,8 @@ export async function pharmacyWorklist(tx: AppDb, facilityId: string, actor: Pat
 interface Step { byName: string; at: Date }
 
 export interface ShownDispenseLine {
+  /** What a patient's return names. */
+  id: string;
   orderItemId: string;
   description: string;
   stockItemId: string;
@@ -189,6 +191,7 @@ async function linesOf(tx: AppDb, dispenseIds: string[]): Promise<Map<string, (S
   const result = new Map<string, (ShownDispenseLine & { chargeId: string | null })[]>();
   for (const r of rows) {
     const shown = {
+      id: r.line.id,
       orderItemId: r.line.orderItemId,
       description: r.description!,
       stockItemId: r.line.stockItemId,

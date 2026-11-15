@@ -270,6 +270,17 @@ Main store, pharmacy and ward sub-stores; transfers; goods received; batches and
 9. **No dispensing label** in 3a; it needs label printers.
 10. **Medicines that disclose a condition** (question 12) become their own slice, **3c**, after 3b: the facility admin marks catalogue drugs sensitive, and a prescription of one is restricted as a sensitive lab test restricts its order. It changes P3's prescriptions, so it is not folded into dispensing.
 
+**Slice 3b, returns and adjustments** (decided 2026-11-15, as recommended):
+1. **A patient returns** only what was handed over, no more than was given less what has come back already. It goes back to the pharmacy it left, into the latest-expiring of the batches it came from; an expired batch takes nothing back.
+2. **The pharmacist judges a return fit to sell again.** One that is not puts nothing back on the shelf, and is a write-off: a second person approves it before the patient is credited.
+3. **Unbilled**, the line's charge is cancelled and a new one raised for what the patient kept, at the original price (charges are cancelled, never edited).
+4. **Billed**, the return asks for a credit note on the invoice through the existing adjustments, which a second person approves; money already paid goes back through the existing refunds.
+5. **Stock adjustments** are `expired`, `damaged`, `lost`, `found` or `correction`, each with a reason, naming batches and quantities; one request may cover many batches (every expired batch in a store). `found` stock goes into an existing batch only: new stock comes by goods received.
+6. **Stock moves only on approval**; a pending request leaves the shelf as it is.
+7. **Store staff ask; the finance manager or a pharmacist approves**, never the person who asked (rule 24, a `CHECK` as well as the service). No value threshold in v1.
+8. **Each adjustment carries its value** at the batch's cost, for the loss report.
+9. **A controlled drug** is returned or adjusted only by a pharmacist with a pharmacy licence, as it is dispensed; its register entries come with slice 4.
+
 ### P5 · Inpatient clinical
 
 **Size:** L.

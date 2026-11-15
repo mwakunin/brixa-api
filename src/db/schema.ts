@@ -469,6 +469,13 @@ export const auditLog = pgTable("audit_log", {
     | "dispense.cancelled"
     | "medicine.not_supplied"
     | "pharmacy.worklist_viewed"
+    | "dispense.returned"
+    | "dispense_return.approved"
+    | "dispense_return.rejected"
+    | "stock_adjustment.requested"
+    | "stock_adjustment.approved"
+    | "stock_adjustment.rejected"
+    | "stock_adjustment.withdrawn"
   >().notNull().references(() => auditActions.action),
   /** What it happened to. Not a foreign key: the log outlives what it names. */
   entityType: text().notNull(),
@@ -2643,6 +2650,59 @@ export const medicinesNotSupplied = pgTable("medicines_not_supplied", {
 ]);
 
 /**
+ * A change to a store's stock that no delivery, transfer or dispense
+ * explains (P4 slice 3b): a write-off (expired, damaged, lost), stock found,
+ * or a correction. Asked for by the stores' staff, approved by a second
+ * person (rule 24); its batches move only on approval.
+ */
+export const stockAdjustments = pgTable("stock_adjustments", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  storeId: uuid().notNull(),
+  kind: text().$type<"expired" | "damaged" | "lost" | "found" | "correction">().notNull(),
+  reason: text().notNull(),
+  status: text().$type<"pending" | "approved" | "rejected" | "withdrawn">().notNull(),
+  requestedBy: uuid().notNull(),
+  requestedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  decidedBy: uuid(),
+  decidedAt: timestamp({ withTimezone: true }),
+}, t => [
+  unique("stock_adjustments_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({ name: "stock_adjustments_store_fk", columns: [t.facilityId, t.storeId], foreignColumns: [stores.facilityId, stores.id] }),
+  foreignKey({ name: "stock_adjustments_requested_by_fk", columns: [t.facilityId, t.requestedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "stock_adjustments_decided_by_fk", columns: [t.facilityId, t.decidedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  index("stock_adjustments_status_index").on(t.facilityId, t.status),
+  oneOf("stock_adjustments_kind_known", t.kind, ["expired", "damaged", "lost", "found", "correction"]),
+  oneOf("stock_adjustments_status_known", t.status, ["pending", "approved", "rejected", "withdrawn"]),
+  check("stock_adjustments_reason_present", sql`length(btrim(${t.reason})) > 0`),
+  // Decided once, by someone other than its requester (rule 24); withdrawn by the requester.
+  check(
+    "stock_adjustments_decision",
+    sql`(${t.decidedBy} IS NULL) = (${t.decidedAt} IS NULL)
+      AND (${t.status} = 'pending') = (${t.decidedBy} IS NULL)
+      AND (${t.decidedBy} IS NULL OR (${t.status} = 'withdrawn') = (${t.decidedBy} = ${t.requestedBy}))`,
+  ),
+]);
+
+/** One batch of an adjustment: its signed quantity in base units, and its value at the batch's cost. Written once. */
+export const stockAdjustmentLines = pgTable("stock_adjustment_lines", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  adjustmentId: uuid().notNull(),
+  batchId: uuid().notNull(),
+  /** Below zero takes stock off the shelf; above zero puts found stock on it. */
+  quantity: integer().notNull(),
+  /** At the batch's own cost, signed as the quantity, rounded once. */
+  valueCents: integer().notNull(),
+}, t => [
+  unique("stock_adjustment_lines_facility_id_id_key").on(t.facilityId, t.id),
+  unique("stock_adjustment_lines_batch_key").on(t.adjustmentId, t.batchId),
+  foreignKey({ name: "stock_adjustment_lines_adjustment_fk", columns: [t.facilityId, t.adjustmentId], foreignColumns: [stockAdjustments.facilityId, stockAdjustments.id] }),
+  foreignKey({ name: "stock_adjustment_lines_batch_fk", columns: [t.facilityId, t.batchId], foreignColumns: [stockBatches.facilityId, stockBatches.id] }),
+  check("stock_adjustment_lines_quantity_nonzero", sql`${t.quantity} <> 0`),
+]);
+
+/**
  * Every change to what a store holds, per batch: a signed quantity in base
  * units (SCHEMA.md §8). Append-only, for every role. On hand per store and
  * batch is their sum, never stored (rule 4) and never negative, which a
@@ -2654,14 +2714,16 @@ export const stockMovements = pgTable("stock_movements", {
   facilityId: uuid().notNull().references(() => facilities.id),
   storeId: uuid().notNull(),
   batchId: uuid().notNull(),
-  kind: text().$type<"receipt" | "receipt_reversed" | "transfer_out" | "transfer_in" | "dispense" | "dispense_cancelled">().notNull(),
+  kind: text().$type<"receipt" | "receipt_reversed" | "transfer_out" | "transfer_in" | "dispense" | "dispense_cancelled" | "dispense_returned" | "adjustment">().notNull(),
   quantity: integer().notNull(),
   /** The note a receipt, or its reversal, belongs to. */
   goodsReceivedId: uuid(),
   /** The transfer a batch left one store by, and entered another by (slice 2). */
   transferId: uuid(),
-  /** The dispense line a batch was taken for, and given back by if it was cancelled (slice 3a). */
+  /** The dispense line a batch was taken for, given back by if it was cancelled (slice 3a), or taken back by from the patient (slice 3b). */
   dispenseLineId: uuid(),
+  /** An approved stock adjustment's line (slice 3b). */
+  stockAdjustmentLineId: uuid(),
   /** Why, for a reversal. */
   reason: text(),
   recordedBy: uuid().notNull(),
@@ -2672,6 +2734,7 @@ export const stockMovements = pgTable("stock_movements", {
   foreignKey({ name: "stock_movements_goods_received_fk", columns: [t.facilityId, t.goodsReceivedId], foreignColumns: [goodsReceived.facilityId, goodsReceived.id] }),
   foreignKey({ name: "stock_movements_transfer_fk", columns: [t.facilityId, t.transferId], foreignColumns: [stockTransfers.facilityId, stockTransfers.id] }),
   foreignKey({ name: "stock_movements_dispense_line_fk", columns: [t.facilityId, t.dispenseLineId], foreignColumns: [dispenseLines.facilityId, dispenseLines.id] }),
+  foreignKey({ name: "stock_movements_adjustment_line_fk", columns: [t.facilityId, t.stockAdjustmentLineId], foreignColumns: [stockAdjustmentLines.facilityId, stockAdjustmentLines.id] }),
   foreignKey({ name: "stock_movements_recorded_by_fk", columns: [t.facilityId, t.recordedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
   index("stock_movements_store_batch_index").on(t.facilityId, t.storeId, t.batchId),
   index("stock_movements_batch_index").on(t.facilityId, t.batchId),
@@ -2685,18 +2748,22 @@ export const stockMovements = pgTable("stock_movements", {
   uniqueIndex("stock_movements_one_dispense").on(t.dispenseLineId, t.batchId).where(sql`${t.kind} = 'dispense'`),
   uniqueIndex("stock_movements_one_dispense_cancelled").on(t.dispenseLineId, t.batchId).where(sql`${t.kind} = 'dispense_cancelled'`),
   index("stock_movements_dispense_line_index").on(t.facilityId, t.dispenseLineId),
-  oneOf("stock_movements_kind_known", t.kind, ["receipt", "receipt_reversed", "transfer_out", "transfer_in", "dispense", "dispense_cancelled"]),
+  // An adjustment's line moves its batch once.
+  uniqueIndex("stock_movements_one_adjustment").on(t.stockAdjustmentLineId).where(sql`${t.kind} = 'adjustment'`),
+  oneOf("stock_movements_kind_known", t.kind, ["receipt", "receipt_reversed", "transfer_out", "transfer_in", "dispense", "dispense_cancelled", "dispense_returned", "adjustment"]),
   // Each kind's sign, its one source, and a reason only where one is asked for.
   check(
     "stock_movements_shape",
-    sql`num_nonnulls(${t.goodsReceivedId}, ${t.transferId}, ${t.dispenseLineId}) = 1
+    sql`num_nonnulls(${t.goodsReceivedId}, ${t.transferId}, ${t.dispenseLineId}, ${t.stockAdjustmentLineId}) = 1
       AND ((${t.kind} = 'receipt' AND ${t.quantity} > 0 AND ${t.goodsReceivedId} IS NOT NULL AND ${t.reason} IS NULL)
         OR (${t.kind} = 'receipt_reversed' AND ${t.quantity} < 0 AND ${t.goodsReceivedId} IS NOT NULL
             AND ${t.reason} IS NOT NULL AND length(btrim(${t.reason})) > 0)
         OR (${t.kind} = 'transfer_out' AND ${t.quantity} < 0 AND ${t.transferId} IS NOT NULL AND ${t.reason} IS NULL)
         OR (${t.kind} = 'transfer_in' AND ${t.quantity} > 0 AND ${t.transferId} IS NOT NULL AND ${t.reason} IS NULL)
         OR (${t.kind} = 'dispense' AND ${t.quantity} < 0 AND ${t.dispenseLineId} IS NOT NULL AND ${t.reason} IS NULL)
-        OR (${t.kind} = 'dispense_cancelled' AND ${t.quantity} > 0 AND ${t.dispenseLineId} IS NOT NULL AND ${t.reason} IS NULL))`,
+        OR (${t.kind} = 'dispense_cancelled' AND ${t.quantity} > 0 AND ${t.dispenseLineId} IS NOT NULL AND ${t.reason} IS NULL)
+        OR (${t.kind} = 'dispense_returned' AND ${t.quantity} > 0 AND ${t.dispenseLineId} IS NOT NULL AND ${t.reason} IS NULL)
+        OR (${t.kind} = 'adjustment' AND ${t.quantity} <> 0 AND ${t.stockAdjustmentLineId} IS NOT NULL AND ${t.reason} IS NULL))`,
   ),
 ]);
 
@@ -2768,8 +2835,8 @@ export const charges = pgTable("charges", {
   uniqueIndex("charges_one_per_queue_entry").on(t.queueEntryId).where(sql`${t.queueEntryId} IS NOT NULL`),
   // An order item is charged once.
   uniqueIndex("charges_one_per_order_item").on(t.orderItemId).where(sql`${t.orderItemId} IS NOT NULL`),
-  // A dispense line is charged once.
-  uniqueIndex("charges_one_per_dispense_line").on(t.dispenseLineId).where(sql`${t.dispenseLineId} IS NOT NULL`),
+  // A dispense line has one standing charge: a return replaces it for what was kept (slice 3b).
+  uniqueIndex("charges_one_standing_per_dispense_line").on(t.dispenseLineId).where(sql`${t.dispenseLineId} IS NOT NULL AND ${t.cancelledAt} IS NULL`),
   check("charges_quantity_positive", sql`${t.quantity} > 0`),
   check("charges_unit_price_nonnegative", sql`${t.unitPriceCents} >= 0`),
   // Whole shillings: neither cash nor M-Pesa carries cents (SPEC.md D2).
@@ -3030,6 +3097,50 @@ export const invoiceAdjustments = pgTable("invoice_adjustments", {
   check(
     "invoice_adjustments_credit_note_document",
     sql`(${t.kind} = 'credit_note' AND ${t.status} = 'approved') = (${t.documentId} IS NOT NULL)`,
+  ),
+]);
+
+/**
+ * Medicines a patient brought back (P4 slice 3b, decided 2026-11-15). One
+ * fit to sell again goes back on the shelf at once (`dispense_returned`)
+ * and the patient is credited; one that is not is a write-off, and waits
+ * for a second person before the patient is credited. Credited by a
+ * replacement charge while unbilled, or by a credit note once billed.
+ */
+export const dispenseReturns = pgTable("dispense_returns", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  dispenseLineId: uuid().notNull(),
+  /** In the line's base unit. */
+  quantity: integer().notNull(),
+  reason: text().notNull(),
+  fitForResale: boolean().notNull(),
+  /** `done` once credited; an unfit one is `pending` a second person, who may reject it. */
+  status: text().$type<"done" | "pending" | "rejected">().notNull(),
+  receivedBy: uuid().notNull(),
+  receivedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  decidedBy: uuid(),
+  decidedAt: timestamp({ withTimezone: true }),
+  /** The credit note asked for, when the charge was already billed. */
+  invoiceAdjustmentId: uuid(),
+}, t => [
+  unique("dispense_returns_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({ name: "dispense_returns_line_fk", columns: [t.facilityId, t.dispenseLineId], foreignColumns: [dispenseLines.facilityId, dispenseLines.id] }),
+  foreignKey({ name: "dispense_returns_received_by_fk", columns: [t.facilityId, t.receivedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "dispense_returns_decided_by_fk", columns: [t.facilityId, t.decidedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "dispense_returns_adjustment_fk", columns: [t.facilityId, t.invoiceAdjustmentId], foreignColumns: [invoiceAdjustments.facilityId, invoiceAdjustments.id] }),
+  index("dispense_returns_line_index").on(t.facilityId, t.dispenseLineId),
+  index("dispense_returns_status_index").on(t.facilityId, t.status),
+  oneOf("dispense_returns_status_known", t.status, ["done", "pending", "rejected"]),
+  check("dispense_returns_quantity_positive", sql`${t.quantity} > 0`),
+  check("dispense_returns_reason_present", sql`length(btrim(${t.reason})) > 0`),
+  // Fit: done at once, by nobody else. Unfit: pending, then decided by someone other than its receiver (rule 24).
+  check(
+    "dispense_returns_lifecycle",
+    sql`(${t.decidedBy} IS NULL) = (${t.decidedAt} IS NULL)
+      AND ((${t.fitForResale} AND ${t.status} = 'done' AND ${t.decidedBy} IS NULL)
+        OR (NOT ${t.fitForResale} AND ${t.status} = 'pending' AND ${t.decidedBy} IS NULL)
+        OR (NOT ${t.fitForResale} AND ${t.status} IN ('done', 'rejected') AND ${t.decidedBy} IS NOT NULL AND ${t.decidedBy} <> ${t.receivedBy}))`,
   ),
 ]);
 
@@ -3517,4 +3628,7 @@ export const TENANT_TABLES = [
   "dispenses",
   "dispense_lines",
   "medicines_not_supplied",
+  "dispense_returns",
+  "stock_adjustments",
+  "stock_adjustment_lines",
 ] as const;
