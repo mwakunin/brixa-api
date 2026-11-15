@@ -68,7 +68,7 @@ The earlier scoping (2026-09-21) targeted small outpatient clinics, with inpatie
 ## 4. Open questions
 
 1. **Hosting region and data residency.** As far as known, Google Cloud has no Kenya region (nearest is Johannesburg). Confirm with a lawyer whether the localization rules for health data require in-country storage. This decides the database and storage provider. Ask DHA too: HMIS certification may carry its own hosting requirements.
-2. **Loose units vs full packs.** Do hospitals dispense individual units (e.g., single tablets)? If yes, items need a pack size and base unit, with stock tracked in the base unit.
+2. **Loose units vs full packs: loose units** *(decided 2026-11-15)*. Drugs are dispensed per tablet, so each stock item has a base unit (tablet, capsule, mL, vial) and a pack size. Stock is counted in the base unit, goods are received in packs and converted, and the selling price is per base unit (D2 allows fractional shillings).
 3. **Pilot hospital.** A candidate exists (§2) but is not confirmed. Workflows differ between private, mission and faith-based hospitals, and between levels, so its size and departments shape the first release (§9).
 4. **Production database host.** Decided by question 1. If hosting outside Kenya is allowed: **Cloud SQL for PostgreSQL in Johannesburg** (`africa-south1`), next to Cloud Run (confirm Cloud Run is offered there). If data must stay in Kenya: the API and Postgres both move to a Kenyan data centre or cloud, since no major cloud has a Kenya region. Staging uses the same host as production.
 5. **Storage bucket location.** GCS is the chosen provider. A bucket's location cannot be changed after creation (moving means creating a new bucket and copying objects), so choose the production location after question 1.
@@ -147,7 +147,7 @@ All taken 2026-11-03. D1 and D8 were revised the same day, once it was clear tha
 - **Controlled substances:** catalogue items carry a controlled flag and schedule (I–IV). Dispensing these writes to a separate register (patient, prescriber, quantity, running balance) and is restricted to authorized roles.
 - **Flow:** medication order → dispense (deducts stock, raises the charge) → invoice line.
 - **Onboarding:** CSV import of an existing drug list and prices, mapped to the shared catalogue.
-- **Units:** pending open question 2.
+- **Units:** loose units, counted in a base unit with a pack size for receiving (question 2, decided 2026-11-15).
 
 ### 7.5 Security and audit
 - Role-based access control, with segregation of duties on refunds, write-offs, waivers, price changes and claim withdrawals.
@@ -228,7 +228,7 @@ The pilot candidate's staff find their certified system too complex (§2). In a 
 4. What is your SHA rejection rate, and the top reasons? Do you bill patients for shortfalls?
 5. How do you count bed-days? Do casualty charges roll into the inpatient bill?
 6. Is OPD cash-first or post-paid? Are lab tests charged when ordered or when performed? *(Decided 2026-11-10 without the pilot: both kinds of visit are supported side by side, with no setting, and lab is charged at order, §2. Still ask which is their usual case: it decides what the screens put first, never which kind of visit is allowed.)*
-7. Do you sell drugs per tablet, or only in packs?
+7. Do you sell drugs per tablet, or only in packs? *(Answered decided 2026-11-15: per tablet.)*
 8. Who approves waivers and charity care, and how is it recorded?
 9. How are your stores laid out, and who approves transfers to wards?
 10. Which MOH reports do you file, and how?

@@ -156,7 +156,7 @@ The detail is in `SCHEMA.md`. In short:
 - **Printed documents** go through `documents` (`SCHEMA.md` §6.2). The module that finalises the work calls `issueDocument` in that transaction: it takes the number, mints the QR verification code and freezes exactly what is printed. A PDF is rendered from that frozen content only, and every opening is audited. Never print a document from live rows.
 - **Pharmacy and stores:** shared drug catalogue (identity only); per-facility inventory items with the facility's own cost and selling prices; batch-level stock per store; first-expiry-first-out dispensing; every movement is a stock ledger entry.
 - **Prices** are per facility and per payer price list. Only `facility_admin` and `finance_manager` change them, and each change is audited with old and new values.
-- **Units of sale** (loose units vs packs) are an open question. Do not fix the stock unit model until it is answered.
+- **Units of sale:** loose units (decided 2026-11-15, `SPEC.md` §4, question 2). A stock item has a base unit (tablet, capsule, mL, vial) and a pack size; stock is counted in the base unit, received in packs and converted, and priced per base unit.
 
 ---
 
@@ -211,7 +211,6 @@ Verify these with a lawyer, the regulator or DHA/SHA. They are noted here so cod
 See `SPEC.md` sections 4 and 5. Do not resolve these in code without asking:
 
 - Data residency, and therefore the production database host, region, and bucket location
-- Loose units vs full packs for dispensing
 - Pilot hospital
 - Medical-records retention requirements
 - PPB dispensing record obligations

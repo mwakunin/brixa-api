@@ -190,7 +190,7 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
 
 **Size:** L.
 
-Main store, pharmacy and ward sub-stores; transfers; goods received; batches and FEFO dispensing; dispense → charge; returns; the controlled-drug register; stock take; reorder levels; expiry and low-stock alerts (the nightly job in `CLAUDE.md` §7). Units of sale wait on open question 2 in `SPEC.md`.
+Main store, pharmacy and ward sub-stores; transfers; goods received; batches and FEFO dispensing; dispense → charge; returns; the controlled-drug register; stock take; reorder levels; expiry and low-stock alerts (the nightly job in `CLAUDE.md` §7). Drugs are dispensed per tablet: stock is counted in a base unit (decided 2026-11-15, `SPEC.md` §4, question 2).
 
 **Exit:**
 - The stock identity holds per store and batch (on hand = Σ movements, never negative).
@@ -213,7 +213,7 @@ Main store, pharmacy and ward sub-stores; transfers; goods received; batches and
 | C | 6 Alerts and exit | The nightly expiry and low-stock scan (`CLAUDE.md` §7) and the lists they feed. The OPD journey extended through the pharmacy. The stock identity and the register checked as P4's exit |
 
 **Questions before code** (proposed 2026-11-15; recommendations to confirm):
-1. **Loose units or packs** (`SPEC.md` §4, question 2; ask the pilot, `SPEC.md` §9, question 7). It decides the stock model, so 1a waits for it. *Recommended whatever the answer:* stock is counted in a base unit (tablet, capsule, mL, vial), with an optional pack size. Goods are received in packs and converted, and the price is per base unit, since a unit price may carry fractional shillings (D2). This serves a pharmacy that sells single tablets and one that sells whole packs alike.
+1. **Loose units or packs: per tablet** (*decided 2026-11-15*, `SPEC.md` §4, question 2). Stock is counted in a base unit (tablet, capsule, mL, vial), with a pack size. Goods are received in packs and converted, and the price is per base unit, since a unit price may carry fractional shillings (D2). A prescription's quantity, already in dose units (P3 slice 4b), is dispensed in the same unit where the two match.
 2. **Cost.** *Recommended:* each batch keeps its own unit cost from goods received, and stock is valued at batch cost. No average costing, and no ledger in v1 (`ROADMAP.md` §3).
 3. **Selling prices.** *Recommended:* set per item through the existing price changes, approved by a second person (rule 24). The optional markup per category (`SPEC.md` §7.4) waits until a facility asks for it.
 4. **Who dispenses.** *Recommended:* pharmacists and pharmacy technicians, under a current licence. A controlled drug: pharmacists only, and never a nurse who holds the pharmacy technician role (the question left open in slice 1a, `SCHEMA.md` §8).
