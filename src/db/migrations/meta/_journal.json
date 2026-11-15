@@ -554,6 +554,13 @@
       "when": 1794753302490,
       "tag": "0078_item_import",
       "breakpoints": true
+    },
+    {
+      "idx": 79,
+      "version": "7",
+      "when": 1794755996468,
+      "tag": "0079_stock_written_once",
+      "breakpoints": true
     }
   ]
 }

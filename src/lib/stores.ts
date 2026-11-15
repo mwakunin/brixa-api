@@ -142,9 +142,11 @@ export async function setReorderLevels(
   tx: AppDb,
   facilityId: string,
   storeId: string,
-  levels: readonly { stockItemId: string; level: number }[],
+  given: readonly { stockItemId: string; level: number }[],
   actor: PatientActor,
 ): Promise<ShownReorderLevel[]> {
+  // Postgres answers a uuid in lowercase, so the levels read back are matched in it.
+  const levels = given.map(l => ({ ...l, stockItemId: l.stockItemId.toLowerCase() }));
   // Locked, so two changes to one store's levels at once each audit what they replaced.
   const [store] = await tx.select({ id: stores.id, name: stores.name }).from(stores).where(eq(stores.id, storeId)).for("update").limit(1);
   if (!store)

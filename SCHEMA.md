@@ -819,7 +819,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - the Kenyan day it arrived (today unless given, never later), and who received it;
   - a number from the yearly `GRN-` series, registered at onboarding and backfilled by migration 0077.
 
-  It is written once and never edited.
+  It is written once and never edited: the app role has `SELECT` and `INSERT` only, and triggers (migration 0079) refuse `UPDATE` and `DELETE` from every role, the owner included. The same holds for its batches.
 - **`stock_batches`**: one per line, so each batch has one cost.
   - The supplier's batch number and expiry are needed for a drug and optional for a consumable.
   - The quantity is stored in base units, with the pack size it came at. A line gives whole `packs` or loose `units`, never both.
@@ -858,7 +858,8 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - One `stock_items.imported` audit entry names the codes created, beside the price change's own entry.
 - **Running a file again changes nothing:**
   - a code already set up is matched;
-  - a price is requested only if it differs from today's and no pending change already asks for it;
+  - a price is requested only if it differs from the price in force on the day the file's prices would start. A pending change already asking for it doesn't count unless it can still be approved (starting today or later) and starts by that day. The preview takes the same `effectiveFrom`;
+  - imports run one at a time per facility (an advisory lock), so a second waits and then sees the first's items and pending prices;
   - an existing item keeps its name;
   - a row that disagrees with what's set up (another category, drug, base unit or pack size, or a retired item) is a problem, never applied.
 - **Who:** the facility admin only, since an import creates billable items as well as stock items.

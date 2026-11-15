@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 
@@ -139,10 +139,8 @@ function searchWordOf(name: string): string | null {
   return name.match(/\p{L}{3,}/u)?.[0] ?? null;
 }
 
-/** Each row's plan, with the fields it was read from. */
-async function planRows(tx: AppDb, csv: string, today: string): Promise<{ planned: PlannedRow; parsed: ParsedRow }[]> {
-  const rows = readFile(csv);
-
+/** Marks each row whose code an earlier row already has. */
+function markDuplicates(rows: ParsedRow[]): void {
   const seen = new Map<string, number>();
   for (const r of rows) {
     const first = seen.get(r.code);
@@ -151,83 +149,141 @@ async function planRows(tx: AppDb, csv: string, today: string): Promise<{ planne
     else
       seen.set(r.code, r.row);
   }
+}
 
-  const existing = new Map((await listBillableItems(tx, today)).filter(i => seen.has(i.code)).map(i => [i.code, i]));
-  const ids = [...existing.values()].map(i => i.id);
+type ListedItem = Awaited<ReturnType<typeof listBillableItems>>[number];
+type StockItemRow = typeof stockItems.$inferSelect;
+
+/** What the facility already has that the file's rows name, read once. */
+interface Snapshot {
+  /** By code, each with its cash price on the day the file's prices would start. */
+  items: Map<string, ListedItem>;
+  stockOf: Map<string, StockItemRow>;
+  /** `item:price` for each pending cash price that would be in force by then. */
+  pending: Set<string>;
+  currentDrugs: Set<string>;
+}
+
+async function pendingPrices(tx: AppDb, ids: string[], today: string, effectiveFrom: string): Promise<Set<string>> {
+  if (ids.length === 0)
+    return new Set();
+  const lines = await tx
+    .select({ billableItemId: priceChangeLines.billableItemId, unitPriceCents: priceChangeLines.unitPriceCents })
+    .from(priceChangeLines)
+    .innerJoin(priceChanges, eq(priceChanges.id, priceChangeLines.priceChangeId))
+    .where(and(
+      eq(priceChanges.status, "pending"),
+      eq(priceChanges.priceListId, await cashPriceList(tx)),
+      inArray(priceChangeLines.billableItemId, ids),
+      // Approvable (one already past its day never can be), and starting by the day asked for.
+      gte(priceChanges.effectiveFrom, today),
+      lte(priceChanges.effectiveFrom, effectiveFrom),
+    ));
+  return new Set(lines.map(l => `${l.billableItemId}:${l.unitPriceCents}`));
+}
+
+async function loadSnapshot(tx: AppDb, rows: ParsedRow[], today: string, effectiveFrom: string): Promise<Snapshot> {
+  const codes = new Set(rows.map(r => r.code));
+  const items = new Map((await listBillableItems(tx, effectiveFrom)).filter(i => codes.has(i.code)).map(i => [i.code, i]));
+  const ids = [...items.values()].map(i => i.id);
   const stockOf = new Map(ids.length === 0
     ? []
     : (await tx.select().from(stockItems).where(inArray(stockItems.billableItemId, ids))).map(s => [s.billableItemId, s]));
-  // A price already waiting for approval is not asked for again, so a file run twice before approval asks once.
-  const pending = new Set(ids.length === 0
-    ? []
-    : (await tx
-        .select({ billableItemId: priceChangeLines.billableItemId, unitPriceCents: priceChangeLines.unitPriceCents })
-        .from(priceChangeLines)
-        .innerJoin(priceChanges, eq(priceChanges.id, priceChangeLines.priceChangeId))
-        .where(and(eq(priceChanges.status, "pending"), eq(priceChanges.priceListId, await cashPriceList(tx)), inArray(priceChangeLines.billableItemId, ids))))
-        .map(l => `${l.billableItemId}:${l.unitPriceCents}`));
   const drugCodes = [...new Set(rows.map(r => r.drugCode).filter((c): c is string => c !== null))];
   const currentDrugs = new Set(drugCodes.length === 0
     ? []
     : (await tx.select({ code: drugCatalogue.code }).from(drugCatalogue).where(and(inArray(drugCatalogue.code, drugCodes), isNull(drugCatalogue.retiredAt)))).map(d => d.code));
+  return { items, stockOf, pending: await pendingPrices(tx, ids, today, effectiveFrom), currentDrugs };
+}
 
-  let suggested = 0;
-  const planned: { planned: PlannedRow; parsed: ParsedRow }[] = [];
-  for (const r of rows) {
-    const problems = [...r.problems];
-    let suggestions: PlannedRow["suggestions"] = [];
-    if (r.category === "drug" && !r.drugCode) {
-      problems.push("drug_code: needed for a drug; choose its catalogue drug");
-      const word = searchWordOf(r.name);
-      if (word && suggested < MAX_SUGGESTED_ROWS) {
-        suggested += 1;
-        suggestions = (await searchDrugs(tx, word)).slice(0, SUGGESTIONS).map(d => ({ code: d.code, genericName: d.genericName, strength: d.strength, form: d.form }));
-      }
-    }
-    if (r.drugCode && DRUG_CODE_SHAPE.test(r.drugCode) && !currentDrugs.has(r.drugCode))
-      problems.push(`drug_code: ${r.drugCode} is not a current catalogue drug`);
+/** Where a row disagrees with what is already set up under its code. */
+function disagreements(r: ParsedRow, item: ListedItem | undefined, stock: StockItemRow | undefined): string[] {
+  const problems: string[] = [];
+  if (item && item.category !== r.category)
+    problems.push(`code ${r.code} is already a ${item.category} item`);
+  if (item && !item.isActive)
+    problems.push(`code ${r.code} is a retired item`);
+  if (stock && stock.drugCode !== r.drugCode)
+    problems.push(`code ${r.code} is already stocked as ${stock.drugCode ?? "a consumable"}`);
+  if (stock && stock.baseUnit !== r.baseUnit)
+    problems.push(`code ${r.code} is already counted in ${stock.baseUnit}`);
+  if (stock && stock.packSize !== r.packSize)
+    problems.push(`code ${r.code} already comes in packs of ${stock.packSize}; change it on the item`);
+  return problems;
+}
 
-    const item = existing.get(r.code);
-    const stock = item ? stockOf.get(item.id) : undefined;
-    if (item) {
-      if (item.category !== r.category)
-        problems.push(`code ${r.code} is already a ${item.category} item`);
-      if (!item.isActive)
-        problems.push(`code ${r.code} is a retired item`);
-    }
-    if (stock) {
-      if (stock.drugCode !== r.drugCode)
-        problems.push(`code ${r.code} is already stocked as ${stock.drugCode ?? "a consumable"}`);
-      if (stock.baseUnit !== r.baseUnit)
-        problems.push(`code ${r.code} is already counted in ${stock.baseUnit}`);
-      if (stock.packSize !== r.packSize)
-        problems.push(`code ${r.code} already comes in packs of ${stock.packSize}; change it on the item`);
-    }
+/**
+ * One row's plan. A price is asked for only if it differs from the item's
+ * price on the day the file's prices start, and no pending change already
+ * asks for it by then.
+ */
+function planRow(r: ParsedRow, snapshot: Snapshot): PlannedRow {
+  const problems = [...r.problems];
+  if (r.category === "drug" && !r.drugCode)
+    problems.push("drug_code: needed for a drug; choose its catalogue drug");
+  if (r.drugCode && DRUG_CODE_SHAPE.test(r.drugCode) && !snapshot.currentDrugs.has(r.drugCode))
+    problems.push(`drug_code: ${r.drugCode} is not a current catalogue drug`);
 
-    const priceDiffers = r.priceCents !== null && r.priceCents !== (item?.cashPriceCents ?? null)
-      && !(item && pending.has(`${item.id}:${r.priceCents}`));
-    planned.push({
-      planned: {
-        row: r.row,
-        code: r.code,
-        name: item?.name ?? r.name,
-        action: problems.length > 0 ? null : !item ? "create" : !stock ? "add_stock_item" : "unchanged",
-        requestedPriceCents: problems.length === 0 && priceDiffers ? r.priceCents : null,
-        problems,
-        suggestions,
-      },
-      parsed: r,
-    });
+  const item = snapshot.items.get(r.code);
+  const stock = item ? snapshot.stockOf.get(item.id) : undefined;
+  problems.push(...disagreements(r, item, stock));
+
+  const priceDiffers = r.priceCents !== null && r.priceCents !== (item?.cashPriceCents ?? null)
+    && !(item && snapshot.pending.has(`${item.id}:${r.priceCents}`));
+  return {
+    row: r.row,
+    code: r.code,
+    name: item?.name ?? r.name,
+    action: problems.length > 0 ? null : !item ? "create" : !stock ? "add_stock_item" : "unchanged",
+    requestedPriceCents: problems.length === 0 && priceDiffers ? r.priceCents : null,
+    problems,
+    suggestions: [],
+  };
+}
+
+/** Up to three catalogue drugs for each drug row naming none, for the first `MAX_SUGGESTED_ROWS` of them. */
+async function suggestDrugs(tx: AppDb, planned: { planned: PlannedRow; parsed: ParsedRow }[]): Promise<void> {
+  const unmatched = planned.filter(p => p.parsed.category === "drug" && !p.parsed.drugCode).slice(0, MAX_SUGGESTED_ROWS);
+  for (const p of unmatched) {
+    const word = searchWordOf(p.parsed.name);
+    if (word)
+      p.planned.suggestions = (await searchDrugs(tx, word)).slice(0, SUGGESTIONS).map(d => ({ code: d.code, genericName: d.genericName, strength: d.strength, form: d.form }));
   }
+}
+
+export interface ImportOptions {
+  /** When the file's prices start, once approved: today unless given, never before. */
+  effectiveFrom?: string;
+  today?: string;
+}
+
+function datesOf(options: ImportOptions): { today: string; effectiveFrom: string } {
+  const today = options.today ?? businessDate();
+  const effectiveFrom = options.effectiveFrom ?? today;
+  // A price change cannot start in the past, so neither can a file's prices.
+  if (effectiveFrom < today)
+    throw new PriceError("effective_in_past");
+  return { today, effectiveFrom };
+}
+
+/** Each row's plan, with the fields it was read from. */
+async function planRows(tx: AppDb, csv: string, options: ImportOptions): Promise<{ planned: PlannedRow; parsed: ParsedRow }[]> {
+  const { today, effectiveFrom } = datesOf(options);
+  const rows = readFile(csv);
+  markDuplicates(rows);
+  const snapshot = await loadSnapshot(tx, rows, today, effectiveFrom);
+  const planned = rows.map(r => ({ planned: planRow(r, snapshot), parsed: r }));
+  await suggestDrugs(tx, planned);
   return planned;
 }
 
 /**
- * What importing the file would do, row by row, with every problem found.
- * Writes nothing. Not patient data, so not audited.
+ * What importing the file would do, row by row, with every problem found,
+ * its prices compared on the day they would start. Writes nothing. Not
+ * patient data, so not audited.
  */
-export async function planImport(tx: AppDb, csv: string, today = businessDate()): Promise<PlannedRow[]> {
-  return (await planRows(tx, csv, today)).map(p => p.planned);
+export async function planImport(tx: AppDb, csv: string, options: ImportOptions = {}): Promise<PlannedRow[]> {
+  return (await planRows(tx, csv, options)).map(p => p.planned);
 }
 
 export interface ImportResult {
@@ -238,82 +294,68 @@ export interface ImportResult {
   priceChangeId: string | null;
 }
 
-/**
- * Imports the file: refused whole, with every problem, if any row has one.
- * New items, their stock items and the audit entry commit together; the
- * prices wait in one price change for the finance manager.
- */
-export async function importItems(
-  tx: AppDb,
-  facilityId: string,
-  csv: string,
-  actor: PatientActor,
-  options: { effectiveFrom?: string; today?: string } = {},
-): Promise<ImportResult> {
-  const today = options.today ?? businessDate();
-  // Before anything is written: a price change cannot start in the past.
-  if (options.effectiveFrom !== undefined && options.effectiveFrom < today)
-    throw new PriceError("effective_in_past");
-  const rows = await planRows(tx, csv, today);
-  const plan = rows.map(r => r.planned);
-  const parsedOf = new Map(rows.map(r => [r.planned, r.parsed]));
-  const refused = plan.filter(p => p.problems.length > 0);
-  if (refused.length > 0)
-    throw new ItemImportError("has_problems", `${refused.length} row${refused.length === 1 ? " has" : "s have"} problems; nothing was imported`, refused);
-
-  const toCreate = plan.filter(p => p.action === "create");
-  const toStock = plan.filter(p => p.action === "create" || p.action === "add_stock_item");
-  const idOf = new Map((await listBillableItems(tx, today)).filter(i => plan.some(p => p.code === i.code)).map(i => [i.code, i.id]));
-
+/** Writes the new items and stock items; answers each code's billable item id. */
+async function writeItems(tx: AppDb, facilityId: string, rows: { planned: PlannedRow; parsed: ParsedRow }[]): Promise<Map<string, string>> {
+  const toCreate = rows.filter(r => r.planned.action === "create");
+  const toStock = rows.filter(r => r.planned.action === "create" || r.planned.action === "add_stock_item");
+  const codes = new Set(rows.map(r => r.planned.code));
+  const idOf = new Map((await listBillableItems(tx)).filter(i => codes.has(i.code)).map(i => [i.code, i.id]));
   try {
     if (toCreate.length > 0) {
       const inserted = await tx.insert(billableItems)
-        .values(toCreate.map(p => ({ facilityId, code: p.code, name: p.name, category: parsedOf.get(p)!.category as "drug" | "consumable" })))
+        .values(toCreate.map(({ planned, parsed }) => ({ facilityId, code: planned.code, name: planned.name, category: parsed.category as "drug" | "consumable" })))
         .returning({ id: billableItems.id, code: billableItems.code });
       for (const i of inserted)
         idOf.set(i.code, i.id);
     }
     if (toStock.length > 0) {
-      await tx.insert(stockItems).values(toStock.map((p) => {
-        const r = parsedOf.get(p)!;
-        return { facilityId, billableItemId: idOf.get(p.code)!, drugCode: r.drugCode, baseUnit: r.baseUnit, packSize: r.packSize! };
-      }));
+      await tx.insert(stockItems).values(toStock.map(({ planned, parsed }) => (
+        { facilityId, billableItemId: idOf.get(planned.code)!, drugCode: parsed.drugCode, baseUnit: parsed.baseUnit, packSize: parsed.packSize! }
+      )));
     }
   }
   catch (err) {
-    // Another import or a hand-made item took one of these codes after the plan was read.
+    // A hand-made item took one of these codes after the plan was read.
     if (isUniqueViolation(err))
       throw new ItemImportError("changed_meanwhile", "An item in this file was set up by someone else meanwhile; preview it again");
     throw err;
   }
+  return idOf;
+}
 
+/**
+ * Imports the file: refused whole, with every problem, if any row has one.
+ * New items, their stock items and the audit entry commit together; the
+ * prices wait in one price change for the finance manager.
+ */
+export async function importItems(tx: AppDb, facilityId: string, csv: string, actor: PatientActor, options: ImportOptions = {}): Promise<ImportResult> {
+  // One import at a time per facility, so a second waits and then sees the first's items and pending prices.
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`item_import:${facilityId}`}, 0))`);
+  const rows = await planRows(tx, csv, options);
+  const plan = rows.map(r => r.planned);
+  const refused = plan.filter(p => p.problems.length > 0);
+  if (refused.length > 0)
+    throw new ItemImportError("has_problems", `${refused.length} row${refused.length === 1 ? " has" : "s have"} problems; nothing was imported`, refused);
+
+  const idOf = await writeItems(tx, facilityId, rows);
   const priced = plan.filter(p => p.requestedPriceCents !== null);
   const change = priced.length === 0
     ? null
     : await requestPriceChange(tx, facilityId, {
-        effectiveFrom: options.effectiveFrom ?? today,
+        effectiveFrom: datesOf(options).effectiveFrom,
         reason: "Item import",
         lines: priced.map(p => ({ billableItemId: idOf.get(p.code)!, unitPriceCents: p.requestedPriceCents! })),
       }, actor);
 
-  const result = {
-    created: toCreate.length,
-    stockItemsAdded: toStock.length,
-    unchanged: plan.length - toStock.length,
-    priceChangeId: change?.id ?? null,
-  };
+  const created = plan.filter(p => p.action === "create").map(p => p.code);
+  const stocked = plan.filter(p => p.action === "create" || p.action === "add_stock_item").map(p => p.code);
   await recordAudit(tx, {
     facilityId,
     actorId: actor.userId,
     action: "stock_items.imported",
     entityType: "stock_item",
-    summary: `Imported ${plan.length} items: ${result.created} new, ${result.stockItemsAdded} stock items set up`,
-    detail: {
-      rows: plan.length,
-      created: toCreate.map(p => p.code),
-      stockItemsAdded: toStock.map(p => p.code),
-      priceChangeId: result.priceChangeId,
-    },
+    summary: `Imported ${plan.length} items: ${created.length} new, ${stocked.length} stock items set up`,
+    detail: { rows: plan.length, created, stockItemsAdded: stocked, priceChangeId: change?.id ?? null },
   });
-  return result;
+  return { created: created.length, stockItemsAdded: stocked.length, unchanged: plan.length - stocked.length, priceChangeId: change?.id ?? null };
 }

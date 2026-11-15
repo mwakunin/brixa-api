@@ -120,7 +120,9 @@ export async function receiveGoods(
   if (!store.isActive)
     throw new GoodsReceivedError("store_retired");
 
-  const ids = [...new Set(input.lines.map(l => l.stockItemId))].sort();
+  // Postgres answers a uuid in lowercase, however it was asked for.
+  const lines = input.lines.map(l => ({ ...l, stockItemId: l.stockItemId.toLowerCase() }));
+  const ids = [...new Set(lines.map(l => l.stockItemId))].sort();
   const items = await tx
     .select({ id: stockItems.id, drugCode: stockItems.drugCode, packSize: stockItems.packSize, isActive: stockItems.isActive })
     .from(stockItems)
@@ -130,7 +132,7 @@ export async function receiveGoods(
   const itemOf = new Map(items.map(i => [i.id, i]));
 
   const warnings: ReceiptWarning[] = [];
-  const lines = input.lines.map((line, index) => {
+  const batches = lines.map((line, index) => {
     const number = index + 1;
     const item = itemOf.get(line.stockItemId);
     if (!item)
@@ -162,10 +164,10 @@ export async function receiveGoods(
     receivedOn,
     receivedBy: actor.membershipId,
   }).returning();
-  const batches = await tx.insert(stockBatches)
-    .values(lines.map(l => ({ facilityId, goodsReceivedId: note.id, ...l })))
+  const inserted = await tx.insert(stockBatches)
+    .values(batches.map(b => ({ facilityId, goodsReceivedId: note.id, ...b })))
     .returning({ id: stockBatches.id, quantityReceived: stockBatches.quantityReceived });
-  await tx.insert(stockMovements).values(batches.map(b => ({
+  await tx.insert(stockMovements).values(inserted.map(b => ({
     facilityId,
     storeId: store.id,
     batchId: b.id,
@@ -175,7 +177,7 @@ export async function receiveGoods(
     recordedBy: actor.membershipId,
   })));
 
-  const totalCostCents = lines.reduce((total, l) => total + l.totalCostCents, 0);
+  const totalCostCents = batches.reduce((total, b) => total + b.totalCostCents, 0);
   await recordAudit(tx, {
     facilityId,
     actorId: actor.userId,
@@ -183,7 +185,7 @@ export async function receiveGoods(
     entityType: "goods_received",
     entityId: note.id,
     summary: `Received ${note.number} into ${store.name}`,
-    detail: { number: note.number, storeId: store.id, supplier: note.supplier, lines: lines.length, totalCostCents },
+    detail: { number: note.number, storeId: store.id, supplier: note.supplier, lines: batches.length, totalCostCents },
   });
   return { note, warnings };
 }
@@ -194,7 +196,9 @@ export async function receiveGoods(
  * some of whose stock has moved is corrected by an adjustment (slice 3b).
  * Answers with the note's id.
  */
-export async function reverseBatch(tx: AppDb, facilityId: string, batchId: string, reason: string, actor: PatientActor): Promise<string> {
+export async function reverseBatch(tx: AppDb, facilityId: string, id: string, reason: string, actor: PatientActor): Promise<string> {
+  // One spelling of the id, so every request for this batch takes the same lock.
+  const batchId = id.toLowerCase();
   await lockBatches(tx, facilityId, [batchId]);
   const [batch] = await tx
     .select({ id: stockBatches.id, line: stockBatches.line, quantity: stockBatches.quantityReceived, goodsReceivedId: stockBatches.goodsReceivedId, number: goodsReceived.number, storeId: goodsReceived.storeId })

@@ -182,12 +182,30 @@ describe("receiving goods", () => {
   });
 });
 
+describe("ids however they are spelled", () => {
+  it("receive, reverse and set levels by an id in capitals as by its own spelling", async () => {
+    const res = await receive(delivery([pcmLine({ stockItemId: paracetamol.toUpperCase() })]));
+    expect(res.status).toBe(201);
+    const batchId: string = (await res.json()).items[0].batchId;
+
+    const reverse = (id: string) => call("POST", `/stock-batches/${id}/reverse`, h.facility.id, storekeeper, { reason: "Wrong item" });
+    expect((await reverse(batchId.toUpperCase())).status).toBe(200);
+    expect((await (await reverse(batchId)).json()).code).toBe("already_reversed");
+
+    const level = (stockItemId: string, value: number) =>
+      call("PUT", `/stores/${pharmacy}/reorder-levels`, h.facility.id, storekeeper, { levels: [{ stockItemId, level: value }] });
+    await level(paracetamol, 100);
+    await level(paracetamol.toUpperCase(), 200);
+    const entries = await db.select().from(auditLog).where(eq(auditLog.action, "reorder_levels.set"));
+    expect(entries.map(e => e.detail)).toContainEqual({ changes: [{ stockItemId: paracetamol, before: 100, after: 200 }] });
+  });
+});
+
 describe("the stock view", () => {
   it("shows an item with a reorder level and nothing on hand, and marks a batch past its expiry", async () => {
     await call("PUT", `/stores/${pharmacy}/reorder-levels`, h.facility.id, h.admin, { levels: [{ stockItemId: gloves, level: 200 }] });
-    const note = await (await receive(delivery([pcmLine()]))).json();
-    // As a batch is once its last day has passed.
-    await db.execute(sql`UPDATE stock_batches SET expires_on = ${inDays(-1)} WHERE id = ${note.items[0].batchId}`);
+    // Received a month ago, in date then; its last day was yesterday.
+    await runAsFacility(h.facility.id, tx => receiveGoods(tx, h.facility.id, { storeId: pharmacy, supplier: "KEMSA", lines: [pcmLine({ expiresOn: inDays(-1) })] }, storekeeper.actor, inDays(-30)));
 
     const items = await stockOf();
 
@@ -291,10 +309,19 @@ describe("the stock ledger", () => {
     ).then(() => null, (e: unknown) => e);
     expect(pgConstraintName(below)).toBe("stock_movements_never_negative");
 
-    // Nor can a note or its batches be edited by a request.
+    // Nor can a note or its batches be edited: not by a request, nor by the owner.
     for (const statement of [sql`UPDATE goods_received SET supplier = 'X'`, sql`UPDATE stock_batches SET total_cost_cents = 1`]) {
       const err = await runAsFacility(h.facility.id, tx => tx.execute(statement)).then(() => null, (e: unknown) => e);
       expect(pgErrorCode(err)).toBe("42501");
+    }
+    for (const statement of [
+      sql`UPDATE goods_received SET supplier = 'X'`,
+      sql`DELETE FROM goods_received`,
+      sql`UPDATE stock_batches SET total_cost_cents = 1`,
+      sql`DELETE FROM stock_batches`,
+    ]) {
+      const err = await db.execute(statement).then(() => null, (e: unknown) => e);
+      expect(pgErrorCode(err), String(statement.queryChunks[0])).toBe("23001");
     }
   });
 });

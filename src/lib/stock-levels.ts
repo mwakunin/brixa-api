@@ -19,7 +19,7 @@ import { businessDate } from "./dates";
 
 /** Serialises everything that changes these batches' stock until the transaction ends. Sorted, so two callers never wait on each other in a cycle. */
 export async function lockBatches(tx: AppDb, facilityId: string, batchIds: readonly string[]): Promise<void> {
-  for (const id of [...new Set(batchIds)].sort())
+  for (const id of [...new Set(batchIds.map(b => b.toLowerCase()))].sort())
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`stock_batch:${facilityId}:${id}`}, 0))`);
 }
 

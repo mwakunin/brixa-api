@@ -125,6 +125,8 @@ const CsvSchema = z.string().min(1).max(2_000_000);
 const PreviewBodySchema = z.strictObject({
   /** `code,name,category,drug_code,base_unit,pack_size,unit_price`, then one row per item. */
   csv: CsvSchema,
+  /** As the import will be given it: prices are compared with those in force that day. */
+  effectiveFrom: z.iso.date().optional(),
 });
 
 const ImportBodySchema = z.strictObject({

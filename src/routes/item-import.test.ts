@@ -6,10 +6,12 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { Hospital, StaffMember } from "@/test/hospital";
 
 import db from "@/db";
-import { auditLog, billableItems, stockItems } from "@/db/schema";
+import { auditLog, billableItems, priceChanges, stockItems } from "@/db/schema";
+import { runAsFacility } from "@/db/tenant-transaction";
 import { addDays, businessDate } from "@/lib/dates";
 import { loadDrugCatalogue } from "@/lib/drug-catalogue-load";
-import { addMembership, resetDb, signedInUser } from "@/test/helpers";
+import { importItems } from "@/lib/item-import";
+import { addMembership, backendPid, resetDb, signedInUser, waitForBlockedBackend } from "@/test/helpers";
 import { call, hospital } from "@/test/hospital";
 
 /** P4 slice 1c: a facility's item list imported from a CSV. */
@@ -179,5 +181,76 @@ describe("importing an item list", () => {
 
     const later = await (await importFile(GOOD, { effectiveFrom: addDays(businessDate(), 7) })).json();
     expect(later.priceChangeId).toEqual(expect.any(String));
+  });
+});
+
+describe("an import's prices, on the day they would start", () => {
+  const AMX = (price: string) => file(`AMX-500,Amoxicillin 500 mg capsules,drug,AMX-500-CAP,capsule,100,${price}`);
+  const requested = async (csv: string, effectiveFrom?: string) =>
+    (await (await importFile(csv, effectiveFrom ? { effectiveFrom } : {})).json()).priceChangeId as string | null;
+  const approve = (id: string) => call("POST", `/price-changes/${id}/approve`, h.facility.id, h.finance);
+
+  it("asks again for a price whose pending change has passed its day, and can no longer be approved", async () => {
+    const first = await requested(AMX("5"));
+    // As a request left pending past its day stands: approval now refuses it.
+    await db.update(priceChanges).set({ effectiveFrom: addDays(businessDate(), -1) }).where(eq(priceChanges.id, first!));
+
+    expect(await requested(AMX("5"))).toEqual(expect.any(String));
+  });
+
+  it("asks for a price from today though the same price waits to start next week", async () => {
+    await requested(AMX("5"), addDays(businessDate(), 7));
+
+    expect(await requested(AMX("5"))).toEqual(expect.any(String));
+  });
+
+  it("compares with the price in force on its own day, not today's", async () => {
+    const nextWeek = addDays(businessDate(), 7);
+    await approve((await requested(AMX("2.50")))!);
+    await approve((await requested(AMX("6"), nextWeek))!);
+
+    // KES 6 from next week is approved already: asking for it then changes nothing.
+    expect(await requested(AMX("6"), nextWeek)).toBeNull();
+    // KES 2.50 is today's price, but not next week's: it is asked for.
+    expect(await requested(AMX("2.50"), nextWeek)).toEqual(expect.any(String));
+
+    const preview = await (await call("POST", "/stock-items/import/preview", h.facility.id, h.admin, { csv: AMX("6"), effectiveFrom: nextWeek })).json();
+    expect(preview.rows[0]).toMatchObject({ action: "unchanged", requestedPriceCents: null });
+  });
+
+  it("runs one import at a time, so the second sees the first's items and prices", async () => {
+    let release!: () => void;
+    const mayCommit = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let ready!: () => void;
+    const started = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    let holderPid = 0;
+    const first = runAsFacility(h.facility.id, async (tx) => {
+      try {
+        const result = await importItems(tx, h.facility.id, GOOD, h.admin.actor);
+        holderPid = await backendPid(tx);
+        return result;
+      }
+      finally {
+        ready();
+        await mayCommit;
+      }
+    });
+    await started;
+
+    const second = runAsFacility(h.facility.id, tx => importItems(tx, h.facility.id, GOOD, h.admin.actor));
+    try {
+      expect(await waitForBlockedBackend(holderPid)).toBe(true);
+    }
+    finally {
+      release();
+      await Promise.allSettled([first, second]);
+    }
+
+    expect(await first).toMatchObject({ created: 3, priceChangeId: expect.any(String) });
+    expect(await second).toEqual({ created: 0, stockItemsAdded: 0, unchanged: 4, priceChangeId: null });
   });
 });

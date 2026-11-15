@@ -51,9 +51,9 @@ function importRefusal(c: Context, err: unknown) {
 }
 
 export const previewImport: TenantRouteHandler<PreviewImportRoute> = async (c) => {
-  const { csv } = c.req.valid("json");
+  const { csv, effectiveFrom } = c.req.valid("json");
   try {
-    return c.json({ rows: await itemImport.planImport(c.var.db, csv) }, HttpStatusCodes.OK);
+    return c.json({ rows: await itemImport.planImport(c.var.db, csv, { effectiveFrom }) }, HttpStatusCodes.OK);
   }
   catch (err) {
     const refused = importRefusal(c, err);
