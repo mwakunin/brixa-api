@@ -5,7 +5,7 @@ import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { PROFESSION_KEYS } from "@/lib/professions";
 import { MEMBERSHIP_ROLES } from "@/lib/roles";
-import { personNameSchema } from "@/lib/validation";
+import { personNameSchema, sensitiveCategorySchema } from "@/lib/validation";
 import { requireMembershipRole } from "@/middlewares/auth";
 import { rateLimits } from "@/middlewares/rate-limit";
 import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
@@ -58,6 +58,8 @@ const MemberSchema = z.object({
   name: z.string(),
   email: z.string(),
   roles: z.array(z.enum(MEMBERSHIP_ROLES)),
+  /** The sensitive categories they read without breaking the glass (rule 27). */
+  sensitiveCategories: z.array(sensitiveCategorySchema),
   /**
    * Null for a member with no clinical role, and for a clinician whose
    * licence is not on record yet (one who joined before licences were kept):
@@ -229,7 +231,35 @@ export const changeRoles = createRoute({
   },
 });
 
+const SensitiveAccessBodySchema = z.strictObject({
+  /** All of them, replacing what they had; empty for none. */
+  categories: z.array(sensitiveCategorySchema).max(3),
+});
+
+export const setSensitiveAccess = createRoute({
+  tags,
+  method: "put",
+  path: "/staff/members/{id}/sensitive-access",
+  summary: "Assign the sensitive categories a member works with",
+  description:
+    "Staff of the HIV clinic get `hiv`, and so on: they read restricted "
+    + "records in those categories without breaking the glass (rule 27). "
+    + "Audited with the old and new.",
+  middleware: [adminOnly] as const,
+  request: {
+    headers: facilityHeaders,
+    params: z.object({ id: z.uuid() }),
+    body: jsonContentRequired(SensitiveAccessBodySchema, "The categories"),
+  },
+  responses: {
+    [HttpStatusCodes.OK]: jsonContent(z.object({ id: z.uuid(), sensitiveCategories: z.array(sensitiveCategorySchema) }), "Assigned"),
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(SensitiveAccessBodySchema), "Not a category"),
+    ...tenantResponses,
+  },
+});
+
 export type ChangeRolesRoute = typeof changeRoles;
+export type SetSensitiveAccessRoute = typeof setSensitiveAccess;
 export type CreateInvitationRoute = typeof createInvitation;
 export type ListMembersRoute = typeof listMembers;
 export type SetLicenceRoute = typeof setLicence;

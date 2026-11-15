@@ -1,8 +1,11 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import * as HttpStatusCodes from "stoker/http-status-codes";
-import { jsonContent } from "stoker/openapi/helpers";
+import { jsonContent, jsonContentRequired } from "stoker/openapi/helpers";
+import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { badRequestSchema, forbiddenSchema, notFoundSchema, unauthorizedSchema } from "@/lib/constants";
+import { normalizePhone } from "@/lib/phone";
+import { requireMembershipRole } from "@/middlewares/auth";
 import { MyFacilitySchema } from "@/routes/me/me.routes";
 
 const tags = ["Facility"];
@@ -32,6 +35,20 @@ export const clinicalResponses = {
   ),
 };
 
+const FacilitySchema = MyFacilitySchema.extend({
+  kmhfrCode: z.string(),
+  kephLevel: z.number().int(),
+  county: z.string().nullable(),
+  /** The number appointment reminders tell patients to call. */
+  phone: z.string().nullable(),
+  /** The sender its SMS go out under; null for the platform account's default. */
+  smsSenderId: z.string().nullable(),
+});
+
+const UpdateBodySchema = z.strictObject({
+  phone: z.string().trim().max(30).refine(v => normalizePhone(v) !== null, "Not a phone number we recognise").nullable(),
+});
+
 export const getFacility = createRoute({
   tags,
   method: "get",
@@ -43,16 +60,25 @@ export const getFacility = createRoute({
     + "an active membership.",
   request: { headers: facilityHeaders },
   responses: {
-    [HttpStatusCodes.OK]: jsonContent(
-      MyFacilitySchema.extend({
-        kmhfrCode: z.string(),
-        kephLevel: z.number().int(),
-        county: z.string().nullable(),
-      }),
-      "The facility and my roles there",
-    ),
+    [HttpStatusCodes.OK]: jsonContent(FacilitySchema, "The facility and my roles there"),
+    ...tenantResponses,
+  },
+});
+
+export const updateFacility = createRoute({
+  tags,
+  method: "patch",
+  path: "/facility",
+  summary: "Change the facility's details",
+  description: "The phone number appointment reminders tell patients to call. Facility admin only; audited with the old and new.",
+  middleware: [requireMembershipRole("facility_admin")] as const,
+  request: { headers: facilityHeaders, body: jsonContentRequired(UpdateBodySchema, "The change") },
+  responses: {
+    [HttpStatusCodes.OK]: jsonContent(FacilitySchema, "Changed"),
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(UpdateBodySchema), "Invalid change"),
     ...tenantResponses,
   },
 });
 
 export type GetFacilityRoute = typeof getFacility;
+export type UpdateFacilityRoute = typeof updateFacility;

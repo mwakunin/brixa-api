@@ -14,6 +14,7 @@ import {
   numeric,
   pgTable,
   text,
+  time,
   timestamp,
   unique,
   uniqueIndex,
@@ -188,12 +189,23 @@ export const facilities = pgTable("facilities", {
   /** Set once SHA contracts the facility. */
   shaContractRef: text(),
   status: text().$type<"active" | "suspended">().notNull(),
+  /** E.164 (rule 13): the number a reminder tells patients to call. Set by the facility admin. */
+  phone: text(),
+  /**
+   * The sender name its SMS go out under, once registered with Africa's
+   * Talking on the platform's account; null for the account's default. Set
+   * on the superadmin plane, since an unregistered one fails every message.
+   */
+  smsSenderId: text(),
   createdAt: createdAt(),
 }, t => [
   // `suspended` is what stops a facility's requests; a status this table does
   // not recognise is a facility that is neither serving nor stopped.
   oneOf("facilities_status_known", t.status, ["active", "suspended"]),
   check("facilities_keph_level_valid", sql`${t.kephLevel} BETWEEN 1 AND 6`),
+  check("facilities_phone_e164", sql`${t.phone} IS NULL OR ${t.phone} ~ '^\\+[1-9][0-9]{7,14}$'`),
+  // An alphanumeric sender is at most 11 characters.
+  check("facilities_sms_sender_id_shape", sql`${t.smsSenderId} IS NULL OR ${t.smsSenderId} ~ '^[A-Za-z0-9][A-Za-z0-9 ]{0,10}$'`),
 ]);
 
 /**
@@ -237,6 +249,12 @@ export const memberships = pgTable("memberships", {
   /** The last Kenyan day the licence is valid; a clinical act after it is refused. */
   licenceExpiresOn: date({ mode: "string" }),
   isActive: boolean().default(true).notNull(),
+  /**
+   * The sensitive categories this member works with, set by the facility
+   * admin (the HIV clinic's staff: `hiv`). They read records in them without
+   * breaking the glass (rule 27; ROADMAP.md P3, 2026-11-15).
+   */
+  sensitiveCategories: text().array().$type<("hiv" | "mental_health" | "gbv")[]>().default(sql`'{}'::text[]`).notNull(),
   createdAt: createdAt(),
   updatedAt: updatedAt(),
 }, t => [
@@ -265,6 +283,7 @@ export const memberships = pgTable("memberships", {
   ]),
   // A membership with no role passes no guard and fails every one.
   check("memberships_roles_not_empty", sql`cardinality(${t.roles}) > 0`),
+  allOf("memberships_sensitive_categories_known", t.sensitiveCategories, ["hiv", "mental_health", "gbv"]),
   oneOf("memberships_licence_profession_known", t.licenceProfession, ["medical_practitioner", "clinical_officer", "nurse", "laboratory", "pharmacy"]),
   ...licenceChecks("memberships", t),
 ]);
@@ -400,6 +419,21 @@ export const auditLog = pgTable("audit_log", {
     | "lab_result.released"
     | "lab_result.verified"
     | "lab_report.issued"
+    | "appointment.booked"
+    | "appointment.moved"
+    | "appointment.cancelled"
+    | "appointment.checked_in"
+    | "appointment.listed"
+    | "patient.sms_reminders_set"
+    | "facility.updated"
+    | "patient.break_glass"
+    | "break_glass.listed"
+    | "break_glass.reviewed"
+    | "membership.sensitive_access_changed"
+    | "note.marked_sensitive"
+    | "billable_item.updated"
+    | "patient.break_glass_refused"
+    | "document.view_refused"
   >().notNull(),
   /** What it happened to. Not a foreign key: the log outlives what it names. */
   entityType: text().notNull(),
@@ -524,6 +558,21 @@ export const auditLog = pgTable("audit_log", {
     "lab_result.released",
     "lab_result.verified",
     "lab_report.issued",
+    "appointment.booked",
+    "appointment.moved",
+    "appointment.cancelled",
+    "appointment.checked_in",
+    "appointment.listed",
+    "patient.sms_reminders_set",
+    "facility.updated",
+    "patient.break_glass",
+    "break_glass.listed",
+    "break_glass.reviewed",
+    "membership.sensitive_access_changed",
+    "note.marked_sensitive",
+    "billable_item.updated",
+    "patient.break_glass_refused",
+    "document.view_refused",
   ]),
 ]);
 
@@ -608,7 +657,7 @@ export const numberSeriesCounters = pgTable("number_series_counters", {
 export const outbox = pgTable("outbox", {
   id: uuid().primaryKey().defaultRandom(),
   facilityId: uuid().notNull().references(() => facilities.id),
-  operation: text().$type<"invitation.send" | "mpesa.register_urls" | "mpesa.stk_push">().notNull(),
+  operation: text().$type<"invitation.send" | "mpesa.register_urls" | "mpesa.stk_push" | "appointment.remind">().notNull(),
   subjectId: uuid().notNull(),
   status: text().$type<"pending" | "done" | "skipped" | "failed">().default("pending").notNull(),
   attempts: integer().default(0).notNull(),
@@ -621,7 +670,7 @@ export const outbox = pgTable("outbox", {
 }, t => [
   index("outbox_pending_index").on(t.availableAt).where(sql`${t.status} = 'pending'`),
   index().on(t.facilityId, t.operation, t.subjectId),
-  oneOf("outbox_operation_known", t.operation, ["invitation.send", "mpesa.register_urls", "mpesa.stk_push"]),
+  oneOf("outbox_operation_known", t.operation, ["invitation.send", "mpesa.register_urls", "mpesa.stk_push", "appointment.remind"]),
   oneOf("outbox_status_known", t.status, ["pending", "done", "skipped", "failed"]),
   check("outbox_attempts_nonnegative", sql`${t.attempts} >= 0`),
 ]);
@@ -803,6 +852,14 @@ export const patients = pgTable("patients", {
   noIdReason: text().$type<"none_held" | "not_carried" | "unidentified">(),
   /** Brought in unable to say who they are; names are placeholders until identified. */
   unidentified: boolean().default(false).notNull(),
+  /**
+   * Whether they want SMS reminders of appointments: asked once, null until
+   * then, and nothing is sent without a yes (ROADMAP.md P3, 2026-11-13). Who
+   * recorded the answer and when; each change is audited with the old one.
+   */
+  smsReminders: boolean(),
+  smsRemindersSetAt: timestamp({ withTimezone: true }),
+  smsRemindersSetBy: uuid(),
   registeredAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
   /** The membership that registered them. */
   registeredBy: uuid().notNull(),
@@ -814,6 +871,15 @@ export const patients = pgTable("patients", {
     columns: [t.facilityId, t.registeredBy],
     foreignColumns: [memberships.facilityId, memberships.id],
   }),
+  foreignKey({
+    name: "patients_sms_reminders_set_by_fk",
+    columns: [t.facilityId, t.smsRemindersSetBy],
+    foreignColumns: [memberships.facilityId, memberships.id],
+  }),
+  check(
+    "patients_sms_reminders_recorded",
+    sql`num_nonnulls(${t.smsReminders}, ${t.smsRemindersSetAt}, ${t.smsRemindersSetBy}) IN (0, 3)`,
+  ),
   index("patients_family_name_index").on(t.facilityId, sql`lower(${t.familyName})`),
   index("patients_phone_index").on(t.facilityId, t.phone),
   oneOf("patients_sex_known", t.sex, ["male", "female", "intersex"]),
@@ -924,9 +990,15 @@ export const billableItems = pgTable("billable_items", {
     "consultation" | "bed_day" | "lab" | "imaging" | "procedure" | "drug" | "consumable" | "service" | "other"
   >().notNull(),
   isActive: boolean().default(true).notNull(),
+  /**
+   * What bills print instead of the name, for an item whose name discloses a
+   * condition ("Laboratory test" for an HIV test). Null prints the name.
+   */
+  printedName: text(),
   createdAt: createdAt(),
 }, t => [
   unique("billable_items_facility_id_id_key").on(t.facilityId, t.id),
+  check("billable_items_printed_name_present", sql`${t.printedName} IS NULL OR length(btrim(${t.printedName})) > 0`),
   unique("billable_items_facility_id_code_key").on(t.facilityId, t.code),
   oneOf("billable_items_category_known", t.category, [
     "consultation",
@@ -1211,6 +1283,8 @@ export const servicePoints = pgTable("service_points", {
   kind: text().$type<"triage" | "consultation">().notNull(),
   /** What being seen here is charged as, once per visit; null for no fee. */
   consultationItemId: uuid(),
+  /** A sensitive clinic (the HIV clinic, psychiatry): everything clinical recorded in a visit here is restricted (rule 27). */
+  sensitiveCategory: text().$type<"hiv" | "mental_health" | "gbv">(),
   isActive: boolean().default(true).notNull(),
   createdAt: createdAt(),
 }, t => [
@@ -1224,6 +1298,8 @@ export const servicePoints = pgTable("service_points", {
   oneOf("service_points_kind_known", t.kind, ["triage", "consultation"]),
   check("service_points_fee_at_a_clinic", sql`${t.kind} = 'consultation' OR ${t.consultationItemId} IS NULL`),
   check("service_points_name_present", sql`length(btrim(${t.name})) > 0`),
+  oneOf("service_points_sensitive_category_known", t.sensitiveCategory, ["hiv", "mental_health", "gbv"]),
+  check("service_points_sensitive_at_a_clinic", sql`${t.kind} = 'consultation' OR ${t.sensitiveCategory} IS NULL`),
 ]);
 
 /**
@@ -1287,6 +1363,203 @@ export const queueEntries = pgTable("queue_entries", {
     sql`(${t.servingAt} IS NULL OR ${t.servingAt} >= ${t.joinedAt})
       AND (${t.endedAt} IS NULL OR ${t.endedAt} >= coalesce(${t.servingAt}, ${t.joinedAt}))`,
   ),
+]);
+
+// ---------------------------------------------------------------------------
+// Appointments (SCHEMA.md §8, P3 slice 6)
+// ---------------------------------------------------------------------------
+
+/**
+ * A patient booked at a clinic for a Kenyan day, with a time and a clinician
+ * if wanted. `status` is lifecycle only: booked, then checked in (into the
+ * visit it opened or joined) or cancelled with a reason. One still booked
+ * after its day was missed: derived, never stored (rule 4).
+ *
+ * Moving changes the day or time while it is booked, audited with the old and
+ * new. Migration 0069's trigger holds the rest for every role: written booked
+ * at a clinic, for and during the patient's own encounters; who, where and
+ * when it was booked never change; an ended appointment never changes; none
+ * is deleted.
+ */
+export const appointments = pgTable("appointments", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  patientId: uuid().notNull(),
+  /** The clinic: a consultation point. */
+  servicePointId: uuid().notNull(),
+  /** Whom the patient is to see, if anyone in particular: a membership. */
+  clinicianId: uuid(),
+  scheduledOn: date({ mode: "string" }).notNull(),
+  /** Kenyan wall-clock time, when a time was given. */
+  scheduledTime: time({ precision: 0 }),
+  status: text().$type<"booked" | "checked_in" | "cancelled">().default("booked").notNull(),
+  bookedAt: timestamp({ withTimezone: true }).notNull(),
+  bookedBy: uuid().notNull(),
+  /** The visit or admission it was booked during: a follow-up, a review after discharge. */
+  bookedDuring: uuid(),
+  checkedInAt: timestamp({ withTimezone: true }),
+  checkedInBy: uuid(),
+  /** The visit it was checked into. */
+  encounterId: uuid(),
+  cancelledAt: timestamp({ withTimezone: true }),
+  cancelledBy: uuid(),
+  cancelReason: text(),
+  updatedAt: updatedAt(),
+}, t => [
+  unique("appointments_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({ name: "appointments_patient_fk", columns: [t.facilityId, t.patientId], foreignColumns: [patients.facilityId, patients.id] }),
+  foreignKey({ name: "appointments_service_point_fk", columns: [t.facilityId, t.servicePointId], foreignColumns: [servicePoints.facilityId, servicePoints.id] }),
+  foreignKey({ name: "appointments_clinician_fk", columns: [t.facilityId, t.clinicianId], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "appointments_booked_by_fk", columns: [t.facilityId, t.bookedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "appointments_booked_during_fk", columns: [t.facilityId, t.bookedDuring], foreignColumns: [encounters.facilityId, encounters.id] }),
+  foreignKey({ name: "appointments_checked_in_by_fk", columns: [t.facilityId, t.checkedInBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "appointments_encounter_fk", columns: [t.facilityId, t.encounterId], foreignColumns: [encounters.facilityId, encounters.id] }),
+  foreignKey({ name: "appointments_cancelled_by_fk", columns: [t.facilityId, t.cancelledBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  // Booking the same patient twice at one clinic on one day is a slip.
+  uniqueIndex("appointments_one_booked_per_clinic_day")
+    .on(t.patientId, t.servicePointId, t.scheduledOn)
+    .where(sql`${t.status} = 'booked'`),
+  index("appointments_day_index").on(t.facilityId, t.scheduledOn, t.servicePointId),
+  index("appointments_patient_index").on(t.facilityId, t.patientId, t.scheduledOn),
+  // Retiring a clinic counts what is still booked there.
+  index("appointments_booked_at_clinic_index").on(t.facilityId, t.servicePointId, t.scheduledOn).where(sql`${t.status} = 'booked'`),
+  oneOf("appointments_status_known", t.status, ["booked", "checked_in", "cancelled"]),
+  check(
+    "appointments_lifecycle",
+    sql`(${t.status} = 'booked'
+          AND num_nonnulls(${t.checkedInAt}, ${t.checkedInBy}, ${t.encounterId}, ${t.cancelledAt}, ${t.cancelledBy}, ${t.cancelReason}) = 0)
+      OR (${t.status} = 'checked_in'
+          AND num_nonnulls(${t.checkedInAt}, ${t.checkedInBy}, ${t.encounterId}) = 3
+          AND num_nonnulls(${t.cancelledAt}, ${t.cancelledBy}, ${t.cancelReason}) = 0)
+      OR (${t.status} = 'cancelled'
+          AND num_nonnulls(${t.cancelledAt}, ${t.cancelledBy}, ${t.cancelReason}) = 3
+          AND num_nonnulls(${t.checkedInAt}, ${t.checkedInBy}, ${t.encounterId}) = 0)`,
+  ),
+  check("appointments_cancel_reason_present", sql`${t.cancelReason} IS NULL OR length(btrim(${t.cancelReason})) > 0`),
+  check(
+    "appointments_in_order",
+    sql`(${t.checkedInAt} IS NULL OR ${t.checkedInAt} >= ${t.bookedAt})
+      AND (${t.cancelledAt} IS NULL OR ${t.cancelledAt} >= ${t.bookedAt})`,
+  ),
+]);
+
+/**
+ * The SMS reminding a patient of an appointment, one per appointment per day
+ * it was booked for: written `scheduled` when the appointment is booked or
+ * moved, with the outbox job that sends it held back to `due_at` (rule 18).
+ *
+ * Each job serves one row, so a moved appointment's old reminder and its new
+ * one never race each other: the old finds the appointment on another day and
+ * is skipped. Each attempt re-reads everything and copies what it sends
+ * (`to_phone`, `body`), so a retry goes to the patient's number and time as
+ * they stand then; a finished row keeps what its last attempt sent. A send
+ * that may have reached Africa's Talking and is retried can arrive twice;
+ * that is accepted for a reminder. Migration 0069's trigger moves a row only
+ * forward.
+ */
+export const appointmentReminders = pgTable("appointment_reminders", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  appointmentId: uuid().notNull(),
+  /** The appointment day it reminds of. */
+  remindsOf: date({ mode: "string" }).notNull(),
+  /** When it goes: 17:00 Kenyan time the day before. */
+  dueAt: timestamp({ withTimezone: true }).notNull(),
+  status: text().$type<"scheduled" | "sending" | "sent" | "rejected" | "failed" | "skipped">().default("scheduled").notNull(),
+  createdAt: createdAt(),
+  /** E.164, as sent: a Kenyan mobile number. */
+  toPhone: text(),
+  body: text(),
+  sendingAt: timestamp({ withTimezone: true }),
+  completedAt: timestamp({ withTimezone: true }),
+  /** Africa's Talking's id for the message. */
+  providerMessageId: text(),
+  /** What Africa's Talking charged, in cents: a message costs under a shilling. */
+  costCents: integer(),
+  /** Why it was rejected, failed or skipped. */
+  outcomeNote: text(),
+}, t => [
+  unique("appointment_reminders_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({ name: "appointment_reminders_appointment_fk", columns: [t.facilityId, t.appointmentId], foreignColumns: [appointments.facilityId, appointments.id] }),
+  unique("appointment_reminders_one_per_day").on(t.appointmentId, t.remindsOf),
+  index("appointment_reminders_facility_index").on(t.facilityId, t.createdAt),
+  oneOf("appointment_reminders_status_known", t.status, ["scheduled", "sending", "sent", "rejected", "failed", "skipped"]),
+  check("appointment_reminders_kenyan_mobile", sql`${t.toPhone} IS NULL OR ${t.toPhone} ~ '^\\+254[17][0-9]{8}$'`),
+  check("appointment_reminders_cost_nonnegative", sql`${t.costCents} IS NULL OR ${t.costCents} >= 0`),
+  check(
+    "appointment_reminders_lifecycle",
+    sql`(${t.status} = 'scheduled'
+          AND num_nonnulls(${t.toPhone}, ${t.body}, ${t.sendingAt}, ${t.completedAt}, ${t.providerMessageId}, ${t.costCents}, ${t.outcomeNote}) = 0)
+      OR (${t.status} = 'sending'
+          AND num_nonnulls(${t.toPhone}, ${t.body}, ${t.sendingAt}) = 3
+          AND num_nonnulls(${t.completedAt}, ${t.providerMessageId}, ${t.costCents}, ${t.outcomeNote}) = 0)
+      OR (${t.status} = 'sent'
+          AND num_nonnulls(${t.toPhone}, ${t.body}, ${t.sendingAt}, ${t.completedAt}) = 4 AND ${t.outcomeNote} IS NULL)
+      OR (${t.status} = 'rejected'
+          AND num_nonnulls(${t.toPhone}, ${t.body}, ${t.sendingAt}, ${t.completedAt}, ${t.outcomeNote}) = 5)
+      OR (${t.status} IN ('failed', 'skipped')
+          AND num_nonnulls(${t.completedAt}, ${t.outcomeNote}) = 2
+          AND num_nonnulls(${t.providerMessageId}, ${t.costCents}) = 0
+          AND (${t.toPhone} IS NULL) = (${t.sendingAt} IS NULL) AND (${t.body} IS NULL) = (${t.sendingAt} IS NULL))`,
+  ),
+  check("appointment_reminders_note_present", sql`${t.outcomeNote} IS NULL OR length(btrim(${t.outcomeNote})) > 0`),
+]);
+
+// ---------------------------------------------------------------------------
+// Break-glass (CLAUDE.md rule 27, SPEC.md D5; P3 slice 7)
+// ---------------------------------------------------------------------------
+
+/**
+ * A clinician opening a patient's restricted records outside their normal
+ * access: who, why, and until when (12 hours). Reads during it are audited
+ * as usual, marked with its id. The facility admin reviews each one, once.
+ * Migration 0071's trigger freezes it but for that review.
+ */
+export const breakGlassGrants = pgTable("break_glass_grants", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  patientId: uuid().notNull(),
+  /** The membership that broke the glass. */
+  grantedTo: uuid().notNull(),
+  reason: text().notNull(),
+  grantedAt: timestamp({ withTimezone: true }).notNull(),
+  expiresAt: timestamp({ withTimezone: true }).notNull(),
+  reviewedAt: timestamp({ withTimezone: true }),
+  reviewedBy: uuid(),
+  reviewNote: text(),
+}, t => [
+  unique("break_glass_grants_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({ name: "break_glass_grants_patient_fk", columns: [t.facilityId, t.patientId], foreignColumns: [patients.facilityId, patients.id] }),
+  foreignKey({ name: "break_glass_grants_granted_to_fk", columns: [t.facilityId, t.grantedTo], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "break_glass_grants_reviewed_by_fk", columns: [t.facilityId, t.reviewedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  // The lookup every restricted read makes: this reader's grants for this patient.
+  index("break_glass_grants_reader_index").on(t.facilityId, t.patientId, t.grantedTo, t.expiresAt),
+  index("break_glass_grants_recent_index").on(t.facilityId, t.grantedAt),
+  check("break_glass_grants_reason_present", sql`length(btrim(${t.reason})) > 0`),
+  check("break_glass_grants_expires_after", sql`${t.expiresAt} > ${t.grantedAt}`),
+  check(
+    "break_glass_grants_review",
+    sql`(${t.reviewedAt} IS NULL) = (${t.reviewedBy} IS NULL)
+      AND (${t.reviewNote} IS NULL OR (${t.reviewedAt} IS NOT NULL AND length(btrim(${t.reviewNote})) > 0))`,
+  ),
+]);
+
+/**
+ * Who is told of a break-glass: the clinicians who recorded the patient's
+ * restricted records when the glass was broken, and anyone whose record the
+ * grant opens later (the facility admin sees every one). One row per member
+ * per grant, never changed.
+ */
+export const breakGlassAlerts = pgTable("break_glass_alerts", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  grantId: uuid().notNull(),
+  membershipId: uuid().notNull(),
+}, t => [
+  unique("break_glass_alerts_grant_member_key").on(t.grantId, t.membershipId),
+  foreignKey({ name: "break_glass_alerts_grant_fk", columns: [t.facilityId, t.grantId], foreignColumns: [breakGlassGrants.facilityId, breakGlassGrants.id] }),
+  foreignKey({ name: "break_glass_alerts_membership_fk", columns: [t.facilityId, t.membershipId], foreignColumns: [memberships.facilityId, memberships.id] }),
+  index("break_glass_alerts_membership_index").on(t.facilityId, t.membershipId),
 ]);
 
 // ---------------------------------------------------------------------------
@@ -1584,6 +1857,8 @@ export const clinicalNotes = pgTable("clinical_notes", {
   enteredInErrorAt: timestamp({ withTimezone: true }),
   enteredInErrorBy: uuid(),
   enteredInErrorReason: text(),
+  /** Marked sensitive by its author, once and for good (rule 27). An addendum follows its note. */
+  sensitiveCategory: text().$type<"hiv" | "mental_health" | "gbv">(),
 }, t => [
   unique("clinical_notes_facility_id_id_key").on(t.facilityId, t.id),
   foreignKey({ name: "clinical_notes_encounter_fk", columns: [t.facilityId, t.encounterId], foreignColumns: [encounters.facilityId, encounters.id] }),
@@ -1594,6 +1869,8 @@ export const clinicalNotes = pgTable("clinical_notes", {
   index("clinical_notes_addendum_of_index").on(t.facilityId, t.addendumOf),
   oneOf("clinical_notes_kind_known", t.kind, ["consultation", "nursing", "addendum"]),
   oneOf("clinical_notes_status_known", t.status, ["draft", "signed", "discarded"]),
+  oneOf("clinical_notes_sensitive_category_known", t.sensitiveCategory, ["hiv", "mental_health", "gbv"]),
+  check("clinical_notes_addendum_follows_its_note", sql`${t.kind} <> 'addendum' OR ${t.sensitiveCategory} IS NULL`),
   check(
     "clinical_notes_shape",
     sql`(${t.kind} = 'consultation' AND ${t.text} IS NULL AND ${t.addendumOf} IS NULL
@@ -1641,6 +1918,8 @@ export const labTests = pgTable("lab_tests", {
   specimenType: text().$type<"blood" | "urine" | "stool" | "sputum" | "swab" | "csf" | "body_fluid" | "other">().notNull(),
   /** Offered for ordering; a test whose reagents run out is retired for a while. */
   isActive: boolean().default(true).notNull(),
+  /** A sensitive test (an HIV test, a CD4 count): its orders and results are restricted (rule 27). */
+  sensitiveCategory: text().$type<"hiv" | "mental_health" | "gbv">(),
   createdAt: createdAt(),
 }, t => [
   unique("lab_tests_facility_id_id_key").on(t.facilityId, t.id),
@@ -1648,6 +1927,7 @@ export const labTests = pgTable("lab_tests", {
   unique("lab_tests_billable_item_key").on(t.facilityId, t.billableItemId),
   foreignKey({ name: "lab_tests_billable_item_fk", columns: [t.facilityId, t.billableItemId], foreignColumns: [billableItems.facilityId, billableItems.id] }),
   oneOf("lab_tests_specimen_type_known", t.specimenType, ["blood", "urine", "stool", "sputum", "swab", "csf", "body_fluid", "other"]),
+  oneOf("lab_tests_sensitive_category_known", t.sensitiveCategory, ["hiv", "mental_health", "gbv"]),
 ]);
 
 /**
@@ -2128,6 +2408,13 @@ export const charges = pgTable("charges", {
   amountCents: integer().notNull(),
   /** The price used, for audit and re-pricing. */
   priceListItemId: uuid().notNull(),
+  /**
+   * What a bill prints for it: the item's printed name, or its name, copied
+   * at capture as the price is (rule 7). Migration 0071's trigger sets it on
+   * every insert, so no capture path can leave it out or get it wrong; the
+   * default is only a placeholder that trigger replaces.
+   */
+  printedName: text().default(sql`''`).notNull(),
   /** The Kenyan day the service was given; for a bed-day, the night it began. */
   serviceDate: date({ mode: "string" }).notNull(),
   bedStayId: uuid(),
@@ -2147,6 +2434,7 @@ export const charges = pgTable("charges", {
 }, t => [
   unique("charges_facility_id_id_key").on(t.facilityId, t.id),
   foreignKey({ name: "charges_encounter_fk", columns: [t.facilityId, t.encounterId], foreignColumns: [encounters.facilityId, encounters.id] }),
+  check("charges_printed_name_present", sql`length(btrim(${t.printedName})) > 0`),
   foreignKey({ name: "charges_item_fk", columns: [t.facilityId, t.billableItemId], foreignColumns: [billableItems.facilityId, billableItems.id] }),
   foreignKey({ name: "charges_price_fk", columns: [t.facilityId, t.priceListItemId], foreignColumns: [priceListItems.facilityId, priceListItems.id] }),
   foreignKey({ name: "charges_bed_stay_fk", columns: [t.facilityId, t.bedStayId], foreignColumns: [bedStays.facilityId, bedStays.id] }),
@@ -2856,6 +3144,10 @@ export const TENANT_TABLES = [
   "bed_stays",
   "service_points",
   "queue_entries",
+  "appointments",
+  "appointment_reminders",
+  "break_glass_grants",
+  "break_glass_alerts",
   "observations",
   "patient_allergies",
   "diagnoses",

@@ -14,5 +14,6 @@ router.openapi(routes.revokeInvitation, handlers.revokeInvitation);
 router.openapi(routes.listMembers, handlers.listMembers);
 router.openapi(routes.setLicence, handlers.setLicence);
 router.openapi(routes.changeRoles, handlers.changeRoles);
+router.openapi(routes.setSensitiveAccess, handlers.setSensitiveAccess);
 
 export default router;

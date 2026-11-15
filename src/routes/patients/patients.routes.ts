@@ -128,6 +128,8 @@ const PatientRecordSchema = PatientSummarySchema.omit({ opNumber: true }).extend
   noPhoneReason: NoPhoneReasonSchema.nullable(),
   noIdReason: NoIdReasonSchema.nullable(),
   unidentified: z.boolean(),
+  /** Whether they want SMS reminders of appointments; null until asked. */
+  smsReminders: z.boolean().nullable(),
   registeredAt: z.string(),
   numbers: z.array(z.object({ kind: z.enum(["outpatient", "inpatient"]), number: z.string(), issuedAt: z.string() })),
   identifiers: z.array(z.object({ type: z.enum(IDENTIFIER_TYPES), value: z.string(), addedAt: z.string() })),

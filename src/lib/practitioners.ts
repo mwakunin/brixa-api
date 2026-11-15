@@ -180,15 +180,16 @@ const memberColumns = {
   name: user.name,
   email: user.email,
   roles: memberships.roles,
+  sensitiveCategories: memberships.sensitiveCategories,
   licenceProfession: memberships.licenceProfession,
   licenceNumber: memberships.licenceNumber,
   licenceExpiresOn: memberships.licenceExpiresOn,
 };
 
-type MemberRow = LicenceColumns & { id: string; name: string; email: string; roles: MembershipRole[] };
+type MemberRow = LicenceColumns & { id: string; name: string; email: string; roles: MembershipRole[]; sensitiveCategories: ("hiv" | "mental_health" | "gbv")[] };
 
 function present(row: MemberRow, today: string) {
-  return { id: row.id, name: row.name, email: row.email, roles: row.roles, licence: licenceView(row, today) };
+  return { id: row.id, name: row.name, email: row.email, roles: row.roles, sensitiveCategories: row.sensitiveCategories, licence: licenceView(row, today) };
 }
 
 export type Member = ReturnType<typeof present>;

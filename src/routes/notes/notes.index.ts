@@ -15,5 +15,6 @@ router.openapi(routes.discardDraft, handlers.discardDraft);
 router.openapi(routes.addAddendum, handlers.addAddendum);
 router.openapi(routes.markEnteredInError, handlers.markEnteredInError);
 router.openapi(routes.listNotes, handlers.listNotes);
+router.openapi(routes.markSensitive, handlers.markSensitive);
 
 export default router;

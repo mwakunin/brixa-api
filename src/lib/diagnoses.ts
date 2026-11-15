@@ -5,9 +5,11 @@ import type { AppDb } from "@/db";
 import { diagnoses, encounters, memberships, user } from "@/db/schema";
 
 import type { PatientActor } from "./patients";
+import type { Filtered, Guarded, SensitiveCategory } from "./sensitivity";
 
 import { recordAudit } from "./audit";
 import { codableIcd } from "./icd11";
+import { alertRecorders, categoriesOf, categoryOfCode, clinicCategoriesOf, filterFor, isRestricted, readDetail, readerOf, sight } from "./sensitivity";
 
 /**
  * Diagnoses (SCHEMA.md §8, P3 slice 3a), coded in ICD-11 (rule 8) and made by
@@ -57,7 +59,7 @@ export class DiagnosisError extends Error {
 
 async function lockEncounter(tx: AppDb, encounterId: string) {
   const [encounter] = await tx
-    .select({ id: encounters.id, status: encounters.status })
+    .select({ id: encounters.id, status: encounters.status, patientId: encounters.patientId })
     .from(encounters)
     .where(eq(encounters.id, encounterId))
     .for("update")
@@ -67,8 +69,16 @@ async function lockEncounter(tx: AppDb, encounterId: string) {
   return encounter;
 }
 
-/** A standing diagnosis, locked after its encounter (M8). An ended one is refused. */
-async function lockStanding(tx: AppDb, diagnosisId: string): Promise<DiagnosisRow> {
+/** What makes a diagnosis restricted (rule 27): its code, or a sensitive clinic in its visit. */
+function guardOf(d: { code: string; diagnosedBy: string }, clinics: Iterable<SensitiveCategory> | undefined): Guarded {
+  return { categories: categoriesOf(clinics, [categoryOfCode(d.code)]), recordedBy: [d.diagnosedBy] };
+}
+
+/**
+ * A standing diagnosis, locked after its encounter (M8). An ended one is
+ * refused; one the actor may not see (rule 27) is not found.
+ */
+async function lockStanding(tx: AppDb, diagnosisId: string, actor: PatientActor): Promise<DiagnosisRow> {
   const [found] = await tx.select({ encounterId: diagnoses.encounterId }).from(diagnoses).where(eq(diagnoses.id, diagnosisId)).limit(1);
   if (!found)
     throw new DiagnosisError("not_found");
@@ -76,6 +86,9 @@ async function lockStanding(tx: AppDb, diagnosisId: string): Promise<DiagnosisRo
   if (encounter.status === "cancelled")
     throw new DiagnosisError("encounter_cancelled");
   const [diagnosis] = await tx.select().from(diagnoses).where(eq(diagnoses.id, diagnosisId)).for("update").limit(1);
+  const clinics = (await clinicCategoriesOf(tx, [found.encounterId])).get(found.encounterId);
+  if (await isRestricted(tx, { facilityId: diagnosis.facilityId, patientId: encounter.patientId, encounterId: found.encounterId }, guardOf({ code: diagnosis.icdCode, diagnosedBy: diagnosis.diagnosedBy }, clinics), actor))
+    throw new DiagnosisError("not_found");
   if (diagnosis.endedAt)
     throw new DiagnosisError("ended");
   return diagnosis;
@@ -114,7 +127,13 @@ export async function recordDiagnosis(
   if (!icd.isLeaf)
     throw new DiagnosisError("code_too_broad");
 
-  const current = await tx.select({ code: diagnoses.icdCode, rank: diagnoses.rank }).from(diagnoses).where(standing(encounterId));
+  // Judged against what the actor may see (rule 27): a hidden diagnosis neither
+  // refuses the same code nor takes the principal rank from theirs, so the
+  // answer never tells them it is there.
+  const reader = await readerOf(tx, encounter.patientId, actor);
+  const clinics = (await clinicCategoriesOf(tx, [encounterId])).get(encounterId);
+  const current = (await tx.select({ code: diagnoses.icdCode, rank: diagnoses.rank, diagnosedBy: diagnoses.diagnosedBy }).from(diagnoses).where(standing(encounterId)))
+    .filter(d => sight(reader, guardOf(d, clinics)) !== "restricted");
   if (current.some(d => d.code === icd.code))
     throw new DiagnosisError("already_diagnosed");
   const principal = input.principal === true || !current.some(d => d.rank === "principal");
@@ -148,7 +167,7 @@ export async function recordDiagnosis(
 
 /** Confirms a provisional diagnosis, e.g. once a test bears it out. Also after the visit has closed. */
 export async function confirmDiagnosis(tx: AppDb, facilityId: string, diagnosisId: string, actor: PatientActor, now = new Date()): Promise<DiagnosisRow> {
-  const current = await lockStanding(tx, diagnosisId);
+  const current = await lockStanding(tx, diagnosisId, actor);
   if (current.certainty !== "provisional")
     throw new DiagnosisError("not_provisional");
 
@@ -170,7 +189,7 @@ export async function confirmDiagnosis(tx: AppDb, facilityId: string, diagnosisI
 
 /** Makes a standing diagnosis the principal one; the previous principal becomes secondary. */
 export async function makePrincipal(tx: AppDb, facilityId: string, diagnosisId: string, actor: PatientActor): Promise<DiagnosisRow> {
-  const current = await lockStanding(tx, diagnosisId);
+  const current = await lockStanding(tx, diagnosisId, actor);
   if (current.rank === "principal")
     throw new DiagnosisError("already_principal");
 
@@ -190,7 +209,7 @@ export async function makePrincipal(tx: AppDb, facilityId: string, diagnosisId: 
 
 /** Ends a diagnosis: ruled out, or entered in error. It stays on the record, ended. */
 export async function endDiagnosis(tx: AppDb, facilityId: string, diagnosisId: string, reason: EndReason, actor: PatientActor, now = new Date()): Promise<DiagnosisRow> {
-  const current = await lockStanding(tx, diagnosisId);
+  const current = await lockStanding(tx, diagnosisId, actor);
 
   const [ended] = await tx.update(diagnoses)
     .set({ endedAt: now, endedBy: actor.membershipId, endReason: reason })
@@ -256,20 +275,33 @@ export async function diagnosesOf(tx: AppDb, encounterId: string): Promise<Shown
   }));
 }
 
-/** As `diagnosesOf`, with an audit entry: they are part of the record (rule 9). */
-export async function listDiagnoses(tx: AppDb, facilityId: string, encounterId: string, actor: PatientActor): Promise<ShownDiagnosis[]> {
-  const [encounter] = await tx.select({ id: encounters.id }).from(encounters).where(eq(encounters.id, encounterId)).limit(1);
+/**
+ * As `diagnosesOf`, with an audit entry: they are part of the record (rule 9).
+ * A diagnosis the reader may not see (rule 27) is withheld, and counted.
+ */
+export async function listDiagnoses(tx: AppDb, facilityId: string, encounterId: string, actor: PatientActor): Promise<Filtered<ShownDiagnosis>> {
+  const [encounter] = await tx.select({ id: encounters.id, patientId: encounters.patientId }).from(encounters).where(eq(encounters.id, encounterId)).limit(1);
   if (!encounter)
     throw new DiagnosisError("encounter_not_found");
 
-  const listed = await diagnosesOf(tx, encounterId);
+  // The diagnoses first, then the clinics: a clinic joined before a diagnosis was made is then always seen (each read is its own snapshot).
+  const all = await diagnosesOf(tx, encounterId);
+  const clinics = (await clinicCategoriesOf(tx, [encounterId])).get(encounterId);
+  const listed = filterFor(
+    await readerOf(tx, encounter.patientId, actor),
+    all,
+    d => guardOf({ code: d.code, diagnosedBy: d.diagnosedBy.membershipId }, clinics),
+    d => d.diagnosedAt,
+  );
   await recordAudit(tx, {
     facilityId,
     actorId: actor.userId,
     action: "encounter.viewed",
     entityType: "encounter",
     entityId: encounterId,
-    summary: `Viewed diagnoses (${listed.length})`,
+    summary: `Viewed diagnoses (${listed.shown.length})`,
+    detail: readDetail(listed),
   });
+  await alertRecorders(tx, facilityId, listed.viaGrant, listed.viaGrantRecorders, actor);
   return listed;
 }

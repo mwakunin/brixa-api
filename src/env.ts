@@ -119,6 +119,19 @@ export const EnvSchema = z.object({
   RESEND_API_KEY: z.string().optional(),
   RESEND_FROM_EMAIL: z.string().optional(),
 
+  // --- SMS (Africa's Talking) ---
+  /**
+   * The platform's one account (ROADMAP.md P3, decided 2026-11-13). Left
+   * unset, appointment reminders are skipped as they fall due, so the
+   * credentials can come later.
+   */
+  AT_USERNAME: unsetIfBlank(z.string().optional()),
+  AT_API_KEY: unsetIfBlank(z.string().optional()),
+  /** Which Africa's Talking host messages go to. */
+  AT_ENV: z.enum(["sandbox", "production"]).default("sandbox"),
+  /** The account's sender for a facility without its own; unset for Africa's Talking's default. */
+  AT_SENDER_ID: unsetIfBlank(z.string().regex(/^[A-Z0-9][A-Z0-9 ]{0,10}$/i, "At most 11 letters, digits or spaces").optional()),
+
   // --- File storage (CLAUDE.md §7) ---
   /**
    * `gcs` is Google Cloud Storage, and production must use it. `local`
@@ -248,6 +261,14 @@ export const EnvSchema = z.object({
         code: "custom",
         path: ["RESEND_FROM_EMAIL"],
         message: "Set both RESEND_API_KEY and RESEND_FROM_EMAIL, or neither",
+      });
+    }
+
+    if (Boolean(input.AT_USERNAME) !== Boolean(input.AT_API_KEY)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["AT_API_KEY"],
+        message: "Set both AT_USERNAME and AT_API_KEY, or neither",
       });
     }
 

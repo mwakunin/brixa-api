@@ -4,6 +4,7 @@ import { jsonContent, jsonContentRequired } from "stoker/openapi/helpers";
 import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { CLINICAL_ROLES } from "@/lib/professions";
+import { restrictedSchema } from "@/lib/validation";
 import { requireClinicalRole, requireMembershipRole } from "@/middlewares/auth";
 import { clinicalResponses, facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
@@ -116,7 +117,7 @@ export const listDiagnoses = createRoute({
   middleware: [clinicalReaders] as const,
   request: { headers: facilityHeaders, params: IdParamsSchema },
   responses: {
-    [HttpStatusCodes.OK]: jsonContent(z.object({ diagnoses: z.array(DiagnosisSchema) }), "Diagnoses"),
+    [HttpStatusCodes.OK]: jsonContent(z.object({ diagnoses: z.array(DiagnosisSchema), restricted: restrictedSchema }), "Diagnoses"),
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(IdParamsSchema), "Not an encounter id"),
     ...tenantResponses,
   },

@@ -1,6 +1,7 @@
 import type { OutboxOperation } from "@/lib/outbox";
 
 import { pool } from "@/db";
+import { abandonAppointmentReminder, sendAppointmentReminder } from "@/lib/appointment-reminders";
 import { errorLine } from "@/lib/error-summary";
 import { sendInvitation } from "@/lib/invitations";
 import { logger } from "@/lib/logger";
@@ -46,6 +47,7 @@ const HANDLERS: Record<OutboxOperation, OutboxHandler> = {
   "invitation.send": sendInvitation,
   "mpesa.register_urls": registerUrls,
   "mpesa.stk_push": sendStkPush,
+  "appointment.remind": job => sendAppointmentReminder(job),
 };
 
 /**
@@ -55,6 +57,7 @@ const HANDLERS: Record<OutboxOperation, OutboxHandler> = {
  */
 const ON_GIVE_UP: Partial<Record<OutboxOperation, (job: OutboxJob) => Promise<void>>> = {
   "mpesa.stk_push": closeAbandonedStkPush,
+  "appointment.remind": abandonAppointmentReminder,
 };
 
 /** How long a claimed job stays invisible to other workers. */

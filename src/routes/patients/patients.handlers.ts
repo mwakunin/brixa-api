@@ -41,6 +41,7 @@ function recordJson(r: PatientRecord) {
     noPhoneReason: r.noPhoneReason,
     noIdReason: r.noIdReason,
     unidentified: r.unidentified,
+    smsReminders: r.smsReminders,
     registeredAt: r.registeredAt.toISOString(),
     numbers: r.numbers.map(n => ({ ...n, issuedAt: n.issuedAt.toISOString() })),
     identifiers: r.identifiers.map(i => ({ ...i, addedAt: i.addedAt.toISOString() })),

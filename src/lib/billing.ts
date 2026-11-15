@@ -159,7 +159,8 @@ async function lockLiveCharges(tx: AppDb, encounterId: string): Promise<LiveChar
     .select({
       id: charges.id,
       code: billableItems.code,
-      name: billableItems.name,
+      // As copied at capture: a neutral name for an item that discloses a condition (rule 27).
+      name: charges.printedName,
       quantity: charges.quantity,
       unitPriceCents: charges.unitPriceCents,
       amountCents: charges.amountCents,

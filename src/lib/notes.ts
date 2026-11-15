@@ -6,8 +6,10 @@ import type { MembershipRole } from "@/db/schema";
 import { clinicalNotes, encounters, memberships, user } from "@/db/schema";
 
 import type { PatientActor } from "./patients";
+import type { Filtered, SensitiveCategory } from "./sensitivity";
 
 import { recordAudit } from "./audit";
+import { alertRecorders, categoriesOf, clinicCategoriesOf, filterFor, isRestricted, patientOfEncounter, readDetail, readerOf } from "./sensitivity";
 
 /**
  * Clinical notes (SCHEMA.md §8, P3 slice 3b). A note is the author's draft
@@ -47,7 +49,8 @@ export type NoteErrorCode
     | "empty"
     | "not_a_draft"
     | "not_signed"
-    | "entered_in_error";
+    | "entered_in_error"
+    | "already_sensitive";
 
 export class NoteError extends Error {
   constructor(readonly code: NoteErrorCode) {
@@ -61,6 +64,7 @@ export class NoteError extends Error {
       not_a_draft: "This note is already signed or discarded; add an addendum instead",
       not_signed: "Only a signed note takes an addendum or is marked entered in error",
       entered_in_error: "This note is marked entered in error",
+      already_sensitive: "This note is already marked sensitive, in another category",
     }[code]);
     this.name = "NoteError";
   }
@@ -111,7 +115,24 @@ async function lockNote(tx: AppDb, noteId: string, actor: PatientActor): Promise
   const [note] = await tx.select().from(clinicalNotes).where(eq(clinicalNotes.id, noteId)).for("update").limit(1);
   if (note.status === "draft" && note.writtenBy !== actor.membershipId)
     throw new NoteError("not_found");
+  // A restricted note is not there for a reader who may not see it (rule 27).
+  if (await restrictedFor(tx, note, actor))
+    throw new NoteError("not_found");
   return note;
+}
+
+/**
+ * Whether `actor` may not see `note`. An addendum is judged as its note, by
+ * the note's author: a write on it answers with the note, so writing an
+ * addendum earlier is no way in once the note is restricted.
+ */
+async function restrictedFor(tx: AppDb, note: NoteRow, actor: PatientActor): Promise<boolean> {
+  const root = note.addendumOf
+    ? (await tx.select().from(clinicalNotes).where(eq(clinicalNotes.id, note.addendumOf)).limit(1))[0]
+    : note;
+  const clinics = (await clinicCategoriesOf(tx, [note.encounterId])).get(note.encounterId);
+  const guard = { categories: categoriesOf(clinics, [root.sensitiveCategory]), recordedBy: [root.writtenBy] };
+  return guard.categories.size > 0 && isRestricted(tx, { facilityId: note.facilityId, patientId: (await patientOfEncounter(tx, note.encounterId))!, encounterId: note.encounterId }, guard, actor);
 }
 
 /** Writing or signing a note's content takes a role that writes its kind, held now, not only when the draft was started. */
@@ -137,7 +158,7 @@ export async function startNote(
   tx: AppDb,
   facilityId: string,
   encounterId: string,
-  input: NoteContent & { kind: NoteKind },
+  input: NoteContent & { kind: NoteKind; sensitiveCategory?: SensitiveCategory },
   actor: NoteActor,
   now = new Date(),
 ): Promise<NoteRow> {
@@ -149,6 +170,7 @@ export async function startNote(
     facilityId,
     encounterId,
     kind: input.kind,
+    sensitiveCategory: input.sensitiveCategory ?? null,
     ...contentColumns(input.kind, input),
     status: "draft",
     writtenBy: actor.membershipId,
@@ -258,6 +280,26 @@ export async function markNoteEnteredInError(tx: AppDb, facilityId: string, note
 }
 
 /**
+ * Marks the author's own note sensitive, a draft or signed: once, and for
+ * good, since a mark taken off would open what was meant to stay closed.
+ */
+export async function markNoteSensitive(tx: AppDb, facilityId: string, noteId: string, category: SensitiveCategory, actor: PatientActor): Promise<NoteRow> {
+  const current = await lockNote(tx, noteId, actor);
+  if (current.writtenBy !== actor.membershipId || current.kind === "addendum")
+    throw new NoteError("not_found");
+  if (current.status === "discarded")
+    throw new NoteError("not_a_draft");
+  if (current.sensitiveCategory === category)
+    return current;
+  if (current.sensitiveCategory)
+    throw new NoteError("already_sensitive");
+
+  const [marked] = await tx.update(clinicalNotes).set({ sensitiveCategory: category }).where(eq(clinicalNotes.id, noteId)).returning();
+  await audit(tx, facilityId, actor, "note.marked_sensitive", current, `Marked a ${current.kind} note sensitive`);
+  return marked;
+}
+
+/**
  * Whether a draft, or a signed note or addendum not marked entered in error,
  * stands on the encounter. An addendum counts on its own, even under a marked
  * note: once the visit is cancelled it could no longer be marked.
@@ -304,6 +346,8 @@ export interface ShownNote {
   updatedAt: Date;
   signedAt: Date | null;
   enteredInError: EnteredInError | null;
+  /** Marked sensitive by its author; shown to those who may read it. */
+  sensitiveCategory: SensitiveCategory | null;
   addenda: ShownAddendum[];
 }
 
@@ -338,6 +382,7 @@ export async function notesOf(tx: AppDb, encounterId: string, reader: PatientAct
     updatedAt: n.updatedAt,
     signedAt: n.signedAt,
     enteredInError: n.enteredInErrorAt ? { at: n.enteredInErrorAt, reason: n.enteredInErrorReason! } : null,
+    sensitiveCategory: n.sensitiveCategory,
   }));
   const addenda = shown.filter(n => n.kind === "addendum");
   return shown
@@ -355,21 +400,34 @@ export async function notesOf(tx: AppDb, encounterId: string, reader: PatientAct
     }));
 }
 
-/** As `notesOf`, with an audit entry: they are part of the record (rule 9). */
-export async function listNotes(tx: AppDb, facilityId: string, encounterId: string, actor: PatientActor): Promise<ShownNote[]> {
-  const [encounter] = await tx.select({ id: encounters.id }).from(encounters).where(eq(encounters.id, encounterId)).limit(1);
+/**
+ * As `notesOf`, with an audit entry: they are part of the record (rule 9). A
+ * note the reader may not see (rule 27) is withheld, and counted.
+ */
+export async function listNotes(tx: AppDb, facilityId: string, encounterId: string, actor: PatientActor): Promise<Filtered<ShownNote>> {
+  const [encounter] = await tx.select({ id: encounters.id, patientId: encounters.patientId }).from(encounters).where(eq(encounters.id, encounterId)).limit(1);
   if (!encounter)
     throw new NoteError("encounter_not_found");
 
-  const listed = await notesOf(tx, encounterId, actor);
+  // The notes first, then the clinics: a clinic joined before a note was written is then always seen (each read is its own snapshot).
+  const all = await notesOf(tx, encounterId, actor);
+  const clinics = (await clinicCategoriesOf(tx, [encounterId])).get(encounterId);
+  const listed = filterFor(
+    await readerOf(tx, encounter.patientId, actor),
+    all,
+    n => ({ categories: categoriesOf(clinics, [n.sensitiveCategory]), recordedBy: [n.writtenBy.membershipId] }),
+    n => n.createdAt,
+  );
   await recordAudit(tx, {
     facilityId,
     actorId: actor.userId,
     action: "encounter.viewed",
     entityType: "encounter",
     entityId: encounterId,
-    summary: `Viewed clinical notes (${listed.length})`,
+    summary: `Viewed clinical notes (${listed.shown.length})`,
+    detail: readDetail(listed),
   });
+  await alertRecorders(tx, facilityId, listed.viaGrant, listed.viaGrantRecorders, actor);
   return listed;
 }
 

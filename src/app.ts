@@ -5,6 +5,8 @@ import configureOpenAPI from "@/lib/configure-open-api";
 import createApp from "@/lib/create-app";
 import adjustments from "@/routes/adjustments/adjustments.index";
 import allergies from "@/routes/allergies/allergies.index";
+import appointments from "@/routes/appointments/appointments.index";
+import breakGlass from "@/routes/break-glass/break-glass.index";
 import charges from "@/routes/charges/charges.index";
 import diagnoses from "@/routes/diagnoses/diagnoses.index";
 import documents from "@/routes/documents/documents.index";
@@ -88,6 +90,8 @@ const tenantRoutes = [
   patients,
   encounters,
   queues,
+  appointments,
+  breakGlass,
   observations,
   allergies,
   diagnoses,

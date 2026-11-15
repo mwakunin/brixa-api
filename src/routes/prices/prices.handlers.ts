@@ -16,6 +16,7 @@ import type {
   ListItemsRoute,
   RejectChangeRoute,
   RequestChangeRoute,
+  SetPrintedNameRoute,
   WithdrawChangeRoute,
 } from "./prices.routes";
 
@@ -76,8 +77,17 @@ export const createItem: TenantRouteHandler<CreateItemRoute> = async (c) => {
   const result = await guarded(c, () => prices.createBillableItem(c.var.db, c.var.facility.id, body, actorOf(c)));
   if (result instanceof Response)
     return result as never;
-  const { id, code, name, category, isActive } = result;
-  return c.json({ id, code, name, category, isActive, cashPriceCents: null }, HttpStatusCodes.CREATED);
+  const { id, code, name, category, isActive, printedName } = result;
+  return c.json({ id, code, name, category, isActive, printedName, cashPriceCents: null }, HttpStatusCodes.CREATED);
+};
+
+export const setPrintedName: TenantRouteHandler<SetPrintedNameRoute> = async (c) => {
+  const { id } = c.req.valid("param");
+  const { printedName } = c.req.valid("json");
+  const result = await guarded(c, () => prices.setPrintedName(c.var.db, c.var.facility.id, id, printedName, actorOf(c)));
+  if (result instanceof Response)
+    return result as never;
+  return c.json({ id: result.id, printedName: result.printedName }, HttpStatusCodes.OK);
 };
 
 export const listChanges: TenantRouteHandler<ListChangesRoute> = async (c) => {

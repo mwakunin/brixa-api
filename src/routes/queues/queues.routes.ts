@@ -3,6 +3,7 @@ import * as HttpStatusCodes from "stoker/http-status-codes";
 import { jsonContent, jsonContentRequired } from "stoker/openapi/helpers";
 import { createErrorSchema } from "stoker/openapi/schemas";
 
+import { sensitiveCategorySchema } from "@/lib/validation";
 import { requireClinicalRole, requireMembershipRole } from "@/middlewares/auth";
 import { clinicalResponses, facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
@@ -32,6 +33,8 @@ const ServicePointSchema = z.object({
   kind: z.enum(["triage", "consultation"]),
   /** A clinic's consultation fee item, charged once per visit when the patient joins its queue. */
   consultationItemId: z.uuid().nullable(),
+  /** A sensitive clinic: everything clinical recorded in a visit here is restricted (rule 27). */
+  sensitiveCategory: sensitiveCategorySchema.nullable(),
   isActive: z.boolean(),
 });
 
@@ -76,9 +79,11 @@ const UpdateBodySchema = z.object({
   isActive: z.boolean().optional(),
   /** A clinic's fee item (a consultation item), or null for no fee. Applies to patients who join from now on. */
   consultationItemId: z.uuid().nullable().optional(),
+  /** Marks a clinic sensitive (the HIV clinic, psychiatry), or null to unmark it. Applies to its visits past and future. */
+  sensitiveCategory: sensitiveCategorySchema.nullable().optional(),
 }).refine(
-  b => b.name !== undefined || b.isActive !== undefined || b.consultationItemId !== undefined,
-  "Change the name, whether it is in use, or the consultation fee",
+  b => b.name !== undefined || b.isActive !== undefined || b.consultationItemId !== undefined || b.sensitiveCategory !== undefined,
+  "Change the name, whether it is in use, the consultation fee, or whether it is sensitive",
 );
 const JoinBodySchema = z.object({ servicePointId: z.uuid() });
 const FinishBodySchema = z.object({
@@ -133,7 +138,7 @@ export const updateServicePoint = createRoute({
   method: "patch",
   path: "/service-points/{id}",
   summary: "Change a service point",
-  description: "Rename it, retire it, or set a clinic's consultation fee. A point with patients still in its queue cannot be retired.",
+  description: "Rename it, retire it, or set a clinic's consultation fee. A point with patients still in its queue, or a clinic with appointments booked from today on, cannot be retired.",
   middleware: [adminOnly] as const,
   request: { headers: facilityHeaders, params: IdParamsSchema, body: jsonContentRequired(UpdateBodySchema, "The change") },
   responses: {

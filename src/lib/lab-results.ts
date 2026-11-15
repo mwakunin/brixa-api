@@ -33,6 +33,7 @@ import { recordAudit } from "./audit";
 import { businessDate, printedAge, printedDateTime } from "./dates";
 import { FIELD_LENGTH, NOTE_LENGTH, packNotes } from "./document-content";
 import { issueDocument, voidDocument } from "./documents";
+import { alertRecorders, filterFor, orderGuards, readDetail, readerOf, sight } from "./sensitivity";
 import { patientColumns, patientOf } from "./worklist-patient";
 
 /**
@@ -492,18 +493,20 @@ export interface EncounterResults {
   results: ShownResult[];
   /** Each order's current printed report. */
   reports: { orderId: string; documentId: string; number: string }[];
+  /** Results the reader may not see (rule 27), by date only. */
+  restricted: { recordedAt: Date }[];
 }
 
 /** An encounter's results as clinicians see them, and its reports. Audited (rule 9). */
 export async function listResults(tx: AppDb, facilityId: string, encounterId: string, actor: PatientActor, offset = 0): Promise<EncounterResults | null> {
-  const [encounter] = await tx.select({ id: encounters.id }).from(encounters).where(eq(encounters.id, encounterId)).limit(1);
+  const [encounter] = await tx.select({ id: encounters.id, patientId: encounters.patientId }).from(encounters).where(eq(encounters.id, encounterId)).limit(1);
   if (!encounter)
     return null;
   const orderIds = (await tx.select({ id: orders.id }).from(orders).where(eq(orders.encounterId, encounterId))).map(o => o.id);
-  const results = orderIds.length === 0
+  const all = orderIds.length === 0
     ? []
     : await resultsWhere(tx, and(inArray(specimens.orderId, orderIds), inArray(labResults.status, ["released", "verified"])), offset);
-  const reports = orderIds.length === 0
+  const allReports = orderIds.length === 0
     ? []
     : await tx
         .select({ orderId: labReports.orderId, documentId: documents.id, number: documents.number })
@@ -512,15 +515,29 @@ export async function listResults(tx: AppDb, facilityId: string, encounterId: st
         .where(inArray(labReports.orderId, orderIds))
         .orderBy(asc(documents.issuedAt));
 
+  // A result is judged with its order (rule 27): one sensitive test restricts the order's results and its report.
+  const reader = await readerOf(tx, encounter.patientId, actor);
+  const guards = await orderGuards(tx, orderIds);
+  const results = filterFor(reader, all, (r) => {
+    const order = guards.get(r.orderId)!;
+    return { categories: order.categories, recordedBy: [...order.recordedBy, r.enteredBy.membershipId, r.verifiedBy?.membershipId ?? null] };
+  }, r => r.enteredAt);
+  const reportSights = allReports.map(r => ({ report: r, seen: sight(reader, guards.get(r.orderId)!) }));
+  const reports = reportSights.filter(r => r.seen !== "restricted").map(r => r.report);
+  const viaGrant = results.viaGrant ?? (reportSights.some(r => r.seen === "via_grant") ? reader.grantId : null);
+  const reportRecorders = reportSights.filter(r => r.seen === "via_grant").flatMap(r => guards.get(r.report.orderId)!.recordedBy);
+  await alertRecorders(tx, facilityId, viaGrant, [...results.viaGrantRecorders, ...reportRecorders], actor);
+
   await recordAudit(tx, {
     facilityId,
     actorId: actor.userId,
     action: "encounter.viewed",
     entityType: "encounter",
     entityId: encounterId,
-    summary: `Viewed lab results (${results.length})`,
+    summary: `Viewed lab results (${results.shown.length})`,
+    detail: readDetail({ restricted: results.restricted, viaGrant }),
   });
-  return { results, reports };
+  return { results: results.shown, reports, restricted: results.restricted };
 }
 
 // ---------------------------------------------------------------------------

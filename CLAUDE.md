@@ -156,7 +156,7 @@ The detail is in `SCHEMA.md`. In short:
 - **Printed documents** go through `documents` (`SCHEMA.md` §6.2). The module that finalises the work calls `issueDocument` in that transaction: it takes the number, mints the QR verification code and freezes exactly what is printed. A PDF is rendered from that frozen content only, and every opening is audited. Never print a document from live rows.
 - **Pharmacy and stores:** shared drug catalogue (identity only); per-facility inventory items with the facility's own cost and selling prices; batch-level stock per store; first-expiry-first-out dispensing; every movement is a stock ledger entry.
 - **Prices** are per facility and per payer price list. Only `facility_admin` and `finance_manager` change them, and each change is audited with old and new values.
-- **Units of sale** (loose units vs packs) are an open question. Do not fix the stock unit model until it is answered.
+- **Units of sale:** loose units (decided 2026-11-15, `SPEC.md` §4, question 2). A stock item has a base unit (tablet, capsule, mL, vial) and a pack size; stock is counted in the base unit, received in packs and converted, and priced per base unit.
 
 ---
 
@@ -166,13 +166,13 @@ The detail is in `SCHEMA.md`. In short:
 
 **Outbox and external calls.** Every call to SHA, an insurer, Daraja, SMS or email is an outbox row written in the business transaction (rule 18). A worker claims it, calls out, and records the result in `gateway_exchanges` in a new transaction. Handlers re-read current state rather than trusting a payload, and are idempotent.
 
-**Background jobs.** Cloud Tasks for one-off jobs (reminders, outbox drains), Cloud Scheduler for recurring jobs. Workers are internal routes authenticated with Google-signed identity tokens, never public. Handlers must be idempotent (delivery is at-least-once); use deterministic task names such as `reminder-{appointmentId}-24h`. Payloads carry IDs only. Check current state at run time instead of trying to cancel tasks. An outbox job that gives up is marked `failed` with its `last_error`, and logged as `outbox job failed permanently` for alerting. Other jobs record permanent failures in `job_failures`, which arrives with the first of them (the nightly bed-day accrual, P2). Outbox jobs queued inside `runAsFacility` (or `nudgingAfterCommit`) are nudged by a Cloud Task once the transaction commits; never create a task inside one (rule 18).
+**Background jobs.** Cloud Tasks for one-off jobs (outbox drains), Cloud Scheduler for recurring jobs. Workers are internal routes authenticated with Google-signed identity tokens, never public. Handlers must be idempotent (delivery is at-least-once); use deterministic task names such as `outbox-{outboxId}`. A job due later than 30 days out (an appointment reminder) is an outbox row held back by `available_at`, not a Cloud Task. Payloads carry IDs only. Check current state at run time instead of trying to cancel tasks. An outbox job that gives up is marked `failed` with its `last_error`, and logged as `outbox job failed permanently` for alerting. Other jobs record permanent failures in `job_failures`, which arrives with the first of them (the nightly bed-day accrual, P2). Outbox jobs queued inside `runAsFacility` (or `nudgingAfterCommit`) are nudged by a Cloud Task once the transaction commits; never create a task inside one (rule 18).
 
 | Job | Trigger | Action |
 |---|---|---|
 | Bed-day accrual | Scheduler, nightly | Fan out per facility; run the idempotent bed-day function (`SCHEMA.md` §7.2) |
 | Outbox drain | Cloud Tasks on write, plus a Scheduler sweep | Deliver pending external calls |
-| Appointment reminder | Cloud Tasks, scheduled at booking | Verify the appointment is still valid, send SMS |
+| Appointment reminder | Outbox job held back to the day before (`available_at`), delivered by the outbox sweep. Not a Cloud Task: those schedule at most 30 days ahead | Verify the appointment is still booked for that day and the patient said yes, send SMS |
 | Expiry scan, low stock | Scheduler, nightly | Fan out per facility; flag batches nearing expiry and items below reorder level |
 | Reconciliation check | Scheduler, daily | Check identities M7 per facility; alert on drift |
 | Visit close | Scheduler, nightly | Fan out per facility; close outpatient visits still open after their day, ending their queue entries |
@@ -211,7 +211,6 @@ Verify these with a lawyer, the regulator or DHA/SHA. They are noted here so cod
 See `SPEC.md` sections 4 and 5. Do not resolve these in code without asking:
 
 - Data residency, and therefore the production database host, region, and bucket location
-- Loose units vs full packs for dispensing
 - Pilot hospital
 - Medical-records retention requirements
 - PPB dispensing record obligations

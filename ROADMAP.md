@@ -97,6 +97,8 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
 
 **Exit:** a full OPD journey (registration → triage → consultation → lab → cashier) with no manual charge posting. Medication orders produce printable prescriptions; dispensing joins the journey in P4.
 
+**Done (2026-11-15):** `src/routes/opd-journey.test.ts` runs a day's outpatients through the API. One patient pays at each step in cash (triage, the clinic's fee, a lab test charged at order, the result verified, a review, a printed prescription). One comes on an appointment and pays the final bill by M-Pesa paybill. One is a walk-in for the lab with an outside requester. No charge is posted by hand, every visit closes itself, the cashier's list ends empty, and the reconciliation check finds no drift with M7's identities holding. The clinical functions are described, with their evidence, in `docs/certification/clinical-functions.md`.
+
 **Slices** (2026-11-10). Each follows P2's pattern: a migration pair, a lib module, routes and tests, and an "As built" note in `SCHEMA.md`.
 
 | PR | Slice | Builds |
@@ -121,9 +123,7 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
 - **From the ecc healthcare guidance:**
   - The ordering clinician gets a results-to-review list and acknowledges each result.
   - Abnormal vital signs are flagged for adults; children's thresholds depend on age and need care.
-  - Sensitive billable items print under a neutral name.
-  - Sensitivity comes from ICD codes, lab tests and clinics.
-  - Break-glass alerts go to an in-app list for the attending clinician and the facility admin.
+  - Sensitive billable items, where sensitivity comes from, and the break-glass alerts were decided for slice 7 (2026-11-15, below).
 
 **Decided 2026-11-10:** diagnoses are coded in ICD-11 (`SPEC.md` §4, question 8).
 
@@ -158,19 +158,72 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
 - **A visit closes itself** through a check every 15 minutes, once its patient is in no queue, every test is resulted or cancelled and every service done, nothing is owed, and the patient was seen or tested. Medicines are not waited for until dispensing exists (P4).
 - **Flags** come from the range for the patient's sex and age in days at collection; a patient who is intersex, or whose sex is not recorded, is judged against `any` ranges only. The results-to-review list stays proposed.
 
-**Still open:** whether the MOH 705 report's grouping of ICD-11 codes into MOH's condition list needs WHO's written agreement, since WHO's licence puts mappings between classifications outside it (`SCHEMA.md` §8, slice 3a); the pilot's MOH 705 and 717 forms, so P3 captures what P6 reports need (§9, question 10); whether SMS reminders need the patient's consent; drug-interaction and dose data (none in v1 without a licensed source).
+**Decided 2026-11-13** (product owner, for 6; recommendations accepted):
+- **An appointment** is booked at a clinic (a consultation point) for a date, with a time and a clinician if wanted, from today to a year ahead. No slots, daily caps or clinic days in v1: the day's list shows how many are booked, and a second booking at the same time is allowed. Its lifecycle is booked, then checked in or cancelled (with a reason); one still booked after its day is shown as missed, derived and never stored.
+- **Booking, moving and cancelling** are for records clerks, nurses, ward nurses, doctors, clinical officers and the facility admin. **Checking in** opens a visit, so it is for the same staff except ward nurses, who do not open visits. None is a clinical act. A follow-up booked during a visit records that visit. Moving changes the date or time while the appointment is booked, audited with the old and new, and queues a new reminder. There is no free-text reason: the clinic says what it is for.
+- **Checking in** is on the appointment's own day (a patient who comes on another day is moved to today first). It opens the visit, or uses the one already open, and the patient goes to triage like any visit, or straight to the booked clinic if the clerk says so. Booked patients take no priority over walk-ins in the clinic's queue.
+- **SMS reminders need the patient's yes**, asked once and recorded with who asked and when; nothing is sent before it. Whether the law requires it is still for the lawyer; asking costs little either way.
+- **The reminder** is one SMS at 17:00 Kenyan time the day before, none for a booking made after that, and no message at booking. It gives the patient's given name, the facility, the date and time, and the facility's phone number to call to change it (the facility admin sets the number). It never names the clinic, the clinician or the reason, since phones are shared and a clinic's name can disclose an HIV or mental-health diagnosis. Kenyan numbers only.
+- **The reminder is an outbox job held back to its time** (`available_at`) and delivered by the minute's sweep, not a Cloud Task scheduled at booking: Cloud Tasks schedules at most 30 days ahead, and chronic clinics book months ahead. It re-reads the appointment when it runs and is skipped if it no longer fits.
+- **Africa's Talking** is one account for the platform, configured in the environment, with each message's cost recorded per facility; a facility may have its own sender ID. Delivery reports wait for a public callback.
+- **A review visit's fee** is still charged as today (the pilot is asked whether to waive it); the visit a follow-up was booked from is recorded, so a waiver can come later.
+
+**Decided 2026-11-15** (product owner, for 7; recommendations accepted):
+- **Sensitive categories** are HIV, mental health and gender-based violence (rule 27). An item is sensitive when it is a diagnosis under a code on this system's list (HIV 1C60–1C62, mental health chapter 06, and the GBV codes a clinician names; the list is to be confirmed by a clinician), a result of a lab test the catalogue's keepers mark, a note its author marks, or anything recorded during a visit to a clinic the facility admin marks.
+- **What is hidden:** a sensitive item on its own (a diagnosis, a result, a marked note), and everything clinical recorded in a visit to a sensitive clinic (notes, diagnoses, orders, prescriptions, results and their printed documents). Vital signs, allergies, queues, appointments and the bill are not hidden. A hidden item shows as a restricted record with its date and no category, since a category alone discloses.
+- **Who sees it without breaking the glass:** whoever recorded it; staff the facility admin assigns to its category (the HIV clinic's staff to HIV), each assignment audited; and the lab on its own worklist. Every other clinician breaks the glass; non-clinical roles read no clinical content at all.
+- **Breaking the glass** is open to any clinical member with a current licence, always with a reason, emergencies included. It opens that one patient's sensitive items for 12 hours; each read during it is audited, and marked as one.
+- **The alert** is an in-app list for the facility admin and for the clinicians who recorded what was opened, not an SMS or email. The facility admin marks each one reviewed.
+- **Medicines:** an HIV medicine prescribed outside a sensitive clinic is not caught, since the drug list carries no classes. P4's per-facility stock items can carry the mark.
+- **Neutral names on bills:** a billable item may have a neutral printed name ("Laboratory test"), which invoices and receipts print. The charge copies it at capture, as it copies the price.
+
+**Still open after P3** (2026-11-15), each for its owner:
+- **A clinician:** the age below which a weight is needed to prescribe (`CHILD_UNDER_YEARS = 12`); the injected-route rule; the list of sensitive ICD-11 codes, and the GBV codes to add to it.
+- **A pharmacist:** a review of the drug list before it is loaded, and the controlled schedules PPB's list does not carry.
+- **The pilot:** whether a review visit within a few days is charged a second consultation fee.
+- **Proposed, not decided:** the ordering clinician's results-to-review list; abnormal vital-sign flags.
+- **The outbox's next change:** a claim token, so an attempt that outlived its lease cannot finish a job another attempt holds (found in review of PR #17).
+
+**Also still open:** whether the MOH 705 report's grouping of ICD-11 codes into MOH's condition list needs WHO's written agreement, since WHO's licence puts mappings between classifications outside it (`SCHEMA.md` §8, slice 3a); the pilot's MOH 705 and 717 forms, so P3 captures what P6 reports need (§9, question 10); whether SMS reminders legally need the patient's consent (they are asked for it anyway, decided 2026-11-13); drug-interaction and dose data (none in v1 without a licensed source).
 
 ### P4 · Pharmacy and stores
 
 **Size:** L.
 
-Main store, pharmacy and ward sub-stores; transfers; goods received; batches and FEFO dispensing; dispense → charge; returns; the controlled-drug register; stock take; reorder levels; expiry and low-stock alerts (the nightly job in `CLAUDE.md` §7). Units of sale wait on open question 2 in `SPEC.md`.
+Main store, pharmacy and ward sub-stores; transfers; goods received; batches and FEFO dispensing; dispense → charge; returns; the controlled-drug register; stock take; reorder levels; expiry and low-stock alerts (the nightly job in `CLAUDE.md` §7). Drugs are dispensed per tablet: stock is counted in a base unit (decided 2026-11-15, `SPEC.md` §4, question 2).
 
 **Exit:**
 - The stock identity holds per store and batch (on hand = Σ movements, never negative).
 - The controlled-drug register balances against movements.
 - A batch nearing expiry and an item below its reorder level each produce an alert.
 - The full OPD journey now includes pharmacy (registration → triage → consultation → lab → pharmacy → cashier), still with no manual charge posting.
+
+**Slices** (proposed 2026-11-15, not yet agreed). Each follows P3's pattern: a migration pair, a lib module, routes and tests, and an "As built" note in `SCHEMA.md`.
+
+| PR | Slice | Builds |
+|---|---|---|
+| A | 1a Stores and stock items | Stores (main store, pharmacy, ward and other sub-stores). The facility's stock items: a catalogue drug or a consumable, each with a billable item, so its selling price goes through the price list and `resolvePrice`. The units it is counted and sold in (question 1). A reorder level per item per store |
+| A | 1b Goods received | Receipts into a store, the supplier as text: batch number, expiry, quantity and unit cost. Each is a `receipt` movement. Stock on hand per store and batch is derived (Σ movements), with a stock-status view |
+| A | 1c Item import | A facility's drug and consumable list and prices loaded from a CSV and mapped to the catalogue (`SPEC.md` §7.4), so a hospital is not set up by hand. Opening stock waits for P6's cutover |
+| B | 2 Transfers | Requested, approved, sent and received between stores, with a difference on receipt explained and adjusted |
+| B | 3a Dispensing | The pharmacy's list of prescriptions waiting. Prepared from the pharmacy's stock, earliest expiry first. Raises the charge, then is handed over (question 5). Partly dispensed, or marked not supplied. Visits close only once each medicine is dispensed or marked not supplied |
+| B | 3b Returns and adjustments | A patient's return credits its charge while unbilled, and is credited or refunded once billed. Write-offs (expired, damaged) and other adjustments need a reason and a second person (rule 24) |
+| C | 4 Controlled drugs | The register, per item and store, with a running balance (rule 12). Who may dispense them. Its entries balance against the movements |
+| C | 5 Stock take | A count per store, then the variances, each an adjustment approved by a second person |
+| C | 6 Alerts and exit | The nightly expiry and low-stock scan (`CLAUDE.md` §7) and the lists they feed. The OPD journey extended through the pharmacy. The stock identity and the register checked as P4's exit |
+
+**Questions before code** (proposed 2026-11-15; recommendations to confirm):
+1. **Loose units or packs: per tablet** (*decided 2026-11-15*, `SPEC.md` §4, question 2). Stock is counted in a base unit (tablet, capsule, mL, vial), with a pack size. Goods are received in packs and converted, and the price is per base unit, since a unit price may carry fractional shillings (D2). A prescription's quantity, already in dose units (P3 slice 4b), is dispensed in the same unit where the two match.
+2. **Cost.** *Recommended:* each batch keeps its own unit cost from goods received, and stock is valued at batch cost. No average costing, and no ledger in v1 (`ROADMAP.md` §3).
+3. **Selling prices.** *Recommended:* set per item through the existing price changes, approved by a second person (rule 24). The optional markup per category (`SPEC.md` §7.4) waits until a facility asks for it.
+4. **Who dispenses.** *Recommended:* pharmacists and pharmacy technicians, under a current licence. A controlled drug: pharmacists only, and never a nurse who holds the pharmacy technician role (the question left open in slice 1a, `SCHEMA.md` §8).
+5. **Paying before the hand-over.** A Kenyan hospital pharmacy usually prepares, sends the patient to pay, then hands over. *Recommended:* two steps. Preparing takes the stock and raises the charge. Handing over completes the dispense. A prepared dispense not handed over can be cancelled, which returns the stock and cancels the unbilled charge. An unpaid outpatient's hand-over shows a warning and is never blocked, as at the lab, since paying at the end is allowed (`SPEC.md` §2).
+6. **Which product fills a prescription.** Prescriptions name a generic drug. *Recommended:* the pharmacist picks any of the facility's items for that drug (a brand, a pack). The batch is chosen earliest-expiry-first, and the pharmacist may override it with a reason.
+7. **Not supplied.** Patients often buy what the hospital does not stock. *Recommended:* the pharmacist marks a medicine "not supplied", with a reason (out of stock, patient declined, bought elsewhere). That ends it without a charge, so the visit can close.
+8. **The controlled-drug register's contents** wait on PPB's answer (`SPEC.md` §4, question 7). *Recommended until then:* date, patient, prescriber and licence, item, batch, quantity in and out, running balance, and who dispensed. A wrong entry is corrected by a reversing entry, never edited.
+9. **Stock takes.** *Recommended:* a blind count, so the counter does not see the expected quantity until the count is submitted. The store does not freeze; movements during the count are reconciled by their time. Each variance is an adjustment approved by a second person.
+10. **Alerts.** *Recommended:* an in-app list for the pharmacy and stores, as for break-glass. A batch is flagged 90 days before it expires, and an item when it falls below its store's reorder level.
+11. **Consumables on orders** (deferred from P3 slice 4a). *Recommended:* stock items that are not drugs, charged when issued against an order. Ward issues for inpatients wait for P5's medication administration record.
 
 ### P5 · Inpatient clinical
 

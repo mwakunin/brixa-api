@@ -1,14 +1,14 @@
-import { and, asc, count, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gte, inArray, isNotNull, sql } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 
-import { billableItems, encounters, memberships, patientNumbers, patients, queueEntries, servicePoints, user } from "@/db/schema";
+import { appointments, billableItems, encounters, memberships, patientNumbers, patients, queueEntries, servicePoints, user } from "@/db/schema";
 
 import type { PatientActor } from "./patients";
 
 import { recordAudit } from "./audit";
 import { cancelEntryFee, captureConsultationFee, ChargeError } from "./charges";
-import { ageInYears } from "./dates";
+import { ageInYears, businessDate } from "./dates";
 import { isUniqueViolation, pgConstraintName } from "./db-errors";
 
 /**
@@ -45,6 +45,7 @@ export type QueueErrorCode
     | "name_taken"
     | "service_point_retired"
     | "still_waiting"
+    | "has_appointments"
     | "encounter_not_found"
     | "not_open"
     | "not_a_visit"
@@ -67,6 +68,7 @@ export class QueueError extends Error {
       name_taken: "A service point already has that name",
       service_point_retired: "That service point is out of use",
       still_waiting: "Patients are still waiting there; see them or take them out of the queue first",
+      has_appointments: "Patients are booked at this clinic from today on; move or cancel their appointments first",
       encounter_not_found: "No such visit",
       not_open: "This visit is no longer open",
       not_a_visit: "Only an outpatient visit or emergency attendance joins a queue",
@@ -124,7 +126,7 @@ export async function updateServicePoint(
   tx: AppDb,
   facilityId: string,
   id: string,
-  input: { name?: string; isActive?: boolean; consultationItemId?: string | null },
+  input: { name?: string; isActive?: boolean; consultationItemId?: string | null; sensitiveCategory?: ServicePointRow["sensitiveCategory"] },
   actor: PatientActor,
 ): Promise<ServicePointRow> {
   const [current] = await tx.select().from(servicePoints).where(eq(servicePoints.id, id)).for("update").limit(1);
@@ -132,6 +134,9 @@ export async function updateServicePoint(
     throw new QueueError("service_point_not_found");
   if (input.isActive === false && current.isActive && await liveCount(tx, id) > 0)
     throw new QueueError("still_waiting");
+  // A booking share-locks the clinic, so this count waits for one in flight.
+  if (input.isActive === false && current.isActive && await bookedFromToday(tx, id))
+    throw new QueueError("has_appointments");
   if (input.consultationItemId) {
     if (current.kind !== "consultation")
       throw new QueueError("not_a_clinic");
@@ -139,6 +144,9 @@ export async function updateServicePoint(
     if (!item || item.category !== "consultation" || !item.isActive)
       throw new QueueError("not_a_consultation_item");
   }
+  // Only a clinic is marked sensitive: triage sees everyone (rule 27).
+  if (input.sensitiveCategory && current.kind !== "consultation")
+    throw new QueueError("not_a_clinic");
 
   let point: ServicePointRow;
   try {
@@ -158,11 +166,20 @@ export async function updateServicePoint(
     entityId: id,
     summary: `Updated service point ${point.name}`,
     detail: {
-      before: { name: current.name, isActive: current.isActive, consultationItemId: current.consultationItemId },
-      after: { name: point.name, isActive: point.isActive, consultationItemId: point.consultationItemId },
+      before: { name: current.name, isActive: current.isActive, consultationItemId: current.consultationItemId, sensitiveCategory: current.sensitiveCategory },
+      after: { name: point.name, isActive: point.isActive, consultationItemId: point.consultationItemId, sensitiveCategory: point.sensitiveCategory },
     },
   });
   return point;
+}
+
+async function bookedFromToday(tx: AppDb, servicePointId: string): Promise<boolean> {
+  const [booked] = await tx
+    .select({ id: appointments.id })
+    .from(appointments)
+    .where(and(eq(appointments.servicePointId, servicePointId), eq(appointments.status, "booked"), gte(appointments.scheduledOn, businessDate())))
+    .limit(1);
+  return booked !== undefined;
 }
 
 async function liveCount(tx: AppDb, servicePointId: string): Promise<number> {
@@ -178,6 +195,7 @@ export interface ListedServicePoint {
   name: string;
   kind: ServicePointKind;
   consultationItemId: string | null;
+  sensitiveCategory: ServicePointRow["sensitiveCategory"];
   isActive: boolean;
   /** How many are waiting there now. */
   waiting: number;
@@ -198,6 +216,7 @@ export async function listServicePoints(tx: AppDb): Promise<ListedServicePoint[]
       name: servicePoints.name,
       kind: servicePoints.kind,
       consultationItemId: servicePoints.consultationItemId,
+      sensitiveCategory: servicePoints.sensitiveCategory,
       isActive: servicePoints.isActive,
       waiting: sql<number>`coalesce(${waiting.n}, 0)::int`,
     })
@@ -508,7 +527,7 @@ export async function viewQueue(tx: AppDb, facilityId: string, servicePointId: s
   });
 
   return {
-    servicePoint: { id: point.id, name: point.name, kind: point.kind, consultationItemId: point.consultationItemId, isActive: point.isActive },
+    servicePoint: { id: point.id, name: point.name, kind: point.kind, consultationItemId: point.consultationItemId, sensitiveCategory: point.sensitiveCategory, isActive: point.isActive },
     entries: rows.map(r => ({
       entryId: r.entryId,
       encounterId: r.encounterId,

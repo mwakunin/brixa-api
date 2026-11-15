@@ -86,7 +86,7 @@ export async function resolvePrice(
 export async function createBillableItem(
   tx: AppDb,
   facilityId: string,
-  input: { code: string; name: string; category: ItemCategory },
+  input: { code: string; name: string; category: ItemCategory; printedName?: string },
   actor: PatientActor,
 ): Promise<BillableItemRow> {
   try {
@@ -98,7 +98,7 @@ export async function createBillableItem(
       entityType: "billable_item",
       entityId: item.id,
       summary: `Added ${input.code} ${input.name}`,
-      detail: { code: input.code, category: input.category },
+      detail: { code: input.code, category: input.category, printedName: input.printedName ?? null },
     });
     return item;
   }
@@ -109,12 +109,39 @@ export async function createBillableItem(
   }
 }
 
+/**
+ * Sets what bills print for an item in place of its name (rule 27: an HIV
+ * test prints as "Laboratory test"), or null to print its name. Charges
+ * captured from now on copy it; a charge already captured keeps what it
+ * copied (rule 7).
+ */
+export async function setPrintedName(tx: AppDb, facilityId: string, id: string, printedName: string | null, actor: PatientActor): Promise<BillableItemRow> {
+  const [current] = await tx.select().from(billableItems).where(eq(billableItems.id, id)).for("update").limit(1);
+  if (!current)
+    throw new PriceError("item_not_found");
+  if (current.printedName === printedName)
+    return current;
+  const [item] = await tx.update(billableItems).set({ printedName }).where(eq(billableItems.id, id)).returning();
+  await recordAudit(tx, {
+    facilityId,
+    actorId: actor.userId,
+    action: "billable_item.updated",
+    entityType: "billable_item",
+    entityId: id,
+    summary: printedName ? `Bills print ${current.code} under a neutral name` : `Bills print ${current.code} under its name`,
+    detail: { printedName: { from: current.printedName, to: printedName } },
+  });
+  return item;
+}
+
 export interface ListedBillableItem {
   id: string;
   code: string;
   name: string;
   category: ItemCategory;
   isActive: boolean;
+  /** What bills print instead of the name; null prints the name. */
+  printedName: string | null;
   cashPriceCents: number | null;
 }
 
@@ -128,6 +155,7 @@ export async function listBillableItems(tx: AppDb, today = businessDate()): Prom
       name: billableItems.name,
       category: billableItems.category,
       isActive: billableItems.isActive,
+      printedName: billableItems.printedName,
       cashPriceCents: priceListItems.unitPriceCents,
     })
     .from(billableItems)

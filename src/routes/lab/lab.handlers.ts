@@ -8,6 +8,7 @@ import type { TenantBindings, TenantRouteHandler } from "@/lib/types";
 
 import * as results from "@/lib/lab-results";
 import * as lab from "@/lib/specimens";
+import { restrictedJson } from "@/lib/validation";
 
 import type {
   CollectSpecimenRoute,
@@ -128,7 +129,7 @@ export const listResults: TenantRouteHandler<ListResultsRoute> = async (c) => {
   const listed = await results.listResults(c.var.db, c.var.facility.id, id, actorOf(c), offset);
   if (!listed)
     return c.json({ message: HttpStatusPhrases.NOT_FOUND }, HttpStatusCodes.NOT_FOUND);
-  return c.json({ results: listed.results.map(resultJson), reports: listed.reports }, HttpStatusCodes.OK);
+  return c.json({ results: listed.results.map(resultJson), reports: listed.reports, restricted: restrictedJson(listed.restricted) }, HttpStatusCodes.OK);
 };
 
 export const collectSpecimen: TenantRouteHandler<CollectSpecimenRoute> = async (c) => {

@@ -126,7 +126,7 @@ async function insertAnalyte(tx: AppDb, facilityId: string, labTestId: string, p
 export async function createLabTest(
   tx: AppDb,
   facilityId: string,
-  input: { billableItemId: string; specimenType: SpecimenType; analytes: AnalyteInput[] },
+  input: { billableItemId: string; specimenType: SpecimenType; sensitiveCategory?: LabTestRow["sensitiveCategory"]; analytes: AnalyteInput[] },
   actor: PatientActor,
 ): Promise<LabTestRow> {
   const [item] = await tx.select().from(billableItems).where(eq(billableItems.id, input.billableItemId)).limit(1);
@@ -135,7 +135,7 @@ export async function createLabTest(
 
   let test: LabTestRow;
   try {
-    [test] = await tx.insert(labTests).values({ facilityId, billableItemId: item.id, specimenType: input.specimenType }).returning();
+    [test] = await tx.insert(labTests).values({ facilityId, billableItemId: item.id, specimenType: input.specimenType, sensitiveCategory: input.sensitiveCategory ?? null }).returning();
   }
   catch (err) {
     if (isUniqueViolation(err))
@@ -152,7 +152,7 @@ export async function createLabTest(
     entityType: "lab_test",
     entityId: test.id,
     summary: `Set up lab test ${item.code} ${item.name}`,
-    detail: { code: item.code, specimenType: test.specimenType, analytes: input.analytes.map(a => a.code) },
+    detail: { code: item.code, specimenType: test.specimenType, sensitiveCategory: test.sensitiveCategory, analytes: input.analytes.map(a => a.code) },
   });
   return test;
 }
@@ -162,7 +162,7 @@ export async function updateLabTest(
   tx: AppDb,
   facilityId: string,
   id: string,
-  input: { specimenType?: SpecimenType; isActive?: boolean },
+  input: { specimenType?: SpecimenType; isActive?: boolean; sensitiveCategory?: LabTestRow["sensitiveCategory"] },
   actor: PatientActor,
 ): Promise<LabTestRow> {
   const [current] = await tx.select().from(labTests).where(eq(labTests.id, id)).for("update").limit(1);
@@ -181,8 +181,8 @@ export async function updateLabTest(
     entityId: id,
     summary: "Updated a lab test",
     detail: {
-      before: { specimenType: current.specimenType, isActive: current.isActive },
-      after: { specimenType: test.specimenType, isActive: test.isActive },
+      before: { specimenType: current.specimenType, isActive: current.isActive, sensitiveCategory: current.sensitiveCategory },
+      after: { specimenType: test.specimenType, isActive: test.isActive, sensitiveCategory: test.sensitiveCategory },
     },
   });
   return test;
@@ -357,6 +357,7 @@ export interface ShownLabTest {
   name: string;
   specimenType: SpecimenType;
   isActive: boolean;
+  sensitiveCategory: LabTestRow["sensitiveCategory"];
   /** In report order. */
   analytes: ShownAnalyte[];
 }
@@ -394,6 +395,7 @@ export async function listLabTests(tx: AppDb, filter: { id?: string } = {}): Pro
     name,
     specimenType: test.specimenType,
     isActive: test.isActive,
+    sensitiveCategory: test.sensitiveCategory,
     analytes: (analytesOf.get(test.id) ?? []).map(a => ({
       id: a.id,
       code: a.code,

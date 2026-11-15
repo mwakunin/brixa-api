@@ -7,6 +7,7 @@ import type { TenantBindings, TenantRouteHandler } from "@/lib/types";
 
 import * as dx from "@/lib/diagnoses";
 import { searchIcd as findIcd } from "@/lib/icd11";
+import { restrictedJson } from "@/lib/validation";
 
 import type {
   ConfirmDiagnosisRoute,
@@ -79,7 +80,7 @@ export const listDiagnoses: TenantRouteHandler<ListDiagnosesRoute> = async (c) =
   const { id } = c.req.valid("param");
   try {
     const listed = await dx.listDiagnoses(c.var.db, c.var.facility.id, id, actorOf(c));
-    return c.json({ diagnoses: listed.map(diagnosisJson) }, HttpStatusCodes.OK);
+    return c.json({ diagnoses: listed.shown.map(diagnosisJson), restricted: restrictedJson(listed.restricted) }, HttpStatusCodes.OK);
   }
   catch (err) {
     const refused = refusal(c, err);

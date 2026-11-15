@@ -128,3 +128,33 @@ export function printedDateTime(at: Date): string {
 
   return `${value("day")} ${value("month")} ${value("year")}, ${value("hour")}:${value("minute")}`;
 }
+
+const clockParts = new Intl.DateTimeFormat("en-GB", {
+  timeZone: BUSINESS_TIME_ZONE,
+  numberingSystem: "latn",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+});
+
+/** The Kenyan wall-clock time of `at`, as `HH:MM`, the shape a booked time compares as. */
+export function businessTimeOfDay(at: Date = new Date()): string {
+  const parts = clockParts.formatToParts(at);
+  const value = (type: string) => parts.find(p => p.type === type)?.value ?? "";
+
+  return `${value("hour")}:${value("minute")}`;
+}
+
+const weekdayParts = new Intl.DateTimeFormat("en-GB", {
+  timeZone: BUSINESS_TIME_ZONE,
+  calendar: "gregory",
+  weekday: "short",
+});
+
+/** A business date with its weekday, as a reminder says it: `2026-11-17` → `Tue 17 Nov 2026`. */
+export function printedDayAndDate(date: string): string {
+  const parts = weekdayParts.formatToParts(startOfBusinessDay(date));
+  const weekday = parts.find(p => p.type === "weekday")?.value ?? "";
+
+  return `${weekday} ${printedDate(date)}`;
+}
