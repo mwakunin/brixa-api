@@ -174,4 +174,16 @@ describe("a stock take", () => {
     const moved = await db.execute(sql`UPDATE stock_take_lines SET stock_take_id = ${open.id} WHERE stock_take_id = ${next.id}`).then(() => null, (e: unknown) => e);
     expect(pgErrorCode(moved)).toBe("23001");
   });
+
+  it("is cancelled after its store is retired, and never without a reason", async () => {
+    // The main store holds nothing, so it can be retired with its count open: that count is then cancelled, not submitted.
+    const take = await created(await post("/stock-takes", storekeeper, { storeId: main }));
+    expect((await call("PATCH", `/stores/${main}`, h.facility.id, h.admin, { isActive: false })).status).toBe(200);
+    expect(await refusal(await post(`/stock-takes/${take.id}/submit`, storekeeper))).toBe("store_retired");
+    expect((await (await post(`/stock-takes/${take.id}/cancel`, storekeeper, { reason: "Store closed" })).json()).status).toBe("cancelled");
+
+    const open = await created(await post("/stock-takes", storekeeper, { storeId: pharmacy }));
+    const bare = await db.execute(sql`UPDATE stock_takes SET status = 'cancelled', cancelled_by = opened_by, cancelled_at = now() WHERE id = ${open.id}`).then(() => null, (e: unknown) => e);
+    expect(pgErrorCode(bare)).toBe("23514");
+  });
 });

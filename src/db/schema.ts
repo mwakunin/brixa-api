@@ -2755,7 +2755,7 @@ export const stockTakes = pgTable("stock_takes", {
     "stock_takes_lifecycle",
     sql`(${t.status} = 'counting' AND num_nonnulls(${t.submittedBy}, ${t.submittedAt}, ${t.adjustmentId}, ${t.cancelledBy}, ${t.cancelledAt}, ${t.cancellationReason}) = 0)
       OR (${t.status} = 'submitted' AND ${t.submittedBy} IS NOT NULL AND ${t.submittedAt} IS NOT NULL AND num_nonnulls(${t.cancelledBy}, ${t.cancelledAt}, ${t.cancellationReason}) = 0)
-      OR (${t.status} = 'cancelled' AND ${t.cancelledBy} IS NOT NULL AND ${t.cancelledAt} IS NOT NULL AND length(btrim(${t.cancellationReason})) > 0
+      OR (${t.status} = 'cancelled' AND ${t.cancelledBy} IS NOT NULL AND ${t.cancelledAt} IS NOT NULL AND ${t.cancellationReason} IS NOT NULL AND length(btrim(${t.cancellationReason})) > 0
           AND num_nonnulls(${t.submittedBy}, ${t.submittedAt}, ${t.adjustmentId}) = 0)`,
   ),
 ]);

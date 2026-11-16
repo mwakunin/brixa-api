@@ -103,26 +103,21 @@ async function patientsShown(tx: AppDb, category: SensitiveCategory | null, pati
   return new Map(grants.map(g => [g.patientId, g.id]));
 }
 
-/** One drug's page in one store, from and to Kenyan days (inclusive), `REGISTER_PAGE` lines at a time, audited. */
-export async function viewRegister(
-  tx: AppDb,
-  facilityId: string,
-  input: { drugCode: string; storeId: string; from?: string; to?: string; offset?: number },
-  actor: DispenseActor,
-): Promise<RegisterPage> {
-  const [drug] = await tx.select().from(drugCatalogue).where(eq(drugCatalogue.code, input.drugCode)).limit(1);
+/** The drug and store a page is of, and the medicine's sensitive category if the facility marked one. */
+async function pageOf(tx: AppDb, drugCode: string, storeId: string) {
+  const [drug] = await tx.select().from(drugCatalogue).where(eq(drugCatalogue.code, drugCode)).limit(1);
   if (!drug)
     throw new RegisterError("drug_not_found");
-  const [store] = await tx.select({ id: stores.id, name: stores.name }).from(stores).where(eq(stores.id, input.storeId)).limit(1);
+  const [store] = await tx.select({ id: stores.id, name: stores.name }).from(stores).where(eq(stores.id, storeId)).limit(1);
   if (!store)
     throw new RegisterError("store_not_found");
   const [marked] = await tx.select({ category: sensitiveDrugs.category }).from(sensitiveDrugs).where(eq(sensitiveDrugs.drugCode, drug.code)).limit(1);
+  return { drug, store, category: marked?.category ?? null };
+}
 
-  const page = and(eq(controlledDrugRegister.storeId, store.id), eq(controlledDrugRegister.drugCode, drug.code));
-  const from = input.from ? startOfBusinessDay(input.from) : undefined;
-  const until = input.to ? startOfBusinessDay(addDays(input.to, 1)) : undefined;
-
-  const rows = await tx
+/** A page's lines recorded in a range, by entry, with the batch and the people each names. */
+function pageRows(tx: AppDb, page: SQL | undefined, range: { from?: Date; until?: Date }, offset: number) {
+  return tx
     .select({
       line: controlledDrugRegister,
       batchNumber: stockBatches.batchNumber,
@@ -142,16 +137,17 @@ export async function viewRegister(
     .leftJoin(prescriberUser, eq(prescriberUser.id, prescriber.userId))
     .leftJoin(recorder, eq(recorder.id, controlledDrugRegister.recordedBy))
     .leftJoin(recorderUser, eq(recorderUser.id, recorder.userId))
-    .where(and(page, from ? gte(controlledDrugRegister.recordedAt, from) : undefined, until ? lt(controlledDrugRegister.recordedAt, until) : undefined))
+    .where(and(page, range.from ? gte(controlledDrugRegister.recordedAt, range.from) : undefined, range.until ? lt(controlledDrugRegister.recordedAt, range.until) : undefined))
     .orderBy(asc(controlledDrugRegister.entry))
     .limit(REGISTER_PAGE)
-    .offset(input.offset ?? 0);
+    .offset(offset);
+}
 
-  const named = [...new Set(rows.flatMap(r => (r.line.patientId ? [r.line.patientId] : [])))];
-  const shown = await patientsShown(tx, marked?.category ?? null, named, actor);
-  const seen = (patientId: string | null) => patientId !== null && shown.has(patientId);
+type PageRow = Awaited<ReturnType<typeof pageRows>>[number];
 
-  const lines = rows.map((r): RegisterLine => ({
+/** A line as this reader sees it: its patient named only when `seen`. */
+function lineShown(r: PageRow, seen: boolean): RegisterLine {
+  return {
     at: r.line.recordedAt,
     kind: r.line.kind,
     batchNumber: r.batchNumber,
@@ -159,11 +155,32 @@ export async function viewRegister(
     quantityIn: Math.max(r.line.quantity, 0),
     quantityOut: Math.max(-r.line.quantity, 0),
     balance: r.line.balance,
-    patient: seen(r.line.patientId) ? { id: r.line.patientId!, name: [r.givenName, r.middleNames, r.familyName].filter(Boolean).join(" "), opNumber: r.opNumber } : null,
-    patientHidden: r.line.patientId !== null && !seen(r.line.patientId),
+    patient: seen ? { id: r.line.patientId!, name: [r.givenName, r.middleNames, r.familyName].filter(Boolean).join(" "), opNumber: r.opNumber } : null,
+    patientHidden: r.line.patientId !== null && !seen,
     prescriber: r.line.prescribedBy ? { name: r.prescriberName ?? "", licence: r.line.prescriberLicence } : null,
     recordedBy: r.line.recordedBy ? { name: r.recorderName ?? "", licence: r.line.recorderLicence } : null,
-  }));
+  };
+}
+
+/**
+ * One drug's page in one store, from and to Kenyan days (inclusive),
+ * `REGISTER_PAGE` lines at a time. Whose names show, the audit of the read and
+ * the alerts a break-glass read raises are decided here, together (rule 27).
+ */
+export async function viewRegister(
+  tx: AppDb,
+  facilityId: string,
+  input: { drugCode: string; storeId: string; from?: string; to?: string; offset?: number },
+  actor: DispenseActor,
+): Promise<RegisterPage> {
+  const { drug, store, category } = await pageOf(tx, input.drugCode, input.storeId);
+  const page = and(eq(controlledDrugRegister.storeId, store.id), eq(controlledDrugRegister.drugCode, drug.code));
+  const until = input.to ? startOfBusinessDay(addDays(input.to, 1)) : undefined;
+  const rows = await pageRows(tx, page, { from: input.from ? startOfBusinessDay(input.from) : undefined, until }, input.offset ?? 0);
+
+  const named = [...new Set(rows.flatMap(r => (r.line.patientId ? [r.line.patientId] : [])))];
+  const shown = await patientsShown(tx, category, named, actor);
+  const lines = rows.map(r => lineShown(r, r.line.patientId !== null && shown.has(r.line.patientId)));
 
   const grants = [...new Set([...shown.values()].filter((g): g is string => g !== null))];
   await recordAudit(tx, {

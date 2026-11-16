@@ -75,11 +75,12 @@ async function countsControlled(tx: AppDb, batchIds: string[]): Promise<boolean>
 
 const isStoreStaff = (actor: DispenseActor) => actor.roles.some(r => (TRANSFER_STAFF as readonly string[]).includes(r));
 
-async function storeFor(tx: AppDb, storeId: string, actor: DispenseActor): Promise<{ id: string; name: string }> {
+/** The store to count, if this member counts it; a retired one only to cancel a count left open in it. */
+async function storeFor(tx: AppDb, storeId: string, actor: DispenseActor, retired: "refused" | "allowed" = "refused"): Promise<{ id: string; name: string }> {
   const [store] = await tx.select({ id: stores.id, name: stores.name, kind: stores.kind, isActive: stores.isActive }).from(stores).where(eq(stores.id, storeId)).limit(1);
   if (!store)
     throw new StockTakeError("store_not_found");
-  if (!store.isActive)
+  if (!store.isActive && retired === "refused")
     throw new StockTakeError("store_retired");
   if (!isStoreStaff(actor) && store.kind !== "ward")
     throw new StockTakeError("ward_store_only");
@@ -135,13 +136,13 @@ export async function openStockTake(tx: AppDb, facilityId: string, input: { stor
   return take;
 }
 
-async function lockCounting(tx: AppDb, id: string, actor: DispenseActor): Promise<TakeRow> {
+async function lockCounting(tx: AppDb, id: string, actor: DispenseActor, retired: "refused" | "allowed" = "refused"): Promise<TakeRow> {
   const [take] = await tx.select().from(stockTakes).where(eq(stockTakes.id, id)).for("update").limit(1);
   if (!take)
     throw new StockTakeError("not_found");
   if (take.status !== "counting")
     throw new StockTakeError("not_counting");
-  await storeFor(tx, take.storeId, actor);
+  await storeFor(tx, take.storeId, actor, retired);
   return take;
 }
 
@@ -159,23 +160,29 @@ export async function recordCounts(tx: AppDb, facilityId: string, id: string, co
   if (batches.length !== new Set(ids).size)
     throw new StockTakeError("batch_not_found");
   const at = new Date();
-  for (const [index, count] of counts.entries()) {
-    const counted = { countedQuantity: count.quantity, countedAt: at, countedBy: actor.membershipId, expectedQuantity: await committedOnHand(tx, take.storeId, ids[index]) };
-    await tx.insert(stockTakeLines)
-      .values({ facilityId, stockTakeId: take.id, batchId: ids[index], ...counted })
-      .onConflictDoUpdate({ target: [stockTakeLines.stockTakeId, stockTakeLines.batchId], set: counted });
-  }
+  const held = await committedOnHand(tx, take.storeId, ids);
+  await tx.insert(stockTakeLines)
+    .values(counts.map((count, index) => ({ facilityId, stockTakeId: take.id, batchId: ids[index], countedQuantity: count.quantity, countedAt: at, countedBy: actor.membershipId, expectedQuantity: held.get(ids[index]) ?? 0 })))
+    .onConflictDoUpdate({
+      target: [stockTakeLines.stockTakeId, stockTakeLines.batchId],
+      set: { countedQuantity: sql`excluded.counted_quantity`, countedAt: sql`excluded.counted_at`, countedBy: sql`excluded.counted_by`, expectedQuantity: sql`excluded.expected_quantity` },
+    });
   await recordAudit(tx, { facilityId, actorId: actor.userId, action: "stock_take.counted", entityType: "stock_take", entityId: take.id, summary: `Counted ${counts.length} batch${counts.length === 1 ? "" : "es"} for ${take.number}`, detail: { batches: ids.length } });
   return take;
 }
 
 /**
- * What the ledger holds of a batch in a store, as this statement sees it:
+ * What the ledger holds of each batch in a store, as one statement sees it:
  * every movement committed before it began, none still open (read committed).
+ * A batch with no movement there is absent, and holds nought.
  */
-async function committedOnHand(tx: AppDb, storeId: string, batchId: string): Promise<number> {
-  const [{ total }] = await tx.select({ total: sql<string>`coalesce(sum(${stockMovements.quantity}), 0)` }).from(stockMovements).where(and(eq(stockMovements.storeId, storeId), eq(stockMovements.batchId, batchId)));
-  return Number(total);
+async function committedOnHand(tx: AppDb, storeId: string, batchIds: string[]): Promise<Map<string, number>> {
+  const rows = await tx
+    .select({ batchId: stockMovements.batchId, total: sql<string>`sum(${stockMovements.quantity})` })
+    .from(stockMovements)
+    .where(and(eq(stockMovements.storeId, storeId), inArray(stockMovements.batchId, batchIds)))
+    .groupBy(stockMovements.batchId);
+  return new Map(rows.map(r => [r.batchId, Number(r.total)]));
 }
 
 /**
@@ -213,9 +220,9 @@ export async function submitStockTake(tx: AppDb, facilityId: string, id: string,
   return submitted;
 }
 
-/** Cancels an open count, with a reason; nothing it counted moves. */
+/** Cancels an open count, with a reason, though its store was retired since; nothing it counted moves. */
 export async function cancelStockTake(tx: AppDb, facilityId: string, id: string, reason: string, actor: DispenseActor): Promise<TakeRow> {
-  const take = await lockCounting(tx, id, actor);
+  const take = await lockCounting(tx, id, actor, "allowed");
   const [cancelled] = await tx.update(stockTakes).set({ status: "cancelled", cancelledBy: actor.membershipId, cancelledAt: new Date(), cancellationReason: reason }).where(eq(stockTakes.id, take.id)).returning();
   await recordAudit(tx, { facilityId, actorId: actor.userId, action: "stock_take.cancelled", entityType: "stock_take", entityId: take.id, summary: `Cancelled stock take ${take.number}: ${reason}`, detail: { reason } });
   return cancelled;

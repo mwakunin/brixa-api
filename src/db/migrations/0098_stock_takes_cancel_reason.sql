@@ -1,0 +1,5 @@
+ALTER TABLE "stock_takes" DROP CONSTRAINT "stock_takes_lifecycle";--> statement-breakpoint
+ALTER TABLE "stock_takes" ADD CONSTRAINT "stock_takes_lifecycle" CHECK (("stock_takes"."status" = 'counting' AND num_nonnulls("stock_takes"."submitted_by", "stock_takes"."submitted_at", "stock_takes"."adjustment_id", "stock_takes"."cancelled_by", "stock_takes"."cancelled_at", "stock_takes"."cancellation_reason") = 0)
+      OR ("stock_takes"."status" = 'submitted' AND "stock_takes"."submitted_by" IS NOT NULL AND "stock_takes"."submitted_at" IS NOT NULL AND num_nonnulls("stock_takes"."cancelled_by", "stock_takes"."cancelled_at", "stock_takes"."cancellation_reason") = 0)
+      OR ("stock_takes"."status" = 'cancelled' AND "stock_takes"."cancelled_by" IS NOT NULL AND "stock_takes"."cancelled_at" IS NOT NULL AND "stock_takes"."cancellation_reason" IS NOT NULL AND length(btrim("stock_takes"."cancellation_reason")) > 0
+          AND num_nonnulls("stock_takes"."submitted_by", "stock_takes"."submitted_at", "stock_takes"."adjustment_id") = 0));
