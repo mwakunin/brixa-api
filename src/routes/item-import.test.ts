@@ -186,9 +186,9 @@ describe("importing an item list", () => {
 
     const problems = Object.fromEntries((await res.json()).rows.map((r: { row: number; problems: string[] }) => [r.row, r.problems]));
     expect(problems).toEqual({
-      2: ["base_unit: MOR-10-INJ is controlled, and already counted in mL by another item"],
+      2: ["base_unit: MOR-10-INJ is kept on the controlled-drug register, and already counted in mL by another item"],
       3: [],
-      4: ["base_unit: IBU-400-TAB is controlled, and counted in tablet on row 3"],
+      4: ["base_unit: IBU-400-TAB is kept on the controlled-drug register, and counted in tablet on row 3"],
       5: [],
     });
   });

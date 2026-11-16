@@ -10,6 +10,7 @@ import { runAsFacility } from "@/db/tenant-transaction";
 import { addDays, businessDate } from "@/lib/dates";
 import { pgErrorCode } from "@/lib/db-errors";
 import { loadDrugCatalogue } from "@/lib/drug-catalogue-load";
+import { submitStockTake } from "@/lib/stock-takes";
 import { sendDirect } from "@/lib/transfers";
 import { addMembership, backendPid, resetDb, signedInUser, waitForBlockedBackend } from "@/test/helpers";
 import { call, hospital, TODAY } from "@/test/hospital";
@@ -199,5 +200,51 @@ describe("a stock take", () => {
     });
 
     expect(pgErrorCode(await write)).toBe("23001");
+  });
+
+  it("never keeps a count without what was expected beside it", async () => {
+    const take = await created(await post("/stock-takes", storekeeper, { storeId: pharmacy }));
+    await count(take.id, [{ batchId: p1, quantity: 2990 }]);
+
+    const bare = await db.execute(sql`UPDATE stock_take_lines SET expected_quantity = NULL WHERE stock_take_id = ${take.id}`).then(() => null, (e: unknown) => e);
+
+    expect(pgErrorCode(bare)).toBe("23514");
+  });
+
+  it("is not opened again while the store's last count is being submitted with a correction", async () => {
+    const take = await created(await post("/stock-takes", storekeeper, { storeId: pharmacy }));
+    await count(take.id, [{ batchId: p1, quantity: 2990 }]);
+    let release!: () => void;
+    const mayCommit = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let ready!: () => void;
+    const started = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    let holderPid = 0;
+    const submitting = runAsFacility(h.facility.id, async (tx) => {
+      try {
+        await submitStockTake(tx, h.facility.id, take.id, { ...storekeeper.actor, roles: ["storekeeper"], licenceProfession: null });
+        holderPid = await backendPid(tx);
+      }
+      finally {
+        ready();
+        await mayCommit;
+      }
+    });
+    await started;
+
+    // It waits for the submission (one open count per store), then sees the correction that came with it.
+    const reopened = post("/stock-takes", storekeeper, { storeId: pharmacy });
+    try {
+      expect(await waitForBlockedBackend(holderPid)).toBe(true);
+    }
+    finally {
+      release();
+      await Promise.allSettled([submitting, reopened]);
+    }
+
+    expect(await refusal(await reopened)).toBe("correction_pending");
   });
 });

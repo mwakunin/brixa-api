@@ -175,11 +175,13 @@ export async function seeingEveryFacility(tx: OwnerTx): Promise<void> {
 
 /**
  * Holds the ledger and the stock items still until the load commits, then
- * refuses to schedule a drug a facility counts in two base units: its
- * register, one per drug and store, would add them (migration 0100).
+ * refuses to schedule a drug (`codes`) a facility counts in two base units:
+ * its register, one per drug and store, would add them (migration 0100).
  */
 async function holdForSchedule(tx: OwnerTx, codes: string[]): Promise<void> {
   await tx.execute(sql`LOCK TABLE ${stockMovements}, ${stockItems} IN SHARE MODE`);
+  if (codes.length === 0)
+    return;
   const { rows } = await tx.execute<{ code: string }>(sql`
     SELECT DISTINCT ${stockItems.drugCode} AS code FROM ${stockItems}
     WHERE ${stockItems.drugCode} IN (${sql.join(codes.map(c => sql`${c}`), sql`, `)})
@@ -225,9 +227,12 @@ export async function loadDrugCatalogue(text: string, now = new Date()): Promise
     const current = await tx.select({ code: drugCatalogue.code }).from(drugCatalogue).where(isNull(drugCatalogue.retiredAt));
     const scheduledNow = new Set((await tx.select({ code: drugCatalogue.code }).from(drugCatalogue).where(isNotNull(drugCatalogue.controlledSchedule))).map(d => d.code));
     const newlyScheduled = rows.filter(r => r.controlledSchedule && !scheduledNow.has(r.code)).map(r => r.code);
+    const unscheduling = rows.some(r => !r.controlledSchedule && scheduledNow.has(r.code));
     // A drug becoming controlled has its stock brought into the register, with no movement between the
-    // count and the schedule: the ledger and the stock items are held still (writes wait) until this load commits. Rare, by design.
-    if (newlyScheduled.length > 0)
+    // count and the schedule: the ledger and the stock items are held still (writes wait) until this load commits.
+    // One ceasing to be is held the same way: a first movement still being written commits its page first,
+    // so the next movement finds the page and is not taken for an unscheduled drug's. Rare, by design.
+    if (newlyScheduled.length > 0 || unscheduling)
       await holdForSchedule(tx, newlyScheduled);
     const leaving = current.filter(c => !codes.includes(c.code)).length;
     if (leaving > RETIRE_AT_MOST(current.length))

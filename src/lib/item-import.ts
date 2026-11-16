@@ -2,7 +2,7 @@ import { and, eq, gte, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm"
 
 import type { AppDb } from "@/db";
 
-import { billableItems, drugCatalogue, priceChangeLines, priceChanges, stockItems } from "@/db/schema";
+import { billableItems, controlledDrugRegister, drugCatalogue, priceChangeLines, priceChanges, stockItems } from "@/db/schema";
 
 import type { DrugMatch } from "./drug-catalogue";
 import type { PatientActor } from "./patients";
@@ -162,7 +162,7 @@ interface Snapshot {
   /** `item:price` for each pending cash price that would be in force by then. */
   pending: Set<string>;
   currentDrugs: Set<string>;
-  /** Each controlled drug's base unit: an item's already set up, else the first row naming it (`row`). */
+  /** The base unit of each drug kept on the controlled-drug register: an item's already set up, else the first row naming it (`row`). */
   drugUnits: Map<string, { unit: string; row: number | null }>;
 }
 
@@ -185,13 +185,18 @@ async function pendingPrices(tx: AppDb, ids: string[], today: string, effectiveF
 }
 
 /**
- * The unit each controlled drug is counted in: as set up here, or as the file
- * first gives it. Its register adds every item of it (migration 0100).
+ * The unit each drug kept on the controlled-drug register is counted in: as
+ * set up here, or as the file first gives it. Its register adds every item
+ * of it, while it is scheduled and after, once a page is open (migrations
+ * 0100 and 0103).
  */
 async function drugUnitsOf(tx: AppDb, rows: ParsedRow[], drugCodes: string[]): Promise<Snapshot["drugUnits"]> {
   const controlled = new Set(drugCodes.length === 0
     ? []
-    : (await tx.select({ code: drugCatalogue.code }).from(drugCatalogue).where(and(inArray(drugCatalogue.code, drugCodes), isNotNull(drugCatalogue.controlledSchedule)))).map(d => d.code));
+    : [
+        ...await tx.select({ code: drugCatalogue.code }).from(drugCatalogue).where(and(inArray(drugCatalogue.code, drugCodes), isNotNull(drugCatalogue.controlledSchedule))),
+        ...await tx.selectDistinct({ code: controlledDrugRegister.drugCode }).from(controlledDrugRegister).where(inArray(controlledDrugRegister.drugCode, drugCodes)),
+      ].map(d => d.code));
   const units: Snapshot["drugUnits"] = new Map(controlled.size === 0
     ? []
     : (await tx.select({ drugCode: stockItems.drugCode, baseUnit: stockItems.baseUnit }).from(stockItems).where(inArray(stockItems.drugCode, [...controlled]))).map(s => [s.drugCode!, { unit: s.baseUnit, row: null }]));
@@ -247,10 +252,10 @@ function planRow(r: ParsedRow, snapshot: Snapshot): PlannedRow {
   const item = snapshot.items.get(r.code);
   const stock = item ? snapshot.stockOf.get(item.id) : undefined;
   problems.push(...disagreements(r, item, stock));
-  // A new stock item counts a controlled drug as the others do.
+  // A new stock item counts a drug on the register as the others do.
   const counted = !stock && r.drugCode ? snapshot.drugUnits.get(r.drugCode) : undefined;
   if (counted && counted.unit !== r.baseUnit)
-    problems.push(counted.row === null ? `base_unit: ${r.drugCode} is controlled, and already counted in ${counted.unit} by another item` : `base_unit: ${r.drugCode} is controlled, and counted in ${counted.unit} on row ${counted.row}`);
+    problems.push(counted.row === null ? `base_unit: ${r.drugCode} is kept on the controlled-drug register, and already counted in ${counted.unit} by another item` : `base_unit: ${r.drugCode} is kept on the controlled-drug register, and counted in ${counted.unit} on row ${counted.row}`);
 
   const priceDiffers = r.priceCents !== null && r.priceCents !== (item?.cashPriceCents ?? null)
     && !(item && snapshot.pending.has(`${item.id}:${r.priceCents}`));

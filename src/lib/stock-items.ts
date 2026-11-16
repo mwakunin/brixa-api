@@ -3,7 +3,7 @@ import { and, asc, eq, ne } from "drizzle-orm";
 import type { AppDb } from "@/db";
 import type { MembershipRole } from "@/db/schema";
 
-import { billableItems, drugCatalogue, stockItems } from "@/db/schema";
+import { billableItems, controlledDrugRegister, drugCatalogue, stockItems } from "@/db/schema";
 
 import type { PatientActor } from "./patients";
 
@@ -19,10 +19,11 @@ import { itemOnHand } from "./stock-levels";
  *
  * Counted in a base unit with a pack size (decided 2026-11-15, per tablet).
  * The base unit and the drug are fixed once set; a different unit is a new
- * stock item. Every stock item of one controlled drug is counted in the same
- * unit, so its register, kept per drug, adds like for like
- * (`stock_items_one_unit_per_drug`, migration 0100). Another drug may be
- * stocked in two (bottles, and loose mL), as dispensing allows.
+ * stock item. Every stock item of a drug kept on the controlled-drug
+ * register (scheduled, or with a page here from when it was) is counted in
+ * the same unit, so its register, kept per drug, adds like for like
+ * (`stock_items_one_unit_per_drug`, migrations 0100 and 0103). Another drug
+ * may be stocked in two (bottles, and loose mL), as dispensing allows.
  */
 
 type StockItemRow = typeof stockItems.$inferSelect;
@@ -50,7 +51,7 @@ export class StockItemError extends Error {
       drug_needed: "A drug item names the catalogue drug it is",
       not_a_drug_item: "A consumable names no catalogue drug; only a drug item does",
       drug_not_found: "No such drug in the catalogue, or it is retired",
-      base_unit_differs: `This controlled drug is counted in ${unit ?? "another unit"} here: count this item in it too, so its register adds like for like`,
+      base_unit_differs: `This drug is kept on the controlled-drug register, counted in ${unit ?? "another unit"} here: count this item in it too, so its register adds like for like`,
       holds_stock: "Some of this item is still in stock; use it up, move it or write it off before retiring the item",
     }[code]);
     this.name = "StockItemError";
@@ -63,6 +64,14 @@ export interface StockItemInput {
   drugCode?: string | null;
   baseUnit: string;
   packSize: number;
+}
+
+/** Whether the register adds this drug here: it is scheduled, or a page opened while it was still records it. */
+async function onRegister(tx: AppDb, drugCode: string, schedule: string | null): Promise<boolean> {
+  if (schedule)
+    return true;
+  const [page] = await tx.select({ id: controlledDrugRegister.id }).from(controlledDrugRegister).where(eq(controlledDrugRegister.drugCode, drugCode)).limit(1);
+  return page !== undefined;
 }
 
 /** Sets up a stock item on an active `drug` or `consumable` billable item. */
@@ -80,7 +89,7 @@ export async function createStockItem(tx: AppDb, facilityId: string, input: Stoc
     const [drug] = await tx.select({ retiredAt: drugCatalogue.retiredAt, controlledSchedule: drugCatalogue.controlledSchedule }).from(drugCatalogue).where(eq(drugCatalogue.code, drugCode)).limit(1);
     if (!drug || drug.retiredAt)
       throw new StockItemError("drug_not_found");
-    const [other] = drug.controlledSchedule
+    const [other] = await onRegister(tx, drugCode, drug.controlledSchedule)
       ? await tx.select({ baseUnit: stockItems.baseUnit }).from(stockItems).where(and(eq(stockItems.drugCode, drugCode), ne(stockItems.baseUnit, input.baseUnit))).limit(1)
       : [];
     if (other)
@@ -100,7 +109,7 @@ export async function createStockItem(tx: AppDb, facilityId: string, input: Stoc
   catch (err) {
     if (isUniqueViolation(err))
       throw new StockItemError("already_a_stock_item");
-    // Another item of the controlled drug, in another unit, set up meanwhile.
+    // Another item of the drug, in another unit, set up meanwhile.
     if (pgConstraintName(err) === "stock_items_one_unit_per_drug")
       throw new StockItemError("base_unit_differs");
     throw err;

@@ -9,8 +9,12 @@
 --
 -- The upgrade stops if a facility already counts a scheduled drug in two.
 -- Row security is off around that check, so an owner unable to see every
--- facility fails it rather than passes it.
+-- facility fails it rather than passes it. Stock items are held still from
+-- before the check until the upgrade commits, so none slips in between it
+-- and the trigger (writes wait; reads go on).
 
+LOCK TABLE "stock_items" IN SHARE ROW EXCLUSIVE MODE;
+--> statement-breakpoint
 SET LOCAL row_security = off;
 --> statement-breakpoint
 DO $$

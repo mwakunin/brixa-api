@@ -11,13 +11,16 @@ import { runAsFacility } from "@/db/tenant-transaction";
 import { addDays, businessDate } from "@/lib/dates";
 import { pgErrorCode } from "@/lib/db-errors";
 import { loadDrugCatalogue } from "@/lib/drug-catalogue-load";
+import { receiveGoods } from "@/lib/goods-received";
 import { reconcile } from "@/lib/reconciliation";
-import { addMembership, resetDb, signedInUser } from "@/test/helpers";
+import { addMembership, backendPid, resetDb, signedInUser, waitForBlockedBackend } from "@/test/helpers";
 import { call, hospital, TODAY } from "@/test/hospital";
 
 /** P4 slice 4: the controlled-drug register, written by the ledger itself. */
 
 const SAMPLE = path.resolve(import.meta.dirname, "../test/fixtures/drug-catalogue-sample.csv");
+const SCHEDULED_MORPHINE = "MOR-10-INJ,Morphine,10 mg/mL,Injection,mL,im,II";
+const UNSCHEDULED_MORPHINE = "MOR-10-INJ,Morphine,10 mg/mL,Injection,mL,im,";
 
 let h: Hospital;
 let doctor: StaffMember;
@@ -173,6 +176,58 @@ describe("the controlled-drug register", () => {
     await expect(load).rejects.toThrow(/IBU-400-TAB controlled, which a facility stocks in two base units/);
     const [ibuprofen] = (await db.execute(sql`SELECT controlled_schedule FROM drug_catalogue WHERE code = 'IBU-400-TAB'`)).rows;
     expect(ibuprofen).toEqual({ controlled_schedule: null });
+  });
+
+  it("keeps a load that unschedules a drug waiting for a movement still being written, so no later one misses its page", async () => {
+    let release!: () => void;
+    const mayCommit = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let ready!: () => void;
+    const started = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    let holderPid = 0;
+    // The drug's first receipt in the store, its page not yet committed.
+    const first = runAsFacility(h.facility.id, async (tx) => {
+      try {
+        await receiveGoods(tx, h.facility.id, { storeId: main, supplier: "KEMSA", lines: [{ stockItemId: morphine, batchNumber: "M1", expiresOn: inDays(300), units: 10, totalCostCents: 1000 }] }, storekeeper.actor);
+        holderPid = await backendPid(tx);
+      }
+      finally {
+        ready();
+        await mayCommit;
+      }
+    });
+    await started;
+
+    const load = loadDrugCatalogue((await readFile(SAMPLE, "utf8")).replace(SCHEDULED_MORPHINE, UNSCHEDULED_MORPHINE));
+    try {
+      expect(await waitForBlockedBackend(holderPid)).toBe(true);
+    }
+    finally {
+      release();
+      await Promise.allSettled([first, load]);
+    }
+    await load;
+    await receive(main, morphine, "M2", 5);
+
+    expect((await page(main)).map(l => l.balance)).toEqual([10, 15]);
+  });
+
+  it("keeps a drug to one unit while it has a page, though no longer scheduled", async () => {
+    await receive(main, morphine, "M1", 10);
+    await loadDrugCatalogue((await readFile(SAMPLE, "utf8")).replace(SCHEDULED_MORPHINE, UNSCHEDULED_MORPHINE));
+    const ampoules = (await created(await post("/billable-items", h.admin, { code: "MOR-10-A", name: "Morphine ampoules", category: "drug" }))).id;
+
+    // Its page still adds every movement of it, so an ampoule must not be added to the mL.
+    const refused = await post("/stock-items", h.admin, { billableItemId: ampoules, drugCode: "MOR-10-INJ", baseUnit: "ampoule", packSize: 1 });
+    expect(refused.status).toBe(409);
+    expect((await refused.json()).code).toBe("base_unit_differs");
+    const preview = await (await post("/stock-items/import/preview", h.admin, { csv: "code,name,category,drug_code,base_unit,pack_size,unit_price\nMOR-10-B,Morphine another brand,drug,MOR-10-INJ,ampoule,10,100" })).json();
+    expect(preview.rows[0].problems).toEqual(["base_unit: MOR-10-INJ is kept on the controlled-drug register, and already counted in mL by another item"]);
+    const direct = await db.execute(sql`INSERT INTO stock_items (facility_id, billable_item_id, drug_code, base_unit, pack_size) VALUES (${h.facility.id}, ${ampoules}, 'MOR-10-INJ', 'ampoule', 1)`).then(() => null, (e: unknown) => e);
+    expect(pgErrorCode(direct)).toBe("23514");
   });
 
   it("is opened, at the upgrade that brings it, with the stock of a drug scheduled before it existed (migration 0101)", async () => {

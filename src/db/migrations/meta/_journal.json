@@ -715,6 +715,20 @@
       "when": 1794850164757,
       "tag": "0101_register_bring_forward",
       "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1794857716189,
+      "tag": "0102_stock_take_lines_snapshot",
+      "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "7",
+      "when": 1794857720724,
+      "tag": "0103_one_unit_while_registered",
+      "breakpoints": true
     }
   ]
 }

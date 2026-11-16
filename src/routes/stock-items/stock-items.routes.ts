@@ -92,8 +92,10 @@ export const createStockItem = createRoute({
   description:
     "On an active `drug` item, naming its catalogue drug, or an active "
     + "`consumable` item, naming none. Counted in its base unit and received in "
-    + "packs; the base unit and the drug are fixed once set. Every item of one "
-    + "catalogue drug is counted in the same unit (`base_unit_differs`).",
+    + "packs; the base unit and the drug are fixed once set. Every item of a drug "
+    + "kept on the controlled-drug register (scheduled, or with a page here from "
+    + "when it was) is counted in the same unit (`base_unit_differs`); any other "
+    + "drug may be stocked in more than one.",
   middleware: [stockKeepers] as const,
   request: { headers: facilityHeaders, body: jsonContentRequired(CreateBodySchema, "The stock item") },
   responses: {

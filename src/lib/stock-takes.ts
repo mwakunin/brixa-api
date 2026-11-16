@@ -90,15 +90,6 @@ async function storeFor(tx: AppDb, storeId: string, actor: DispenseActor, retire
 /** Opens a count of a store, or of chosen items in it: a sheet of every batch it holds of them. */
 export async function openStockTake(tx: AppDb, facilityId: string, input: { storeId: string; stockItemIds?: string[] }, actor: DispenseActor): Promise<TakeRow> {
   const store = await storeFor(tx, input.storeId, actor);
-  // Counted again before the last correction is decided, the same difference would be asked for twice.
-  const [waiting] = await tx
-    .select({ id: stockTakes.id })
-    .from(stockTakes)
-    .innerJoin(stockAdjustments, eq(stockAdjustments.id, stockTakes.adjustmentId))
-    .where(and(eq(stockTakes.storeId, store.id), eq(stockAdjustments.status, "pending")))
-    .limit(1);
-  if (waiting)
-    throw new StockTakeError("correction_pending");
   const itemIds = input.stockItemIds?.map(id => id.toLowerCase());
   if (itemIds) {
     const found = await tx.select({ id: stockItems.id }).from(stockItems).where(inArray(stockItems.id, itemIds));
@@ -130,6 +121,17 @@ export async function openStockTake(tx: AppDb, facilityId: string, input: { stor
       throw new StockTakeError("count_open");
     throw err;
   }
+  // Counted again before the last correction is decided, the same difference would be asked for twice.
+  // Read after the insert, which waits for a submission of the store's open count still being written
+  // (one open count per store), so the correction that came with it is seen.
+  const [waiting] = await tx
+    .select({ id: stockTakes.id })
+    .from(stockTakes)
+    .innerJoin(stockAdjustments, eq(stockAdjustments.id, stockTakes.adjustmentId))
+    .where(and(eq(stockTakes.storeId, store.id), eq(stockAdjustments.status, "pending")))
+    .limit(1);
+  if (waiting)
+    throw new StockTakeError("correction_pending");
   if (held.length > 0)
     await tx.insert(stockTakeLines).values(held.map(h => ({ facilityId, stockTakeId: take.id, batchId: h.batchId })));
   await recordAudit(tx, { facilityId, actorId: actor.userId, action: "stock_take.opened", entityType: "stock_take", entityId: take.id, summary: `Opened stock take ${take.number} of ${store.name}`, detail: { storeId: store.id, scope: take.scope, lines: held.length } });

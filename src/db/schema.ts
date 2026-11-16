@@ -2779,7 +2779,7 @@ export const stockTakeLines = pgTable("stock_take_lines", {
   foreignKey({ name: "stock_take_lines_take_fk", columns: [t.facilityId, t.stockTakeId], foreignColumns: [stockTakes.facilityId, stockTakes.id] }),
   foreignKey({ name: "stock_take_lines_batch_fk", columns: [t.facilityId, t.batchId], foreignColumns: [stockBatches.facilityId, stockBatches.id] }),
   foreignKey({ name: "stock_take_lines_counted_by_fk", columns: [t.facilityId, t.countedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
-  check("stock_take_lines_counted", sql`(${t.countedQuantity} IS NULL) = (${t.countedAt} IS NULL) AND (${t.countedAt} IS NULL) = (${t.countedBy} IS NULL) AND (${t.countedQuantity} IS NULL OR ${t.countedQuantity} >= 0)`),
+  check("stock_take_lines_counted", sql`(${t.countedQuantity} IS NULL) = (${t.countedAt} IS NULL) AND (${t.countedAt} IS NULL) = (${t.countedBy} IS NULL) AND (${t.countedQuantity} IS NULL OR (${t.countedQuantity} >= 0 AND ${t.expectedQuantity} IS NOT NULL))`),
 ]);
 
 /** One batch of an adjustment: its signed quantity in base units, and its value at the batch's cost. Written once. */
