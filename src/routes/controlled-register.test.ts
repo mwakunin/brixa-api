@@ -163,6 +163,39 @@ describe("the controlled-drug register", () => {
     expect(drift.filter(d => d.identity === "controlled_register")).toEqual([expect.objectContaining({ detail: "controlled_register: 50 against 55" })]);
   });
 
+  it("is never made to add two units: the catalogue does not schedule a drug a facility stocks in two", async () => {
+    await stockItem("IBU-400", "IBU-400-TAB", "tablet");
+    await stockItem("IBU-400-S", "IBU-400-TAB", "strip");
+    const catalogue = await readFile(SAMPLE, "utf8");
+
+    const load = loadDrugCatalogue(catalogue.replace("IBU-400-TAB,Ibuprofen,400 mg,Tablet,tablet,oral,", "IBU-400-TAB,Ibuprofen,400 mg,Tablet,tablet,oral,IV"));
+
+    await expect(load).rejects.toThrow(/IBU-400-TAB controlled, which a facility stocks in two base units/);
+    const [ibuprofen] = (await db.execute(sql`SELECT controlled_schedule FROM drug_catalogue WHERE code = 'IBU-400-TAB'`)).rows;
+    expect(ibuprofen).toEqual({ controlled_schedule: null });
+  });
+
+  it("is opened, at the upgrade that brings it, with the stock of a drug scheduled before it existed (migration 0101)", async () => {
+    const ibuprofen = await stockItem("IBU-400", "IBU-400-TAB", "tablet");
+    await receive(pharmacy, ibuprofen, "I1", 40);
+    // Scheduled with no page opened: as a database upgraded from before the register held it.
+    await db.execute(sql`UPDATE drug_catalogue SET controlled_schedule = 'IV' WHERE code = 'IBU-400-TAB'`);
+    const upgrade = await readFile(path.resolve(import.meta.dirname, "../db/migrations/0101_register_bring_forward.sql"), "utf8");
+    const statements = upgrade.split("--> statement-breakpoint").map(s => s.trim()).filter(Boolean);
+
+    for (const _ of [1, 2]) {
+      await db.transaction(async (tx) => {
+        for (const statement of statements)
+          await tx.execute(sql.raw(statement));
+      });
+    }
+    await receive(pharmacy, ibuprofen, "I2", 5);
+
+    // Once only, though run twice; the next receipt follows it.
+    expect((await page(pharmacy, "IBU-400-TAB")).map(l => [l.kind, l.quantity, l.balance])).toEqual([["brought_forward", 40, 40], ["receipt", 5, 45]]);
+    expect((await runAsFacility(h.facility.id, tx => reconcile(tx))).drift.filter(d => d.identity === "controlled_register")).toEqual([]);
+  });
+
   it("finds a scheduled drug held in a store with no page there", async () => {
     const ibuprofen = await stockItem("IBU-400", "IBU-400-TAB", "tablet");
     await receive(pharmacy, ibuprofen, "I1", 40);

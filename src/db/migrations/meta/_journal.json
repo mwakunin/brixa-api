@@ -701,6 +701,20 @@
       "when": 1794846564339,
       "tag": "0099_stock_take_lines_lock_parent",
       "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1794850160249,
+      "tag": "0100_stock_items_one_unit_per_drug",
+      "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1794850164757,
+      "tag": "0101_register_bring_forward",
+      "breakpoints": true
     }
   ]
 }

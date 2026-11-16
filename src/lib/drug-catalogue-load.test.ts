@@ -1,11 +1,13 @@
+import { sql } from "drizzle-orm";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { pool } from "@/db";
+import db, { appDb, pool } from "@/db";
+import { pgErrorCode } from "@/lib/db-errors";
 import { resetDb, waitForBlockedBackend } from "@/test/helpers";
 
-import { DrugFileError, loadDrugCatalogue, parseCsv, parseDrugFile } from "./drug-catalogue-load";
+import { DrugFileError, loadDrugCatalogue, parseCsv, parseDrugFile, seeingEveryFacility } from "./drug-catalogue-load";
 
 /** P3 slice 4b: the drug catalogue's file, in this system's own format. */
 
@@ -85,5 +87,16 @@ describe("the drug catalogue file", () => {
 
     const { rows } = await pool.query("SELECT left(code, 1) AS file FROM drug_catalogue WHERE retired_at IS NULL GROUP BY 1");
     expect(rows).toEqual([{ file: "B" }]);
+  });
+
+  it("fails, rather than seeing fewer facilities' stock, on a connection row security would filter", async () => {
+    const counted = (on: typeof db) => on.transaction(async (tx) => {
+      await seeingEveryFacility(tx);
+      return tx.execute(sql`SELECT count(*) FROM stock_movements`);
+    }).then(() => null, (e: unknown) => e);
+
+    // The owner bypasses it, as it must (db/roles.sql); the app's role does not, and is refused, not shown nothing.
+    expect(await counted(db)).toBeNull();
+    expect(pgErrorCode(await counted(appDb as unknown as typeof db))).toBe("42501");
   });
 });

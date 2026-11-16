@@ -152,6 +152,23 @@ describe("stock items", () => {
     expect(await refusal({ billableItemId: h.items.tablet, drugCode: "PCM-500-TAB", ...unit })).toBe("already_a_stock_item");
   });
 
+  it("count every brand of one drug in one base unit, so its stock and register add like for like", async () => {
+    const morphine = await item("MOR-10", "drug");
+    const ampoules = await item("MOR-10-A", "drug");
+    const otherBrand = await item("MOR-10-B", "drug");
+    expect((await create({ billableItemId: morphine, drugCode: "MOR-10-INJ", baseUnit: "mL", packSize: 10 })).status).toBe(201);
+
+    const refused = await create({ billableItemId: ampoules, drugCode: "MOR-10-INJ", baseUnit: "ampoule", packSize: 10 });
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual({ code: "base_unit_differs", message: expect.stringContaining("mL") });
+    expect((await create({ billableItemId: otherBrand, drugCode: "MOR-10-INJ", baseUnit: "mL", packSize: 5 })).status).toBe(201);
+
+    // Nor by a hand-run insert.
+    const [{ id: billableItemId }] = (await db.execute(sql`INSERT INTO billable_items (facility_id, code, name, category) VALUES (${h.facility.id}, 'MOR-10-C', 'MOR-10-C', 'drug') RETURNING id`)).rows as { id: string }[];
+    const direct = await db.execute(sql`INSERT INTO stock_items (facility_id, billable_item_id, drug_code, base_unit, pack_size) VALUES (${h.facility.id}, ${billableItemId}, 'MOR-10-INJ', 'vial', 1)`).then(() => null, (e: unknown) => e);
+    expect(pgErrorCode(direct)).toBe("23514");
+  });
+
   it("refuses a drug the catalogue has retired", async () => {
     await db.execute(sql`UPDATE drug_catalogue SET retired_at = now() WHERE code = 'IBU-400-TAB'`);
     const ibuprofen = await item("IBU-400", "drug");

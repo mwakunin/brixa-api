@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -170,6 +170,27 @@ describe("importing an item list", () => {
       "code AMX-500 already comes in packs of 100; change it on the item",
     ]);
     expect(await db.select().from(billableItems).where(eq(billableItems.code, "IBU-400"))).toEqual([]);
+  });
+
+  it("counts every item of a controlled drug in one base unit, as set up or as first given in the file", async () => {
+    await db.execute(sql`UPDATE drug_catalogue SET controlled_schedule = 'IV' WHERE code = 'IBU-400-TAB'`);
+    expect((await importFile(file("MOR-10,Morphine 10 mg/mL,drug,MOR-10-INJ,mL,10,100", "AMX-500,Amoxicillin 500 mg capsules,drug,AMX-500-CAP,capsule,100,5"))).status).toBeLessThan(300);
+
+    const res = await preview(file(
+      "MOR-10-A,Morphine ampoules,drug,MOR-10-INJ,ampoule,10,100",
+      "IBU-400,Ibuprofen 400 mg tablets,drug,IBU-400-TAB,tablet,100,3",
+      "IBU-400-B,Ibuprofen 400 mg another brand,drug,IBU-400-TAB,tab,100,3",
+      // A drug that is not controlled may be stocked in two units.
+      "AMX-500-S,Amoxicillin 500 mg strips,drug,AMX-500-CAP,strip,10,5",
+    ));
+
+    const problems = Object.fromEntries((await res.json()).rows.map((r: { row: number; problems: string[] }) => [r.row, r.problems]));
+    expect(problems).toEqual({
+      2: ["base_unit: MOR-10-INJ is controlled, and already counted in mL by another item"],
+      3: [],
+      4: ["base_unit: IBU-400-TAB is controlled, and counted in tablet on row 3"],
+      5: [],
+    });
   });
 
   it("refuses prices that would start before today, before writing anything", async () => {
