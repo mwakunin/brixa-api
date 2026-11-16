@@ -130,6 +130,9 @@ describe("a transfer", () => {
 
   it("is received by someone other than its sender", async () => {
     const sent = await created(await post("/stock-transfers/send", storekeeper, { fromStoreId: main, toStoreId: pharmacy, lines: [{ stockItemId: paracetamol, quantity: 10 }] }));
+    // On its way, its stores are as sent: not even the owner points it elsewhere.
+    const moved = await db.execute(sql`UPDATE stock_transfers SET to_store_id = ${maternity} WHERE id = ${sent.id}`).then(() => null, (e: unknown) => e);
+    expect(pgErrorCode(moved)).toBe("23001");
 
     expect(await refusal(await post(`/stock-transfers/${sent.id}/receive`, storekeeper))).toBe("same_person");
   });

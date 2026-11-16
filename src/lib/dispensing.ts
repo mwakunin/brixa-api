@@ -3,7 +3,7 @@ import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import type { AppDb } from "@/db";
 import type { MembershipRole } from "@/db/schema";
 
-import { billableItems, dispenseLines, dispenses, drugCatalogue, encounters, medicinesNotSupplied, orderItems, orders, stockItems, stockMovements, stores } from "@/db/schema";
+import { billableItems, dispenseLines, dispenses, drugCatalogue, encounters, medicinesNotSupplied, orderItems, orders, stockBatches, stockItems, stockMovements, stores } from "@/db/schema";
 
 import type { PatientActor } from "./patients";
 import type { Taken } from "./stock-allocation";
@@ -54,6 +54,7 @@ export type DispenseErrorCode
     | "more_than_owed"
     | "not_priced"
     | "amount_too_large"
+    | "batch_expired"
     | "controlled_dispenser"
     | "not_prepared"
     | "billed";
@@ -75,6 +76,7 @@ export class DispenseError extends Error {
       more_than_owed: "More than is still to be given",
       not_priced: "That item has no price; the finance manager prices it before it is dispensed",
       amount_too_large: "One line's charge would exceed KES 20 million; split it",
+      batch_expired: "A batch this dispense was prepared from has expired since: cancel it, which puts the stock back, and prepare it again",
       controlled_dispenser: "A controlled drug is dispensed by a pharmacist with a pharmacy licence",
       not_prepared: "This dispense has been handed over or cancelled",
       billed: "A charge of this dispense is on a bill; take the medicines back as a return instead",
@@ -309,6 +311,10 @@ export async function handOver(tx: AppDb, facilityId: string, id: string, actor:
   // A controlled drug is handed over, as it is prepared, by a pharmacist under a pharmacy licence (P4 question 4).
   if (lines.some(l => l.schedule) && !mayGiveControlled(actor))
     throw new DispenseError("controlled_dispenser");
+  // An expired batch is never dispensed (P4 question 6), though it was in date when prepared.
+  const [expired] = await tx.select({ id: stockBatches.id }).from(stockMovements).innerJoin(stockBatches, eq(stockBatches.id, stockMovements.batchId)).where(and(inArray(stockMovements.dispenseLineId, lines.map(l => l.id)), eq(stockMovements.kind, "dispense"), sql`${stockBatches.expiresOn} < ${businessDate(at)}`)).limit(1);
+  if (expired)
+    throw new DispenseError("batch_expired");
   const finishing = lines.filter(l => l.completes).map(l => l.orderItemId);
   if (finishing.length > 0) {
     await tx.update(orderItems)

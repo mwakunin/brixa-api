@@ -2,7 +2,7 @@ import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 
-import { billableItems, chargeAssignments, dispenseLines, dispenseReturns, dispenses, drugCatalogue, encounters, invoiceLines, invoices, stockBatches, stockItems, stockMovements } from "@/db/schema";
+import { billableItems, chargeAssignments, dispenseLines, dispenseReturns, dispenses, drugCatalogue, encounters, invoiceLines, invoices, sensitiveDrugs, stockBatches, stockItems, stockMovements } from "@/db/schema";
 
 import type { DispenseActor } from "./dispensing";
 import type { PatientActor } from "./patients";
@@ -12,7 +12,7 @@ import { recordAudit } from "./audit";
 import { assignedByCharge } from "./billing";
 import { dispenseCharges, replaceDispenseCharge } from "./charges";
 import { businessDate } from "./dates";
-import { mayGiveControlled } from "./dispensing";
+import { DISPENSERS, mayGiveControlled } from "./dispensing";
 import { chargeAmountCents } from "./money";
 import { lockBatches } from "./stock-levels";
 
@@ -265,6 +265,10 @@ export async function rejectReturn(tx: AppDb, facilityId: string, id: string, ac
 }
 
 export interface ListedReturn {
+  /** What bills print for the item, if it has a neutral name. */
+  printedName: string | null;
+  /** A medicine the facility marked sensitive (slice 3c). */
+  sensitive: boolean;
   id: string;
   dispenseLineId: string;
   encounterId: string;
@@ -283,8 +287,10 @@ export interface ListedReturn {
  * names a visit and what its patient brought back, so the list is audited
  * (rule 9), with ids only.
  */
-export async function viewReturns(tx: AppDb, facilityId: string, filter: { status?: ReturnRow["status"]; offset?: number }, actor: PatientActor): Promise<ListedReturn[]> {
-  const listed = await listReturns(tx, filter);
+export async function viewReturns(tx: AppDb, facilityId: string, filter: { status?: ReturnRow["status"]; offset?: number }, actor: DispenseActor): Promise<ListedReturn[]> {
+  const pharmacy = actor.roles.some(r => (DISPENSERS as readonly string[]).includes(r));
+  // A medicine marked sensitive (slice 3c) is named outside the pharmacy as bills name it, and why it came back is not shown (rule 27).
+  const listed = (await listReturns(tx, filter)).map(r => (pharmacy || !r.sensitive ? r : { ...r, name: r.printedName ?? "Medicine", reason: "Not shown: a sensitive medicine" }));
   await recordAudit(tx, {
     facilityId,
     actorId: actor.userId,
@@ -300,17 +306,20 @@ export async function viewReturns(tx: AppDb, facilityId: string, filter: { statu
 /** Returns as `viewReturns` lists them; not audited, for answering a write. */
 export async function listReturns(tx: AppDb, filter: { status?: ReturnRow["status"]; id?: string; offset?: number } = {}): Promise<ListedReturn[]> {
   const rows = await tx
-    .select({ ret: dispenseReturns, encounterId: dispenses.encounterId, code: billableItems.code, name: billableItems.name })
+    .select({ ret: dispenseReturns, encounterId: dispenses.encounterId, code: billableItems.code, name: billableItems.name, printedName: billableItems.printedName, sensitive: sensitiveDrugs.category })
     .from(dispenseReturns)
     .innerJoin(dispenseLines, eq(dispenseLines.id, dispenseReturns.dispenseLineId))
     .innerJoin(dispenses, eq(dispenses.id, dispenseLines.dispenseId))
     .innerJoin(stockItems, eq(stockItems.id, dispenseLines.stockItemId))
     .innerJoin(billableItems, eq(billableItems.id, stockItems.billableItemId))
+    .leftJoin(sensitiveDrugs, eq(sensitiveDrugs.drugCode, stockItems.drugCode))
     .where(and(filter.status ? eq(dispenseReturns.status, filter.status) : undefined, filter.id ? eq(dispenseReturns.id, filter.id) : undefined))
     .orderBy(desc(dispenseReturns.receivedAt), desc(dispenseReturns.id))
     .limit(50)
     .offset(filter.offset ?? 0);
-  return rows.map(({ ret, encounterId, code, name }) => ({
+  return rows.map(({ ret, encounterId, code, name, printedName, sensitive }) => ({
+    printedName,
+    sensitive: sensitive !== null,
     id: ret.id,
     dispenseLineId: ret.dispenseLineId,
     encounterId,

@@ -8,8 +8,10 @@ import type { Hospital, StaffMember } from "@/test/hospital";
 
 import db from "@/db";
 import { auditLog, charges, orderItems } from "@/db/schema";
+import { runAsFacility } from "@/db/tenant-transaction";
 import { addDays, businessDate } from "@/lib/dates";
 import { pgErrorCode } from "@/lib/db-errors";
+import { handOver } from "@/lib/dispensing";
 import { loadDrugCatalogue } from "@/lib/drug-catalogue-load";
 import { addMembership, resetDb, signedInUser } from "@/test/helpers";
 import { call, hospital, TODAY } from "@/test/hospital";
@@ -185,6 +187,9 @@ describe("dispensing a prescription", () => {
 
     const first = await created(await prepare(line(bottles, { quantity: 1, complete: false })));
     await post(`/dispenses/${first.id}/hand-over`, pharmacist);
+    // The list never counts a bottle as a mL.
+    const listed = (await (await call("GET", "/pharmacy/worklist", h.facility.id, pharmacist)).json()).waiting[0].medicines[0];
+    expect(listed).toMatchObject({ quantity: 75, given: 0, givenOtherUnits: true });
 
     // One bottle is not 1 mL of the 75 mL prescribed.
     expect(await refusal(await prepare(line(loose)))).toBe("quantity_needed");
@@ -215,6 +220,17 @@ describe("dispensing a prescription", () => {
     // What is not there answers as nothing.
     expect((await prepare({ orderId: randomUUID(), lines: [{ orderItemId: rx.medicines[0], stockItemId: paracetamol }] })).status).toBe(404);
     expect((await post(`/order-items/${randomUUID()}/not-supplied`, pharmacist, { reason: "out_of_stock" })).status).toBe(404);
+  });
+
+  it("is never handed over from a batch that expired after it was prepared", async () => {
+    const rx = await prescribed();
+    const dispense = await created(await prepare({ orderId: rx.orderId, lines: [{ orderItemId: rx.medicines[0], stockItemId: paracetamol }] }));
+
+    // Batch P1 expires in 300 days: handed over a year on, it has.
+    const late = await runAsFacility(h.facility.id, tx => handOver(tx, h.facility.id, dispense.id, { ...pharmacist.actor, roles: ["pharmacist"], licenceProfession: "pharmacy" }, new Date(Date.now() + 365 * 86_400_000)))
+      .then(() => null, (e: unknown) => e);
+
+    expect(late).toMatchObject({ code: "batch_expired" });
   });
 
   it("audits opening a dispense on its own, as it names the patient", async () => {

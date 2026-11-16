@@ -884,7 +884,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - nurses and ward nurses request for and receive into a ward's store only (`ward_store_only`, 403);
   - the stores' staff, nurses, the facility admin, the finance manager and the auditor read transfers;
   - every step is audited (`stock_transfer.*`).
-- **A transfer only moves forward**, for every role (`stock_transfers_forward`, migration 0090): a request to sent, cancelled or declined; sent to received; once received, only a shortfall's acceptance, once. One carries at most 4,000 batches (`MAX_TRANSFER_BATCHES`), as many as its receipt can name.
+- **A transfer only moves forward**, for every role (`stock_transfers_forward`, migrations 0090 and 0091): a request to sent, cancelled or declined; sent to received; once received, only a shortfall's acceptance, once. Each step changes only its own columns, so the stores, the number and the steps already taken stay as recorded. One carries at most 4,000 batches (`MAX_TRANSFER_BATCHES`), as many as its receipt can name.
 - **A store with a transfer still open** from or to it cannot be retired (`open_transfers`). A batch some of which has been sent can no longer have its receipt reversed (`batch_moved`).
 - **The stock ledger** gains `transfer_out` and `transfer_in`, each with the transfer as its typed source. One of each per transfer and batch.
 - **Not yet:** the controlled-drug register's entries for transfers (slice 4); an approval step for ward transfers, if the pilot wants one (`SPEC.md` §9, question 9).
@@ -908,7 +908,8 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 - **`POST /order-items/{id}/not-supplied`** ends a medicine, or its rest, without a charge for what wasn't given. The reason is `out_of_stock`, `patient_declined`, `buying_elsewhere`, or `other` with a note. The medicine becomes `done`; what was given comes from its dispense lines, and why not from `medicines_not_supplied`.
 - **Open visits only.** A visit no longer finishes early while a medicine is undispensed, so the P3 journey marks its medicine not supplied, and the nightly close still ends whatever is left.
 - **Who:** pharmacists and pharmacy technicians, under a current licence (`requireClinicalRole`), including a nurse who holds the pharmacy technician role.
-- **Final in the database:** a dispense handed over or cancelled never changes, for any role (`dispenses_final`, migration 0090). A line's charge over KES 20 million is refused (`amount_too_large`) before anything is taken.
+- **Final in the database:** a dispense handed over or cancelled never changes, for any role (`dispenses_final`, migration 0090). A batch that has expired since a dispense was prepared refuses its hand-over (`batch_expired`): the dispense is cancelled, which puts the stock back, and prepared again.
+- **The list's `given`** counts only what was handed over in the prescription's own dose unit; `givenOtherUnits` says some went out in another (a bottle for mL). A line's charge over KES 20 million is refused (`amount_too_large`) before anything is taken.
 - **Lock order:** the encounter (M8), the dispense, its medicines, the store's items and batches, then the charges.
 - **Not yet:**
   - returns and adjustments (3b);
@@ -928,11 +929,12 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
     - The return is refused when the charge is on a draft bill (`on_draft_bill`), split across bills (`split_billed`), or the bill is paid (`bill_paid`: the cashier frees the payment first, and the money goes back as a refund).
   - A controlled drug is taken back by a pharmacist with a pharmacy licence. `GET /dispense-returns?status=pending` is the approvers' list. Each return names a visit, so the list is audited (`dispense_return.listed`, with the encounters' ids).
   - A charge billed in part (a payer's share, P7) is refused as `split_billed`, like one across bills.
+  - A medicine marked sensitive (3c) is listed outside the pharmacy by the item's neutral printed name (or "Medicine"), with its reason withheld (rule 27); `sensitive` says so.
 - **`POST /stock-adjustments`** asks for `expired`, `damaged`, `lost`, `found` or `correction`, with a reason, naming batches and signed quantities.
   - A write-off takes stock off and `found` puts it on (`wrong_sign`). `expired` takes only batches past their date, and a removal can be no more than the store holds.
   - Each line carries its value at the batch's cost. A controlled drug needs a pharmacist with a pharmacy licence.
   - Nothing moves until `/approve`, by the finance manager or a pharmacist other than the asker. Approval locks the batches, checks the stock again, and writes an `adjustment` movement per line. `/reject` (another person) and `/withdraw` (the asker) close it unmoved.
-  - `stock_adjustments_decision` holds who decides in the database (rule 24). An adjustment and a return are each decided once, for every role (`stock_adjustments_decided_once`, `dispense_returns_decided_once`, migration 0090). A fit return is written once, already credited.
+  - `stock_adjustments_decision` holds who decides in the database (rule 24). An adjustment and a return are each decided once, for every role (`stock_adjustments_decided_once`, `dispense_returns_decided_once`, migration 0090). A fit return is written once, already credited. An adjustment's lines are written only while it is pending (`stock_adjustment_lines_while_pending`, migration 0091), and approving one holds its store shared and refuses a store retired since (`store_retired`).
 - **The stock ledger** gains `dispense_returned` (against its dispense line) and `adjustment` (against its line), keeping one source per movement.
 - **Not yet:** the controlled-drug register's entries for returns and write-offs (4); the stock-take that adjusts by count (5); a loss report built on the adjustments' values (P6's stock reports).
 

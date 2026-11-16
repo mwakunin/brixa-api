@@ -25,8 +25,10 @@ export interface WaitingMedicine {
   doseUnit: string;
   /** Prescribed, in the dose unit. */
   quantity: number;
-  /** Handed over so far, in base units. */
+  /** Handed over so far, in the prescription's dose unit. */
   given: number;
+  /** Some was handed over in another unit, which `given` does not count. */
+  givenOtherUnits: boolean;
   /** Prepared and waiting to be handed over. */
   prepared: boolean;
   controlledSchedule: string | null;
@@ -83,17 +85,23 @@ async function waiting(tx: AppDb): Promise<WaitingPrescription[]> {
 
   const ids = rows.map(r => r.medicine.id);
   const lines = await tx
-    .select({ orderItemId: dispenseLines.orderItemId, status: dispenses.status, quantity: dispenseLines.quantity })
+    .select({ orderItemId: dispenseLines.orderItemId, status: dispenses.status, quantity: dispenseLines.quantity, baseUnit: stockItems.baseUnit })
     .from(dispenseLines)
     .innerJoin(dispenses, eq(dispenses.id, dispenseLines.dispenseId))
+    .innerJoin(stockItems, eq(stockItems.id, dispenseLines.stockItemId))
     .where(and(inArray(dispenseLines.orderItemId, ids), inArray(dispenses.status, ["prepared", "handed_over"])));
+  const doseUnitOf = new Map(rows.map(r => [r.medicine.id, (r.medicine.doseUnit ?? "").toLowerCase()]));
   const given = new Map<string, number>();
+  const otherUnits = new Set<string>();
   const prepared = new Set<string>();
   for (const l of lines) {
     if (l.status === "prepared")
       prepared.add(l.orderItemId);
-    else
+    // Never one unit added to another: a bottle is not a mL.
+    else if (l.baseUnit.toLowerCase() === doseUnitOf.get(l.orderItemId))
       given.set(l.orderItemId, (given.get(l.orderItemId) ?? 0) + l.quantity);
+    else
+      otherUnits.add(l.orderItemId);
   }
 
   const byOrder = new Map<string, WaitingPrescription>();
@@ -106,6 +114,7 @@ async function waiting(tx: AppDb): Promise<WaitingPrescription[]> {
       doseUnit: r.medicine.doseUnit!,
       quantity: Number(r.medicine.quantity),
       given: given.get(r.medicine.id) ?? 0,
+      givenOtherUnits: otherUnits.has(r.medicine.id),
       prepared: prepared.has(r.medicine.id),
       controlledSchedule: r.controlledSchedule,
     });

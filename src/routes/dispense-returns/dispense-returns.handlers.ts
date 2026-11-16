@@ -25,7 +25,7 @@ function refusal(c: Context, err: unknown) {
   return c.json({ message: err.message, code: err.code }, HttpStatusCodes.CONFLICT);
 }
 
-const json = (r: ListedReturn) => ({ ...r, receivedAt: r.receivedAt.toISOString() });
+const json = ({ printedName: _, ...r }: ListedReturn) => ({ ...r, receivedAt: r.receivedAt.toISOString() });
 
 async function answer(c: Context<TenantBindings>, act: () => Promise<{ id: string }>, status: 200 | 201 = HttpStatusCodes.OK) {
   try {

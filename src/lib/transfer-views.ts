@@ -102,10 +102,12 @@ async function namesOf(tx: AppDb, ids: (string | null)[]): Promise<Map<string, s
 
 /** One transfer: who did each step, what was asked for, and what each batch sent and received. */
 export async function transferShown(tx: AppDb, id: string): Promise<ShownTransfer> {
+  // Its state from one read; the list row only names its stores, which never change.
   const [row] = await listTransfers(tx, { id });
   if (!row)
     throw new TransferError("not_found");
   const [t] = await tx.select().from(stockTransfers).where(eq(stockTransfers.id, id));
+  const state = listed({ transfer: t, fromName: row.fromStore.name, toName: row.toStore.name });
   const names = await namesOf(tx, [t.requestedBy, t.sentBy, t.receivedBy, t.shortfallAcceptedBy, t.closedBy]);
   const step = (by: string | null, at: Date | null): Step | null => by && at ? { byName: names.get(by) ?? "", at } : null;
 
@@ -136,7 +138,7 @@ export async function transferShown(tx: AppDb, id: string): Promise<ShownTransfe
 
   const closed = step(t.closedBy, t.closedAt);
   return {
-    ...row,
+    ...state,
     requested: step(t.requestedBy, t.requestedAt),
     sent: step(t.sentBy, t.sentAt),
     received: step(t.receivedBy, t.receivedAt),

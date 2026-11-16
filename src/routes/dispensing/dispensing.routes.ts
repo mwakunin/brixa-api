@@ -74,8 +74,10 @@ const WorklistSchema = z.object({
       description: z.string(),
       doseUnit: z.string(),
       quantity: z.number(),
-      /** Handed over so far, in base units. */
+      /** Handed over so far, in the prescription's dose unit. */
       given: z.number(),
+      /** Some was handed over in another unit (a bottle for mL), which `given` does not count. */
+      givenOtherUnits: z.boolean(),
       prepared: z.boolean(),
       controlledSchedule: z.string().nullable(),
     })),

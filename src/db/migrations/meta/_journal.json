@@ -638,6 +638,13 @@
       "when": 1794811576000,
       "tag": "0090_stock_lifecycles",
       "breakpoints": true
+    },
+    {
+      "idx": 91,
+      "version": "7",
+      "when": 1794817173270,
+      "tag": "0091_stock_guards",
+      "breakpoints": true
     }
   ]
 }
