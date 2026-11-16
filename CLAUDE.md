@@ -10,7 +10,7 @@ Project context for AI assistants working in this repository. Read this before w
 
 A multi-tenant hospital management SaaS for Kenya, designed first for **Level 4 private and mission hospitals** (roughly 20–150 beds). Sold to many hospitals. **Each facility is a tenant**: one KMHFR facility code, one SHA contract.
 
-**In scope for v1** (phases P1–P8 in `ROADMAP.md`; the pilot goes live as a cash hospital in P6, before payers in P7):
+**In scope for v1** (phases P1–P8 in `ROADMAP.md`; the pilot goes live as a cash outpatient hospital in P6, before inpatient in P5 and payers in P7):
 
 - Patient records (multiple identifiers per patient, OP and IP numbers)
 - Service-point queues and appointments
@@ -41,7 +41,7 @@ A multi-tenant hospital management SaaS for Kenya, designed first for **Level 4 
 | Rate limiting | Redis-backed `rate-limiter-flexible`, with an in-memory first layer and fallback | In use on sign-in and invitation acceptance (P1) |
 | File storage | Google Cloud Storage | Confirmed |
 | Backend | Hono + `@hono/zod-openapi`, Drizzle ORM | Confirmed |
-| Frontend | Next.js, built as a PWA | Proposed |
+| Frontend | Next.js 16 as a PWA, in its own repository (`brixa-web`): React 19, TanStack Query, Tailwind 4 with shadcn/ui, the Better Auth client, types generated from this API's `/doc`. Desktop and tablet | Confirmed (2026-11-17) |
 | Auth | Better Auth, email and password, invite-only (no public sign-up) | Confirmed |
 | Tenant resolution | One address for all facilities; the facility comes from the signed-in user's membership, never the hostname (section 4) | Confirmed |
 | Payments | Safaricom Daraja: C2B paybill per facility, plus STK push | Proposed |
