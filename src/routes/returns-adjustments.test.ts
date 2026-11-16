@@ -187,7 +187,8 @@ describe("a patient's return", () => {
 
     const seen = async (who: StaffMember) => (await (await call("GET", "/dispense-returns", h.facility.id, who)).json()).returns[0];
 
-    expect(await seen(h.finance)).toMatchObject({ sensitive: true, name: "Medicine", reason: "Not shown: a sensitive medicine" });
+    // Its code is masked too: a code can name a medicine as well as its name can.
+    expect(await seen(h.finance)).toMatchObject({ sensitive: true, code: "-", name: "Medicine", reason: "Not shown: a sensitive medicine" });
     expect(await seen(pharmTech)).toMatchObject({ sensitive: true, name: "PCM-500", reason: "Side effects" });
   });
 });

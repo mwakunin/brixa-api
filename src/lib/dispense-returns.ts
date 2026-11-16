@@ -290,7 +290,7 @@ export interface ListedReturn {
 export async function viewReturns(tx: AppDb, facilityId: string, filter: { status?: ReturnRow["status"]; offset?: number }, actor: DispenseActor): Promise<ListedReturn[]> {
   const pharmacy = actor.roles.some(r => (DISPENSERS as readonly string[]).includes(r));
   // A medicine marked sensitive (slice 3c) is named outside the pharmacy as bills name it, and why it came back is not shown (rule 27).
-  const listed = (await listReturns(tx, filter)).map(r => (pharmacy || !r.sensitive ? r : { ...r, name: r.printedName ?? "Medicine", reason: "Not shown: a sensitive medicine" }));
+  const listed = (await listReturns(tx, filter)).map(r => (pharmacy || !r.sensitive ? r : { ...r, code: "-", name: r.printedName ?? "Medicine", reason: "Not shown: a sensitive medicine" }));
   await recordAudit(tx, {
     facilityId,
     actorId: actor.userId,

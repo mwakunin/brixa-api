@@ -269,7 +269,9 @@ describe("a prepared dispense", () => {
     const bill = await post(`/encounters/${rx.encounterId}/bill-now`, h.cashier);
     expect(bill.status).toBe(201);
 
-    expect(await refusal(await post(`/dispenses/${dispense.id}/cancel`, pharmacist, { reason: "Patient left" }))).toBe("billed");
+    const billed = await post(`/dispenses/${dispense.id}/cancel`, pharmacist, { reason: "Patient left" });
+    // It names the way out: the bill voided first, not a return, which a prepared dispense cannot take.
+    expect([billed.status, (await billed.json()).message]).toEqual([409, expect.stringContaining("voids the bill first")]);
   });
 });
 

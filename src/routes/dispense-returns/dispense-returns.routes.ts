@@ -25,6 +25,7 @@ const ReturnSchema = z.object({
   id: z.uuid(),
   dispenseLineId: z.uuid(),
   encounterId: z.uuid(),
+  /** Outside the pharmacy, a sensitive medicine's is masked as `-`. */
   code: z.string(),
   name: z.string(),
   quantity: z.number(),

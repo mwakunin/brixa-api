@@ -76,10 +76,10 @@ export class DispenseError extends Error {
       more_than_owed: "More than is still to be given",
       not_priced: "That item has no price; the finance manager prices it before it is dispensed",
       amount_too_large: "One line's charge would exceed KES 20 million; split it",
-      batch_expired: "A batch this dispense was prepared from has expired since: cancel it, which puts the stock back, and prepare it again",
+      batch_expired: "A batch this dispense was prepared from has expired since: cancel it, which puts the stock back (if it is billed, the finance manager voids the bill first), and prepare it again",
       controlled_dispenser: "A controlled drug is dispensed by a pharmacist with a pharmacy licence",
       not_prepared: "This dispense has been handed over or cancelled",
-      billed: "A charge of this dispense is on a bill; take the medicines back as a return instead",
+      billed: "A charge of this dispense is on a bill: the finance manager voids the bill first (it must have no payment or adjustment left on it), which frees the charge; then cancel it",
     }[code]}`);
     this.name = "DispenseError";
   }
