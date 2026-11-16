@@ -11,7 +11,7 @@ import { addDays, businessDate } from "@/lib/dates";
 import { pgErrorCode } from "@/lib/db-errors";
 import { loadDrugCatalogue } from "@/lib/drug-catalogue-load";
 import { sendDirect } from "@/lib/transfers";
-import { addMembership, resetDb, signedInUser } from "@/test/helpers";
+import { addMembership, backendPid, resetDb, signedInUser, waitForBlockedBackend } from "@/test/helpers";
 import { call, hospital, TODAY } from "@/test/hospital";
 
 /** P4 slice 5: stock takes. */
@@ -185,5 +185,19 @@ describe("a stock take", () => {
     const open = await created(await post("/stock-takes", storekeeper, { storeId: pharmacy }));
     const bare = await db.execute(sql`UPDATE stock_takes SET status = 'cancelled', cancelled_by = opened_by, cancelled_at = now() WHERE id = ${open.id}`).then(() => null, (e: unknown) => e);
     expect(pgErrorCode(bare)).toBe("23514");
+  });
+
+  it("keeps a line written directly waiting while its count is submitted, then refuses it", async () => {
+    const take = await created(await post("/stock-takes", storekeeper, { storeId: pharmacy }));
+    await count(take.id, [{ batchId: p1, quantity: 2990 }]);
+
+    let write: Promise<unknown> | undefined;
+    await db.transaction(async (submitting) => {
+      await submitting.execute(sql`UPDATE stock_takes SET status = 'submitted', submitted_by = opened_by, submitted_at = now() WHERE id = ${take.id}`);
+      write = db.execute(sql`UPDATE stock_take_lines SET counted_quantity = 2980 WHERE stock_take_id = ${take.id}`).then(() => null, (e: unknown) => e);
+      expect(await waitForBlockedBackend(await backendPid(submitting))).toBe(true);
+    });
+
+    expect(pgErrorCode(await write)).toBe("23001");
   });
 });

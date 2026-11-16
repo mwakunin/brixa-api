@@ -694,6 +694,13 @@
       "when": 1794838138697,
       "tag": "0098_stock_takes_cancel_reason",
       "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1794846564339,
+      "tag": "0099_stock_take_lines_lock_parent",
+      "breakpoints": true
     }
   ]
 }

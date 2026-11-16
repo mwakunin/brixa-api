@@ -971,7 +971,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - A count with a controlled drug is submitted by a pharmacist with a pharmacy licence (`controlled_dispenser`), though nothing differs.
   - Stock gone since a line was counted, more than its correction takes off, refuses the submission (`not_enough_stock`): those lines are counted again.
 - **`POST /stock-takes/{id}/cancel`** (with a reason, required by `stock_takes_lifecycle` too, migration 0098) closes an open count unmoved, though its store was retired since; such a count is not submitted.
-- **Final in the database:** a count submitted or cancelled never changes, and its lines change only while it is open, for every role (`stock_takes_final`, `stock_take_lines_while_counting`). A line never changes count or batch (migration 0097).
+- **Final in the database:** a count submitted or cancelled never changes, and its lines change only while it is open, for every role (`stock_takes_final`, `stock_take_lines_while_counting`). A line never changes count or batch (migration 0097), and a write to one waits for a submission or cancellation under way, then is refused (the trigger reads the count `FOR SHARE`, migration 0099).
 - **Who:** storekeepers, pharmacists and pharmacy technicians count, and nurses a ward's store only. Stock readers and ward nurses read counts, which hold no patient data and are not audited when read.
 
 **As built (P4, slice 6): alerts and the exit.** Decided 2026-11-16 (`ROADMAP.md` P4, slice 6; question 10). No table: `src/lib/stock-alerts.ts` works the alerts out from the ledger when read, so there is no nightly scan (`CLAUDE.md` §7) and nothing to dismiss.
