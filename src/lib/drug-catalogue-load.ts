@@ -1,7 +1,7 @@
-import { and, isNull, notInArray, sql } from "drizzle-orm";
+import { and, isNotNull, isNull, notInArray, sql } from "drizzle-orm";
 
 import db from "@/db";
-import { drugCatalogue } from "@/db/schema";
+import { controlledDrugRegister, drugCatalogue, stockBatches, stockItems, stockMovements } from "@/db/schema";
 
 import type { ControlledSchedule, DrugRoute } from "./drug-catalogue";
 
@@ -160,6 +160,28 @@ export function parseDrugFile(text: string): DrugRow[] {
   return rows;
 }
 
+/**
+ * Opens a register page, in every facility's store holding a drug just
+ * scheduled, with the stock it holds (P4 slice 4). A store with a page
+ * already, from an earlier schedule, keeps it: its page never stopped.
+ * On the owner connection, across facilities, as the load is.
+ */
+async function bringForward(tx: Parameters<Parameters<typeof db.transaction>[0]>[0], codes: string[]): Promise<void> {
+  await tx.execute(sql`
+    INSERT INTO ${controlledDrugRegister} (facility_id, store_id, drug_code, kind, quantity, balance, recorded_at)
+    SELECT m.facility_id, m.store_id, si.drug_code, 'brought_forward', sum(m.quantity), sum(m.quantity), clock_timestamp()
+    FROM ${stockMovements} m
+    JOIN ${stockBatches} b ON b.id = m.batch_id
+    JOIN ${stockItems} si ON si.id = b.stock_item_id
+    WHERE si.drug_code IN (${sql.join(codes.map(c => sql`${c}`), sql`, `)})
+      AND NOT EXISTS (
+        SELECT 1 FROM ${controlledDrugRegister} r
+        WHERE r.facility_id = m.facility_id AND r.store_id = m.store_id AND r.drug_code = si.drug_code
+      )
+    GROUP BY m.facility_id, m.store_id, si.drug_code
+    HAVING sum(m.quantity) <> 0`);
+}
+
 /** Loads a file's drugs, retiring those it no longer has; returns the counts. */
 export async function loadDrugCatalogue(text: string, now = new Date()): Promise<{ loaded: number; retired: number }> {
   const rows = parseDrugFile(text);
@@ -170,6 +192,12 @@ export async function loadDrugCatalogue(text: string, now = new Date()): Promise
     // overlapping loads cannot both leave their drugs in use.
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${"drug_catalogue_load"}, 0))`);
     const current = await tx.select({ code: drugCatalogue.code }).from(drugCatalogue).where(isNull(drugCatalogue.retiredAt));
+    const scheduledNow = new Set((await tx.select({ code: drugCatalogue.code }).from(drugCatalogue).where(isNotNull(drugCatalogue.controlledSchedule))).map(d => d.code));
+    const newlyScheduled = rows.filter(r => r.controlledSchedule && !scheduledNow.has(r.code)).map(r => r.code);
+    // A drug becoming controlled has its stock brought into the register, with no movement between the
+    // count and the schedule: the ledger is held still (writes wait) until this load commits. Rare, by design.
+    if (newlyScheduled.length > 0)
+      await tx.execute(sql`LOCK TABLE ${stockMovements} IN SHARE MODE`);
     const leaving = current.filter(c => !codes.includes(c.code)).length;
     if (leaving > RETIRE_AT_MOST(current.length))
       throw new DrugFileError(`it would retire ${leaving} of ${current.length} drugs in use; is it complete?`);
@@ -191,6 +219,8 @@ export async function loadDrugCatalogue(text: string, now = new Date()): Promise
           },
         });
     }
+    if (newlyScheduled.length > 0)
+      await bringForward(tx, newlyScheduled);
     const retired = await tx.update(drugCatalogue)
       .set({ retiredAt: now })
       .where(and(isNull(drugCatalogue.retiredAt), notInArray(drugCatalogue.code, codes)))

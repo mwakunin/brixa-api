@@ -1,3 +1,5 @@
+import type { SQL } from "drizzle-orm";
+
 import { and, asc, desc, eq, gte, lt } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 
@@ -23,7 +25,7 @@ type RegisterRow = typeof controlledDrugRegister.$inferSelect;
 /** Who reads the register: the pharmacist in charge, the facility admin, the auditor. */
 export const REGISTER_READERS = ["pharmacist", "facility_admin", "auditor"] as const satisfies readonly MembershipRole[];
 
-/** The most lines one read shows, oldest first: a narrower range shows the rest. */
+/** The most lines one read shows, oldest first: `offset` shows the next. */
 export const REGISTER_PAGE = 500;
 
 export class RegisterError extends Error {
@@ -61,11 +63,24 @@ const prescriberUser = alias(user, "prescriber_user");
 const recorder = alias(memberships, "recorder");
 const recorderUser = alias(user, "recorder_user");
 
-/** One drug's page in one store, from and to Kenyan days (inclusive), audited. */
+/**
+ * The balance before the first line shown: that line's balance less its
+ * quantity, by entry order, never by time. With no line in the range, the
+ * page's last balance before the range ends, which a page's dates follow
+ * (each is written under its lock, migration 0094).
+ */
+async function balanceBefore(tx: AppDb, page: SQL | undefined, first: RegisterRow | undefined, until: Date | undefined): Promise<number> {
+  if (first)
+    return first.balance - first.quantity;
+  const [last] = await tx.select({ balance: controlledDrugRegister.balance }).from(controlledDrugRegister).where(and(page, until ? lt(controlledDrugRegister.recordedAt, until) : undefined)).orderBy(desc(controlledDrugRegister.entry)).limit(1);
+  return last?.balance ?? 0;
+}
+
+/** One drug's page in one store, from and to Kenyan days (inclusive), `REGISTER_PAGE` lines at a time, audited. */
 export async function viewRegister(
   tx: AppDb,
   facilityId: string,
-  input: { drugCode: string; storeId: string; from?: string; to?: string },
+  input: { drugCode: string; storeId: string; from?: string; to?: string; offset?: number },
   actor: PatientActor,
 ): Promise<RegisterPage> {
   const [drug] = await tx.select().from(drugCatalogue).where(eq(drugCatalogue.code, input.drugCode)).limit(1);
@@ -78,9 +93,6 @@ export async function viewRegister(
   const page = and(eq(controlledDrugRegister.storeId, store.id), eq(controlledDrugRegister.drugCode, drug.code));
   const from = input.from ? startOfBusinessDay(input.from) : undefined;
   const until = input.to ? startOfBusinessDay(addDays(input.to, 1)) : undefined;
-  const [before] = from
-    ? await tx.select({ balance: controlledDrugRegister.balance }).from(controlledDrugRegister).where(and(page, lt(controlledDrugRegister.recordedAt, from))).orderBy(desc(controlledDrugRegister.entry)).limit(1)
-    : [];
 
   const rows = await tx
     .select({
@@ -104,7 +116,8 @@ export async function viewRegister(
     .leftJoin(recorderUser, eq(recorderUser.id, recorder.userId))
     .where(and(page, from ? gte(controlledDrugRegister.recordedAt, from) : undefined, until ? lt(controlledDrugRegister.recordedAt, until) : undefined))
     .orderBy(asc(controlledDrugRegister.entry))
-    .limit(REGISTER_PAGE);
+    .limit(REGISTER_PAGE)
+    .offset(input.offset ?? 0);
 
   const lines = rows.map((r): RegisterLine => ({
     at: r.line.recordedAt,
@@ -132,7 +145,7 @@ export async function viewRegister(
   return {
     drug: { code: drug.code, genericName: drug.genericName, strength: drug.strength, form: drug.form, controlledSchedule: drug.controlledSchedule },
     store,
-    balanceBefore: before?.balance ?? 0,
+    balanceBefore: await balanceBefore(tx, page, rows[0]?.line, until),
     lines,
   };
 }

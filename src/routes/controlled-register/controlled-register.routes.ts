@@ -20,7 +20,7 @@ const KINDS = ["brought_forward", "receipt", "receipt_reversed", "transfer_out",
 const PageSchema = z.object({
   drug: z.object({ code: z.string(), genericName: z.string(), strength: z.string(), form: z.string(), controlledSchedule: z.string().nullable() }),
   store: z.object({ id: z.uuid(), name: z.string() }),
-  /** Before the first day shown. */
+  /** Before the first line shown. */
   balanceBefore: z.number(),
   lines: z.array(z.object({
     at: z.string(),
@@ -42,6 +42,7 @@ const QuerySchema = z.object({
   storeId: z.uuid(),
   from: z.iso.date().optional(),
   to: z.iso.date().optional(),
+  offset: z.coerce.number().int().min(0).max(1_000_000).default(0),
 }).refine(q => !q.from || !q.to || q.from <= q.to, { message: "From before to", path: ["to"] });
 
 export const viewRegister = createRoute({
@@ -50,13 +51,12 @@ export const viewRegister = createRoute({
   path: "/controlled-register",
   summary: "A controlled drug's register in a store",
   description:
-    "Every movement of the drug there, oldest first (at most 500: narrow the days for more), with the "
+    "Every movement of the drug there, oldest first, 500 at a time (`?offset=` for the next), with the "
     + "running balance, the patient, the prescriber and who moved it, each with their licence then. Audited.",
   middleware: [readers] as const,
   request: { headers: facilityHeaders, query: QuerySchema },
   responses: {
     [HttpStatusCodes.OK]: jsonContent(PageSchema, "The register's page"),
-    [HttpStatusCodes.CONFLICT]: jsonContent(z.object({ message: z.string(), code: z.string() }), "No such drug or store"),
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(QuerySchema), "Invalid page"),
     ...tenantResponses,
   },

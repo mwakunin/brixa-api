@@ -949,13 +949,15 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 - **Written by the ledger:** `controlled_drug_register_write`, an `AFTER INSERT` trigger on `stock_movements`, writes a line for every movement of a batch whose catalogue drug has a schedule, in the movement's transaction. Receipts, transfers, dispensing and its cancellation, returns and adjustments are all covered, with no code path of their own.
   - `SECURITY DEFINER`: the app role only reads the register, so no request can add, change or leave out a line. The function names the facility in every query.
   - An append-only trigger holds every role. A wrong line is corrected by the movement that corrects the stock.
+  - **A page, once open, records every movement of its drug in that store**, whether or not the drug is still scheduled, so clearing and restoring a schedule never leaves the register behind the ledger (migration 0094).
 - **One page per catalogue drug and store**, across its items and batches.
   - Lines of one page are written one at a time, under a transaction advisory lock. Each balance is the page's last balance plus the movement, never re-summed, because rows written by one statement are all visible to each of its triggers.
   - `entry`, an identity column, orders lines, and `balance` is never below zero.
-  - The first line of a drug that already had stock in the store (scheduled after it arrived) is `brought_forward` with that stock.
+  - **Stock held before a drug was scheduled** is brought forward by the catalogue load that schedules it (`bringForward`, `src/lib/drug-catalogue-load.ts`). The load holds the ledger still while it counts (`LOCK TABLE stock_movements IN SHARE MODE`, waiting for writes in flight and holding new ones until it commits), so no movement falls between the count and the schedule. Otherwise a page opens with a scheduled drug's first movement, at nought.
+  - A line is dated when it is written, under the page's lock, so a page's dates follow its entries.
 - **A line keeps** the movement and batch; for a dispense, its cancellation or a return, the patient and the prescriber; and the licence numbers of the prescriber and of whoever moved the stock, copied as they were then. The patient's name and outpatient number are shown from the record.
 - **The daily reconciliation** (`src/lib/reconciliation.ts`) gains `controlled_register`: each page's last balance against the ledger's sum for that drug and store, drift naming the last line's id. This is P4's exit check.
-- **`GET /controlled-register?drugCode=&storeId=&from=&to=`** is read by pharmacists, the facility admin and the auditor. It shows the balance before the first day, then at most 500 lines oldest first, and is audited (`controlled_register.viewed`) with the patients' ids.
+- **`GET /controlled-register?drugCode=&storeId=&from=&to=&offset=`** is read by pharmacists, the facility admin and the auditor. It shows 500 lines at a time, oldest first, with the balance before the first line shown: that line's balance less its quantity, by entry order. It is audited (`controlled_register.viewed`) with the patients' ids, and a drug or store that isn't there answers 404.
 - **Not yet:** opening entries at P6's cutover; the printed register (P6 reports); PPB's answer on what it must hold.
 
 ---

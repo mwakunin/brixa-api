@@ -123,16 +123,22 @@ describe("the controlled-drug register", () => {
     ]);
   });
 
-  it("brings forward the stock held before a drug was scheduled", async () => {
+  it("brings stock held before a drug was scheduled into the register as the catalogue schedules it, and keeps its page if unscheduled", async () => {
     const ibuprofen = await stockItem("IBU-400", "IBU-400-TAB", "tablet");
     await receive(pharmacy, ibuprofen, "I1", 40);
     expect(await page(pharmacy, "IBU-400-TAB")).toEqual([]);
-    // As a later catalogue load would schedule it.
-    await db.execute(sql`UPDATE drug_catalogue SET controlled_schedule = 'IV' WHERE code = 'IBU-400-TAB'`);
+    const catalogue = await readFile(SAMPLE, "utf8");
 
+    // A later catalogue load schedules it: the stock held is brought forward then, under a lock on the ledger.
+    await loadDrugCatalogue(catalogue.replace("IBU-400-TAB,Ibuprofen,400 mg,Tablet,tablet,oral,", "IBU-400-TAB,Ibuprofen,400 mg,Tablet,tablet,oral,IV"));
     await receive(pharmacy, ibuprofen, "I2", 10);
-
     expect((await page(pharmacy, "IBU-400-TAB")).map(l => [l.kind, l.quantity, l.balance])).toEqual([["brought_forward", 40, 40], ["receipt", 10, 50]]);
+
+    // Unscheduled again, its page keeps every movement, so the register never falls behind the ledger.
+    await loadDrugCatalogue(catalogue);
+    await receive(pharmacy, ibuprofen, "I3", 5);
+    expect((await page(pharmacy, "IBU-400-TAB")).map(l => l.balance)).toEqual([40, 50, 55]);
+    expect((await runAsFacility(h.facility.id, tx => reconcile(tx))).drift.filter(d => d.identity === "controlled_register")).toEqual([]);
   });
 
   it("is written by the ledger alone: a request cannot write it, and nobody changes it", async () => {
@@ -179,5 +185,10 @@ describe("the controlled-drug register", () => {
     // Days after the last line show nothing, with the balance carried.
     const later = await (await read(pharmacist, `drugCode=MOR-10-INJ&storeId=${pharmacy}&from=${inDays(1)}`)).json();
     expect([later.balanceBefore, later.lines]).toEqual([48, []]);
+    // The next page carries on from the line before it.
+    const next = await (await read(pharmacist, `drugCode=MOR-10-INJ&storeId=${pharmacy}&offset=1`)).json();
+    expect([next.balanceBefore, next.lines.map((l: { balance: number }) => l.balance)]).toEqual([50, [48]]);
+    // A drug or store that is not there answers as nothing.
+    expect((await read(pharmacist, `drugCode=NOPE-1&storeId=${pharmacy}`)).status).toBe(404);
   });
 });

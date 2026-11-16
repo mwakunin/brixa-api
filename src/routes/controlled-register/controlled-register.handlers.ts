@@ -1,4 +1,5 @@
 import * as HttpStatusCodes from "stoker/http-status-codes";
+import * as HttpStatusPhrases from "stoker/http-status-phrases";
 
 import type { TenantRouteHandler } from "@/lib/types";
 
@@ -13,8 +14,9 @@ export const viewRegister: TenantRouteHandler<ViewRegisterRoute> = async (c) => 
     return c.json({ ...page, lines: page.lines.map(l => ({ ...l, at: l.at.toISOString() })) }, HttpStatusCodes.OK);
   }
   catch (err) {
+    // The page asked for is the resource: a drug or store that is not there answers as nothing.
     if (err instanceof register.RegisterError)
-      return c.json({ message: err.message, code: err.code }, HttpStatusCodes.CONFLICT);
+      return c.json({ message: HttpStatusPhrases.NOT_FOUND }, HttpStatusCodes.NOT_FOUND);
     throw err;
   }
 };
