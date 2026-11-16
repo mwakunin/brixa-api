@@ -2,7 +2,7 @@ import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 
-import { billableItems, drugCatalogue, stockAdjustmentLines, stockAdjustments, stockBatches, stockItems, stockMovements, stores } from "@/db/schema";
+import { billableItems, drugCatalogue, stockAdjustmentLines, stockAdjustments, stockBatches, stockItems, stockMovements, stockTakeLines, stockTakes, stores } from "@/db/schema";
 
 import type { DispenseActor } from "./dispensing";
 import type { PatientActor } from "./patients";
@@ -33,6 +33,7 @@ export type StockAdjustmentErrorCode
     | "controlled_dispenser"
     | "not_pending"
     | "same_person"
+    | "counted_it"
     | "not_requester"
     | "value_too_large"
     | "store_retired";
@@ -49,6 +50,7 @@ export class StockAdjustmentError extends Error {
       controlled_dispenser: "A controlled drug is adjusted by a pharmacist with a pharmacy licence",
       not_pending: "This adjustment has already been decided",
       same_person: "Someone other than whoever asked for it decides it",
+      counted_it: "A stock take's correction is approved by someone whose count is on none of its lines",
       not_requester: "Only whoever asked for it may withdraw it",
       value_too_large: "That line is worth more than one adjustment records; split it",
       store_retired: "That store has been retired since this was asked for",
@@ -154,6 +156,17 @@ export async function approveStockAdjustment(tx: AppDb, facilityId: string, id: 
   const adjustment = await lockPending(tx, id);
   if (adjustment.requestedBy === actor.membershipId)
     throw new StockAdjustmentError("same_person");
+  // A stock take's correction is another's to approve than whoever counted it, as well as whoever submitted it
+  // (P4 slice 5, point 5): whoever's count stands on a line. A recount replaces the count and its counter, so
+  // no figure in the correction is the earlier counter's. Lines are final once submitted, so this is settled.
+  const [counted] = await tx
+    .select({ id: stockTakeLines.id })
+    .from(stockTakeLines)
+    .innerJoin(stockTakes, eq(stockTakes.id, stockTakeLines.stockTakeId))
+    .where(and(eq(stockTakes.adjustmentId, id), eq(stockTakeLines.countedBy, actor.membershipId)))
+    .limit(1);
+  if (counted)
+    throw new StockAdjustmentError("counted_it");
   // Held shared, as a delivery or transfer holds it, so the store is not retired while stock moves into it.
   const [store] = await tx.select({ isActive: stores.isActive }).from(stores).where(eq(stores.id, adjustment.storeId)).for("share");
   if (!store.isActive)

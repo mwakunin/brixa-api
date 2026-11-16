@@ -21,7 +21,7 @@ function refusal(c: Context, err: unknown) {
   if (err.code === "not_found")
     return c.json({ message: HttpStatusPhrases.NOT_FOUND }, HttpStatusCodes.NOT_FOUND);
   const body = { message: err.message, code: err.code, ...(err.line === undefined ? {} : { line: err.line }) };
-  if (err.code === "controlled_dispenser")
+  if (err.code === "controlled_dispenser" || err.code === "counted_it")
     return c.json(body, HttpStatusCodes.FORBIDDEN);
   return c.json(body, HttpStatusCodes.CONFLICT);
 }

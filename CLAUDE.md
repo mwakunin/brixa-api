@@ -173,11 +173,12 @@ The detail is in `SCHEMA.md`. In short:
 | Bed-day accrual | Scheduler, nightly | Fan out per facility; run the idempotent bed-day function (`SCHEMA.md` §7.2) |
 | Outbox drain | Cloud Tasks on write, plus a Scheduler sweep | Deliver pending external calls |
 | Appointment reminder | Outbox job held back to the day before (`available_at`), delivered by the outbox sweep. Not a Cloud Task: those schedule at most 30 days ahead | Verify the appointment is still booked for that day and the patient said yes, send SMS |
-| Expiry scan, low stock | Scheduler, nightly | Fan out per facility; flag batches nearing expiry and items below reorder level |
 | Reconciliation check | Scheduler, daily | Check identities M7 per facility; alert on drift |
 | Visit close | Scheduler, nightly | Fan out per facility; close outpatient visits still open after their day, ending their queue entries |
 | Visit finish | Scheduler, every 15 minutes | Fan out per facility; close outpatient visits with nothing pending (`src/lib/visit-finish.ts`) |
 | Daily report | Scheduler, daily | Fan out per facility; generate the summary |
+
+Expiry and low-stock alerts are not a job: `GET /stock-alerts` works them out from the ledger when read (`ROADMAP.md` P4, slice 6).
 
 **File storage.** One bucket per environment, not per facility. Tenant-prefixed random keys, e.g. `tenants/{facilityId}/patients/{patientId}/{uuid}`. Public access prevention on, uniform bucket-level access, versioning and soft delete on, Data Access audit logs on. Sign URLs via the service account's IAM `signBlob` permission, not key files. Validate file type and size; strip image EXIF data; scan external documents. Keep all access behind a small storage interface (`put`, `get`, `createSignedUrl`, `delete`): `src/lib/storage.ts`, with `newObjectKey` for keys and `src/lib/object-storage.ts` for the configured driver. Bucket location cannot be changed after creation.
 

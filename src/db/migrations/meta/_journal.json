@@ -645,6 +645,97 @@
       "when": 1794817173270,
       "tag": "0091_stock_guards",
       "breakpoints": true
+    },
+    {
+      "idx": 92,
+      "version": "7",
+      "when": 1794820756729,
+      "tag": "0092_controlled_register",
+      "breakpoints": true
+    },
+    {
+      "idx": 93,
+      "version": "7",
+      "when": 1794820761563,
+      "tag": "0093_controlled_register_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "7",
+      "when": 1794823750195,
+      "tag": "0094_register_pages",
+      "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "7",
+      "when": 1794824413037,
+      "tag": "0095_stock_takes",
+      "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "7",
+      "when": 1794824420735,
+      "tag": "0096_stock_takes_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 97,
+      "version": "7",
+      "when": 1794828668166,
+      "tag": "0097_stock_take_lines_identity",
+      "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1794838138697,
+      "tag": "0098_stock_takes_cancel_reason",
+      "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1794846564339,
+      "tag": "0099_stock_take_lines_lock_parent",
+      "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1794850160249,
+      "tag": "0100_stock_items_one_unit_per_drug",
+      "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "7",
+      "when": 1794850164757,
+      "tag": "0101_register_bring_forward",
+      "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1794857716189,
+      "tag": "0102_stock_take_lines_snapshot",
+      "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "7",
+      "when": 1794857720724,
+      "tag": "0103_one_unit_while_registered",
+      "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1794861194465,
+      "tag": "0104_register_lock_per_store",
+      "breakpoints": true
     }
   ]
 }
