@@ -8,6 +8,7 @@ import allergies from "@/routes/allergies/allergies.index";
 import appointments from "@/routes/appointments/appointments.index";
 import breakGlass from "@/routes/break-glass/break-glass.index";
 import charges from "@/routes/charges/charges.index";
+import controlledRegister from "@/routes/controlled-register/controlled-register.index";
 import diagnoses from "@/routes/diagnoses/diagnoses.index";
 import dispenseReturns from "@/routes/dispense-returns/dispense-returns.index";
 import dispensing from "@/routes/dispensing/dispensing.index";
@@ -116,6 +117,7 @@ const tenantRoutes = [
   dispenseReturns,
   stockAdjustments,
   sensitiveDrugs,
+  controlledRegister,
   wards,
   prices,
   charges,

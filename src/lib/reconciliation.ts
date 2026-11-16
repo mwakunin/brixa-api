@@ -21,12 +21,15 @@ import type { AppDb } from "@/db";
  * - M-Pesa: a placed transaction has exactly one live payment, of its
  *   amount; one not placed has none.
  *
+ * - Controlled register: each scheduled drug's last register balance in a
+ *   store equals the ledger's sum for it there (P4 slice 4).
+ *
  * M7 is the sum of these: with no drift, Σ payments = Σ allocations +
  * Σ refunds + credit, and Σ invoiced = Σ allocations + Σ adjustments + Σ owed.
  * Drift names only ids (rule 10).
  */
 
-export type Identity = "M2" | "M3" | "M4" | "M4_final" | "mpesa";
+export type Identity = "M2" | "M3" | "M4" | "M4_final" | "mpesa" | "controlled_register";
 
 export interface Drift {
   identity: Identity;
@@ -106,6 +109,23 @@ const CHECKS: { identity: Identity; query: SQL }[] = [
       GROUP BY t.id, t.amount_cents, t.status
       HAVING (t.status = 'allocated' AND (count(p.id) <> 1 OR coalesce(sum(p.amount_cents), 0) <> t.amount_cents))
           OR (t.status <> 'allocated' AND count(p.id) > 0)`,
+  },
+  {
+    // Not money, but checked with it daily (P4 slice 4, P4's exit): each controlled drug's last register
+    // balance in a store equals what the ledger says the store holds of it. The subject is that last line.
+    identity: "controlled_register",
+    query: sql`
+      SELECT r.id AS subject, r.balance AS cap, coalesce(m.total, 0) AS used
+      FROM (
+        SELECT DISTINCT ON (store_id, drug_code) id, store_id, drug_code, balance
+        FROM controlled_drug_register ORDER BY store_id, drug_code, entry DESC
+      ) r
+      LEFT JOIN (
+        SELECT m.store_id, si.drug_code, sum(m.quantity) AS total
+        FROM stock_movements m JOIN stock_batches b ON b.id = m.batch_id JOIN stock_items si ON si.id = b.stock_item_id
+        GROUP BY m.store_id, si.drug_code
+      ) m ON m.store_id = r.store_id AND m.drug_code = r.drug_code
+      WHERE r.balance <> coalesce(m.total, 0)`,
   },
 ];
 

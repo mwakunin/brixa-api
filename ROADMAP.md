@@ -289,6 +289,17 @@ Main store, pharmacy and ward sub-stores; transfers; goods received; batches and
 5. **Nothing is shipped**: the pilot's clinician supplies the drugs, with the sensitive ICD-11 codes still owed.
 6. **Marking and unmarking are audited** with the old and new category.
 
+**Slice 4, the controlled-drug register** (decided 2026-11-16, as recommended; contents per question 8 until PPB answers):
+1. **Every movement of a scheduled drug writes a line**, in any store: receipts and their reversals, transfers, dispensing and its cancellation, returns and approved adjustments, each in the movement's own transaction.
+2. **The database writes it**: a trigger on the stock ledger, so no path moves a controlled drug unrecorded; one drug's lines in a store are written one at a time.
+3. **Each line keeps its running balance**, a snapshot for the legal record like the paper register's column, checked daily against the ledger by the reconciliation job, which alerts on drift.
+4. **A line keeps** the movement, the batch and, for a dispense or return, the patient; it copies the prescriber's and dispenser's licence numbers as they were. The patient's name and number are shown from the record.
+5. **No hand entries**: a wrong line is corrected by the movement that corrects the stock, which writes its own.
+6. **Stock held before a drug was scheduled** is brought forward on its first line.
+7. **Read by** pharmacists, the facility admin and the auditor, audited, as lines name patients.
+8. **`GET /controlled-register`** shows one drug in one store over a range of days; printing comes with P6's reports.
+9. **Opening balances at go-live** come from the old register's closing balance, at P6's cutover.
+
 ### P5 · Inpatient clinical
 
 **Size:** L.

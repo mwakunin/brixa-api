@@ -479,6 +479,7 @@ export const auditLog = pgTable("audit_log", {
     | "drug.sensitivity_set"
     | "dispense.viewed"
     | "dispense_return.listed"
+    | "controlled_register.viewed"
   >().notNull().references(() => auditActions.action),
   /** What it happened to. Not a foreign key: the log outlives what it names. */
   entityType: text().notNull(),
@@ -2755,6 +2756,7 @@ export const stockMovements = pgTable("stock_movements", {
   recordedBy: uuid().notNull(),
   recordedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
 }, t => [
+  unique("stock_movements_facility_id_id_key").on(t.facilityId, t.id),
   foreignKey({ name: "stock_movements_store_fk", columns: [t.facilityId, t.storeId], foreignColumns: [stores.facilityId, stores.id] }),
   foreignKey({ name: "stock_movements_batch_fk", columns: [t.facilityId, t.batchId], foreignColumns: [stockBatches.facilityId, stockBatches.id] }),
   foreignKey({ name: "stock_movements_goods_received_fk", columns: [t.facilityId, t.goodsReceivedId], foreignColumns: [goodsReceived.facilityId, goodsReceived.id] }),
@@ -2791,6 +2793,54 @@ export const stockMovements = pgTable("stock_movements", {
         OR (${t.kind} = 'dispense_returned' AND ${t.quantity} > 0 AND ${t.dispenseLineId} IS NOT NULL AND ${t.reason} IS NULL)
         OR (${t.kind} = 'adjustment' AND ${t.quantity} <> 0 AND ${t.stockAdjustmentLineId} IS NOT NULL AND ${t.reason} IS NULL))`,
   ),
+]);
+
+/**
+ * The controlled-drug register (CLAUDE.md rule 12, P4 slice 4, decided
+ * 2026-11-15): a line for every movement of a scheduled drug, per
+ * catalogue drug and store (two brands of one drug share a page, as on
+ * paper), with the running balance after it. Written by a trigger on the
+ * ledger in the same transaction as the movement, so no path moves a
+ * controlled drug unrecorded; the app role only reads it. Append-only: a
+ * wrong line is corrected by the movement that corrects the stock. Its
+ * contents wait on PPB (SPEC.md §4, question 7); these are P4 question 8's.
+ */
+export const controlledDrugRegister = pgTable("controlled_drug_register", {
+  id: uuid().primaryKey().defaultRandom(),
+  /** The order lines were written in, across the facility: a balance follows the one before it. */
+  entry: bigint({ mode: "number" }).generatedAlwaysAsIdentity().notNull(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  storeId: uuid().notNull(),
+  drugCode: text().notNull(),
+  /** The movement it records; none for the stock brought forward when a drug's first line is written. */
+  movementId: uuid(),
+  batchId: uuid(),
+  kind: text().$type<"brought_forward" | "receipt" | "receipt_reversed" | "transfer_out" | "transfer_in" | "dispense" | "dispense_cancelled" | "dispense_returned" | "adjustment">().notNull(),
+  /** In base units: in above zero, out below. */
+  quantity: integer().notNull(),
+  /** The drug's stock in the store after this line, across its items and batches. */
+  balance: integer().notNull(),
+  /** For a dispense, its cancellation or a return: the patient, and the prescriber with their licence then. */
+  patientId: uuid(),
+  prescribedBy: uuid(),
+  prescriberLicence: text(),
+  /** Who moved it, with their licence then, if they hold one. */
+  recordedBy: uuid(),
+  recorderLicence: text(),
+  recordedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+}, t => [
+  unique("controlled_drug_register_movement_key").on(t.movementId),
+  foreignKey({ name: "controlled_drug_register_store_fk", columns: [t.facilityId, t.storeId], foreignColumns: [stores.facilityId, stores.id] }),
+  foreignKey({ name: "controlled_drug_register_drug_fk", columns: [t.drugCode], foreignColumns: [drugCatalogue.code] }),
+  foreignKey({ name: "controlled_drug_register_movement_fk", columns: [t.facilityId, t.movementId], foreignColumns: [stockMovements.facilityId, stockMovements.id] }),
+  foreignKey({ name: "controlled_drug_register_batch_fk", columns: [t.facilityId, t.batchId], foreignColumns: [stockBatches.facilityId, stockBatches.id] }),
+  foreignKey({ name: "controlled_drug_register_patient_fk", columns: [t.facilityId, t.patientId], foreignColumns: [patients.facilityId, patients.id] }),
+  foreignKey({ name: "controlled_drug_register_prescribed_by_fk", columns: [t.facilityId, t.prescribedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "controlled_drug_register_recorded_by_fk", columns: [t.facilityId, t.recordedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  index("controlled_drug_register_page_index").on(t.facilityId, t.storeId, t.drugCode, t.entry),
+  oneOf("controlled_drug_register_kind_known", t.kind, ["brought_forward", "receipt", "receipt_reversed", "transfer_out", "transfer_in", "dispense", "dispense_cancelled", "dispense_returned", "adjustment"]),
+  check("controlled_drug_register_balance_nonnegative", sql`${t.balance} >= 0`),
+  check("controlled_drug_register_source", sql`(${t.kind} = 'brought_forward') = (${t.movementId} IS NULL)`),
 ]);
 
 // ---------------------------------------------------------------------------
@@ -3658,4 +3708,5 @@ export const TENANT_TABLES = [
   "stock_adjustments",
   "stock_adjustment_lines",
   "sensitive_drugs",
+  "controlled_drug_register",
 ] as const;

@@ -645,6 +645,20 @@
       "when": 1794817173270,
       "tag": "0091_stock_guards",
       "breakpoints": true
+    },
+    {
+      "idx": 92,
+      "version": "7",
+      "when": 1794820756729,
+      "tag": "0092_controlled_register",
+      "breakpoints": true
+    },
+    {
+      "idx": 93,
+      "version": "7",
+      "when": 1794820761563,
+      "tag": "0093_controlled_register_rls",
+      "breakpoints": true
     }
   ]
 }
