@@ -50,7 +50,7 @@ export class StockAdjustmentError extends Error {
       controlled_dispenser: "A controlled drug is adjusted by a pharmacist with a pharmacy licence",
       not_pending: "This adjustment has already been decided",
       same_person: "Someone other than whoever asked for it decides it",
-      counted_it: "A stock take's correction is approved by someone who counted none of it",
+      counted_it: "A stock take's correction is approved by someone whose count is on none of its lines",
       not_requester: "Only whoever asked for it may withdraw it",
       value_too_large: "That line is worth more than one adjustment records; split it",
       store_retired: "That store has been retired since this was asked for",
@@ -157,7 +157,8 @@ export async function approveStockAdjustment(tx: AppDb, facilityId: string, id: 
   if (adjustment.requestedBy === actor.membershipId)
     throw new StockAdjustmentError("same_person");
   // A stock take's correction is another's to approve than whoever counted it, as well as whoever submitted it
-  // (P4 slice 5, point 5). Its lines are final once submitted, so who counted them is settled.
+  // (P4 slice 5, point 5): whoever's count stands on a line. A recount replaces the count and its counter, so
+  // no figure in the correction is the earlier counter's. Lines are final once submitted, so this is settled.
   const [counted] = await tx
     .select({ id: stockTakeLines.id })
     .from(stockTakeLines)

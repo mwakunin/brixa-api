@@ -99,15 +99,6 @@ export async function openStockTake(tx: AppDb, facilityId: string, input: { stor
     if (found.length !== new Set(itemIds).size)
       throw new StockTakeError("item_not_found");
   }
-  const onHand = sql<string>`sum(${stockMovements.quantity})`;
-  const held = await tx
-    .select({ batchId: stockMovements.batchId })
-    .from(stockMovements)
-    .innerJoin(stockBatches, eq(stockBatches.id, stockMovements.batchId))
-    .where(and(eq(stockMovements.storeId, store.id), itemIds ? inArray(stockBatches.stockItemId, itemIds) : undefined))
-    .groupBy(stockMovements.batchId)
-    .having(sql`${onHand} <> 0`);
-
   let take: TakeRow;
   try {
     [take] = await tx.insert(stockTakes).values({
@@ -135,6 +126,15 @@ export async function openStockTake(tx: AppDb, facilityId: string, input: { stor
     .limit(1);
   if (waiting)
     throw new StockTakeError("correction_pending");
+  // The sheet, read once no correction waits: one approved a moment ago has moved its stock already.
+  const onHand = sql<string>`sum(${stockMovements.quantity})`;
+  const held = await tx
+    .select({ batchId: stockMovements.batchId })
+    .from(stockMovements)
+    .innerJoin(stockBatches, eq(stockBatches.id, stockMovements.batchId))
+    .where(and(eq(stockMovements.storeId, store.id), itemIds ? inArray(stockBatches.stockItemId, itemIds) : undefined))
+    .groupBy(stockMovements.batchId)
+    .having(sql`${onHand} <> 0`);
   if (held.length > 0)
     await tx.insert(stockTakeLines).values(held.map(h => ({ facilityId, stockTakeId: take.id, batchId: h.batchId })));
   await recordAudit(tx, { facilityId, actorId: actor.userId, action: "stock_take.opened", entityType: "stock_take", entityId: take.id, summary: `Opened stock take ${take.number} of ${store.name}`, detail: { storeId: store.id, scope: take.scope, lines: held.length } });

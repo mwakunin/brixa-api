@@ -43,7 +43,7 @@ export type StockItemErrorCode
 
 export class StockItemError extends Error {
   /** `unit`: the drug's base unit here, for `base_unit_differs`. */
-  constructor(readonly code: StockItemErrorCode, unit?: string) {
+  constructor(readonly code: StockItemErrorCode, unit?: string, options?: ErrorOptions) {
     super({
       not_found: "No such stock item",
       not_a_stock_item: "That item is not an active drug or consumable item",
@@ -53,7 +53,7 @@ export class StockItemError extends Error {
       drug_not_found: "No such drug in the catalogue, or it is retired",
       base_unit_differs: `This drug is kept on the controlled-drug register, counted in ${unit ?? "another unit"} here: count this item in it too, so its register adds like for like`,
       holds_stock: "Some of this item is still in stock; use it up, move it or write it off before retiring the item",
-    }[code]);
+    }[code], options);
     this.name = "StockItemError";
   }
 }
@@ -111,7 +111,7 @@ export async function createStockItem(tx: AppDb, facilityId: string, input: Stoc
       throw new StockItemError("already_a_stock_item");
     // Another item of the drug, in another unit, set up meanwhile.
     if (pgConstraintName(err) === "stock_items_one_unit_per_drug")
-      throw new StockItemError("base_unit_differs");
+      throw new StockItemError("base_unit_differs", undefined, { cause: err });
     throw err;
   }
 

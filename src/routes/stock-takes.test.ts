@@ -231,6 +231,27 @@ describe("a stock take", () => {
     expect((await call("GET", `/stock-takes/${ofPharmacy.id}`, h.facility.id, h.auditor)).status).toBe(200);
   });
 
+  it("lists on its sheet a batch that the last correction, approved as the count was opened, brought into the store", async () => {
+    // Five of main store's batch turn up on the pharmacy's shelf: none in its ledger until the correction is approved.
+    const other = await created(await post("/goods-received", storekeeper, { storeId: main, supplier: "MEDS", lines: [{ stockItemId: paracetamol, batchNumber: "M1", expiresOn: inDays(200), units: 50, totalCostCents: 5000 }] }));
+    const found = other.items[0].batchId as string;
+    const first = await created(await post("/stock-takes", storekeeper, { storeId: pharmacy }));
+    await count(first.id, [{ batchId: p1, quantity: 3000 }, { batchId: found, quantity: 5 }]);
+    const submitted = await (await post(`/stock-takes/${first.id}/submit`, storekeeper)).json();
+
+    let opening: Promise<Response> | undefined;
+    await db.transaction(async (holder) => {
+      // The next count waits for its number, and the correction is approved meanwhile.
+      await holder.execute(sql`SELECT 1 FROM number_series_counters c JOIN number_series s ON s.id = c.series_id WHERE s.facility_id = ${h.facility.id} AND s.kind = 'stock_take' FOR UPDATE OF c`);
+      opening = post("/stock-takes", storekeeper, { storeId: pharmacy });
+      expect(await waitForBlockedBackend(await backendPid(holder))).toBe(true);
+      expect((await post(`/stock-adjustments/${submitted.adjustmentId}/approve`, h.finance)).status).toBe(200);
+    });
+
+    const second = await created(await opening!);
+    expect(second.lines.map((l: { batchId: string }) => l.batchId).sort()).toEqual([p1, found].sort());
+  });
+
   it("never keeps a count without what was expected beside it", async () => {
     const take = await created(await post("/stock-takes", storekeeper, { storeId: pharmacy }));
     await count(take.id, [{ batchId: p1, quantity: 2990 }]);

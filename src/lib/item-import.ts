@@ -38,8 +38,8 @@ const PRICE_SHAPE = /^\d{1,7}(?:\.\d{1,2})?$/;
 const MAX_PACK_SIZE = 1_000_000;
 
 export class ItemImportError extends Error {
-  constructor(readonly code: "unreadable" | "has_problems" | "changed_meanwhile", message: string, readonly rows?: PlannedRow[]) {
-    super(message);
+  constructor(readonly code: "unreadable" | "has_problems" | "changed_meanwhile", message: string, readonly rows?: PlannedRow[], options?: ErrorOptions) {
+    super(message, options);
     this.name = "ItemImportError";
   }
 }
@@ -345,7 +345,7 @@ async function writeItems(tx: AppDb, facilityId: string, rows: { planned: Planne
   catch (err) {
     // A hand-made item took one of these codes, or counted one of these drugs in another unit, after the plan was read.
     if (isUniqueViolation(err) || pgConstraintName(err) === "stock_items_one_unit_per_drug")
-      throw new ItemImportError("changed_meanwhile", "An item in this file was set up by someone else meanwhile; preview it again");
+      throw new ItemImportError("changed_meanwhile", "An item in this file was set up by someone else meanwhile; preview it again", undefined, { cause: err });
     throw err;
   }
   return idOf;
