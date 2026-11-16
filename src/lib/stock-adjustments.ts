@@ -34,7 +34,8 @@ export type StockAdjustmentErrorCode
     | "not_pending"
     | "same_person"
     | "not_requester"
-    | "value_too_large";
+    | "value_too_large"
+    | "store_retired";
 
 export class StockAdjustmentError extends Error {
   constructor(readonly code: StockAdjustmentErrorCode, readonly line?: number) {
@@ -50,6 +51,7 @@ export class StockAdjustmentError extends Error {
       same_person: "Someone other than whoever asked for it decides it",
       not_requester: "Only whoever asked for it may withdraw it",
       value_too_large: "That line is worth more than one adjustment records; split it",
+      store_retired: "That store has been retired since this was asked for",
     }[code]}`);
     this.name = "StockAdjustmentError";
   }
@@ -152,6 +154,10 @@ export async function approveStockAdjustment(tx: AppDb, facilityId: string, id: 
   const adjustment = await lockPending(tx, id);
   if (adjustment.requestedBy === actor.membershipId)
     throw new StockAdjustmentError("same_person");
+  // Held shared, as a delivery or transfer holds it, so the store is not retired while stock moves into it.
+  const [store] = await tx.select({ isActive: stores.isActive }).from(stores).where(eq(stores.id, adjustment.storeId)).for("share");
+  if (!store.isActive)
+    throw new StockAdjustmentError("store_retired");
   const lines = await tx.select().from(stockAdjustmentLines).where(eq(stockAdjustmentLines.adjustmentId, id)).orderBy(asc(stockAdjustmentLines.id));
   await lockBatches(tx, facilityId, lines.map(l => l.batchId));
   const facts = await batchFacts(tx, adjustment.storeId, lines.map(l => l.batchId));

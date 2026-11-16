@@ -41,7 +41,8 @@ const DirectBodySchema = z.strictObject({ fromStoreId: z.uuid(), toStoreId: z.uu
 const ReceiveBodySchema = z.strictObject({
   /** What arrived of each batch; one not named arrived whole. */
   // As many as a transfer carries (`MAX_TRANSFER_BATCHES`), so each batch's loss can be recorded.
-  received: z.array(z.strictObject({ batchId: z.uuid(), quantity: z.number().int().min(0).max(100_000_000) })).max(MAX_TRANSFER_BATCHES).refine(r => new Set(r.map(x => lower(x.batchId))).size === r.length, "Each batch once").optional(),
+  // Up to what a batch's row holds: two lines of one batch are sent as one.
+  received: z.array(z.strictObject({ batchId: z.uuid(), quantity: z.number().int().min(0).max(2_147_483_647) })).max(MAX_TRANSFER_BATCHES).refine(r => new Set(r.map(x => lower(x.batchId))).size === r.length, "Each batch once").optional(),
   /** Needed when less arrived than was sent. */
   shortfallReason: ReasonSchema.optional(),
 });

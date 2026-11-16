@@ -25,11 +25,15 @@ const ReturnSchema = z.object({
   id: z.uuid(),
   dispenseLineId: z.uuid(),
   encounterId: z.uuid(),
+  /** Outside the pharmacy, a sensitive medicine's is masked as `-`. */
   code: z.string(),
   name: z.string(),
   quantity: z.number(),
+  /** Outside the pharmacy, a sensitive medicine's is not shown. */
   reason: z.string(),
   fitForResale: z.boolean(),
+  /** A medicine the facility marked sensitive: outside the pharmacy, named as bills name it. */
+  sensitive: z.boolean(),
   /** `done` once the patient is credited; an unfit one `pending` a second person. */
   status: z.enum(["done", "pending", "rejected"]),
   receivedAt: z.string(),

@@ -164,6 +164,32 @@ describe("a patient's return", () => {
     expect((await giveBack(lineId, { quantity: 1, reason: "Back", fitForResale: true }, h.nurse)).status).toBe(403);
     expect((await giveBack(lineId, { quantity: 1, reason: "Back", fitForResale: true }, pharmTech)).status).toBe(201);
     expect((await giveBack(randomUUID(), { quantity: 1, reason: "Back", fitForResale: true })).status).toBe(404);
+
+    // Morphine, a controlled drug: a pharmacy technician cannot take it back.
+    const morphineItem = (await created(await post("/billable-items", h.admin, { code: "MOR-10", name: "Morphine", category: "drug" }))).id;
+    const change = await (await post("/price-changes", h.admin, { effectiveFrom: businessDate(), reason: "Tariff", lines: [{ billableItemId: morphineItem, unitPriceCents: 10_000 }] })).json();
+    await post(`/price-changes/${change.id}/approve`, h.finance);
+    const morphine = (await created(await post("/stock-items", h.admin, { billableItemId: morphineItem, drugCode: "MOR-10-INJ", baseUnit: "mL", packSize: 1 }))).id;
+    await created(await post("/goods-received", storekeeper, { storeId: pharmacy, supplier: "MEDS", lines: [{ stockItemId: morphine, batchNumber: "M1", expiresOn: inDays(300), units: 20, totalCostCents: 2000 }] }));
+    const visit = await created(await post("/encounters", h.nurse, { patientId: await h.patient(), kind: "opd" }));
+    const order = await created(await post(`/encounters/${visit.id}/prescriptions`, doctor, { items: [{ drugCode: "MOR-10-INJ", doseAmount: "2", frequency: "stat" }] }));
+    const dispense = await created(await post("/dispenses", pharmacist, { orderId: order.id, lines: [{ orderItemId: order.items[0].id, stockItemId: morphine }] }));
+    await post(`/dispenses/${dispense.id}/hand-over`, pharmacist);
+
+    expect(await refusal(await giveBack(dispense.lines[0].id, { quantity: 1, reason: "Not used", fitForResale: true }, pharmTech), 403)).toBe("controlled_dispenser");
+    expect((await giveBack(dispense.lines[0].id, { quantity: 1, reason: "Not used", fitForResale: true }, pharmacist)).status).toBe(201);
+  });
+
+  it("names a sensitive medicine outside the pharmacy as bills name it, and keeps why it came back", async () => {
+    const { lineId } = await handedOver();
+    expect((await call("PUT", "/sensitive-drugs", h.facility.id, h.admin, { drugCode: "PCM-500-TAB", category: "hiv" })).status).toBe(200);
+    await created(await giveBack(lineId, { quantity: 5, reason: "Side effects", fitForResale: true }));
+
+    const seen = async (who: StaffMember) => (await (await call("GET", "/dispense-returns", h.facility.id, who)).json()).returns[0];
+
+    // Its code is masked too: a code can name a medicine as well as its name can.
+    expect(await seen(h.finance)).toMatchObject({ sensitive: true, code: "-", name: "Medicine", reason: "Not shown: a sensitive medicine" });
+    expect(await seen(pharmTech)).toMatchObject({ sensitive: true, name: "PCM-500", reason: "Side effects" });
   });
 });
 
@@ -184,6 +210,15 @@ describe("a stock adjustment", () => {
     expect(approved.status).toBe("approved");
     expect(await shelf()).toBe(3000);
     expect(await refusal(await post(`/stock-adjustments/${asked.id}/approve`, h.finance))).toBe("not_pending");
+  });
+
+  it("puts found stock into no store retired since it was asked for", async () => {
+    const lost = await created(await ask({ storeId: pharmacy, kind: "lost", reason: "Stolen", lines: [{ batchId: p1, quantity: -3000 }] }));
+    await post(`/stock-adjustments/${lost.id}/approve`, h.finance);
+    const found = await created(await ask({ storeId: pharmacy, kind: "found", reason: "Behind the shelf", lines: [{ batchId: p1, quantity: 5 }] }));
+    expect((await call("PATCH", `/stores/${pharmacy}`, h.facility.id, h.admin, { isActive: false })).status).toBe(200);
+
+    expect(await refusal(await post(`/stock-adjustments/${found.id}/approve`, h.finance))).toBe("store_retired");
   });
 
   it("refuses a line worth more than one adjustment records", async () => {
@@ -216,6 +251,9 @@ describe("a stock adjustment", () => {
     expect((await (await post(`/stock-adjustments/${two.id}/withdraw`, storekeeper)).json()).status).toBe("withdrawn");
 
     const err = await db.execute(sql`UPDATE stock_adjustments SET status = 'approved', decided_by = requested_by, decided_at = now() WHERE id = ${two.id}`).then(() => null, (e: unknown) => e);
+    // Nor is a line added to an adjustment once it is decided.
+    const line = await db.execute(sql`INSERT INTO stock_adjustment_lines (facility_id, adjustment_id, batch_id, quantity, value_cents) VALUES (${h.facility.id}, ${one.id}, ${p1}, -1, -100)`).then(() => null, (e: unknown) => e);
+    expect(pgErrorCode(line)).toBe("23001");
     // Withdrawn is decided: nothing changes it, not even the owner.
     expect(pgErrorCode(err)).toBe("23001");
     const undo = await db.execute(sql`UPDATE stock_adjustments SET status = 'rejected' WHERE id = ${one.id}`).then(() => null, (e: unknown) => e);
