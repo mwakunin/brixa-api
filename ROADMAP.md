@@ -190,7 +190,7 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
 
 **Size:** L.
 
-Main store, pharmacy and ward sub-stores; transfers; goods received; batches and FEFO dispensing; dispense → charge; returns; the controlled-drug register; stock take; reorder levels; expiry and low-stock alerts (the nightly job in `CLAUDE.md` §7). Drugs are dispensed per tablet: stock is counted in a base unit (decided 2026-11-15, `SPEC.md` §4, question 2).
+Main store, pharmacy and ward sub-stores; transfers; goods received; batches and FEFO dispensing; dispense → charge; returns; the controlled-drug register; stock take; reorder levels; expiry and low-stock alerts (computed when read, slice 6). Drugs are dispensed per tablet: stock is counted in a base unit (decided 2026-11-15, `SPEC.md` §4, question 2).
 
 **Exit:**
 - The stock identity holds per store and batch (on hand = Σ movements, never negative).
@@ -303,13 +303,21 @@ Main store, pharmacy and ward sub-stores; transfers; goods received; batches and
 **Slice 5, stock take** (decided 2026-11-16, as recommended; question 9 applied):
 1. **The count sheet** lists every batch the store holds of the items counted (the whole store, or chosen items); the counter may add another of the facility's batches found on the shelf.
 2. **Blind:** the counter never sees what is expected; once the count is submitted, anyone who reads stock takes does.
-3. **Each line records when it was counted**; what is expected is every movement up to that moment, so stock moving during the count does not skew it.
+3. **Each line records when it was counted**; what is expected is every movement committed at that moment, read as the count is recorded, so stock moving during the count does not skew it (refined 2026-11-16 after CodeRabbit on #22: a timestamp cutoff counted a movement still open at the count).
 4. **Every line is counted** (zero allowed) before the count is submitted.
 5. **Submitting raises one stock adjustment** (`correction`) for the differences, linked to the stock take, for the finance manager or a pharmacist other than the counter to approve. Each line moves by its difference, so it stays right though stock moves before approval.
 6. **Who counts:** storekeepers, pharmacists and pharmacy technicians; nurses for a ward's store only.
 7. **A count with a controlled drug** is submitted by a pharmacist with a pharmacy licence, as such an adjustment is asked for.
 8. **Expired batches are counted**; writing them off is its own adjustment.
-9. **One open count per store**, numbered from a yearly `STK-` series.
+9. **One open count per store**, numbered from a yearly `STK-` series. None opens while the store's last correction waits (added 2026-11-16 after CodeRabbit on #22), as it would ask for the same difference again.
+
+**Slice 6, alerts and the exit** (decided 2026-11-16, as recommended; question 10 applied):
+1. **Computed when read, not by a nightly job.** `GET /stock-alerts` works the list out from the ledger each time it is opened, so it is never a night behind and holds no state. The "Expiry scan, low stock" job in `CLAUDE.md` §7 is dropped; a nightly SMS or email of the list can come later through the outbox if a pilot asks.
+2. **Three lists:** batches past their expiry still held, to write off; batches expiring within 90 days; and items **strictly below** their store's reorder level, so a level of nought flags nothing. An item a store holds none of is flagged when it has a level there.
+3. **Stock in transit** to a store (sent, not received) is shown beside a low item, not counted towards it: it is not on the shelf yet.
+4. **No dismissing:** an alert lasts while its cause does. Writing a batch off, moving it, or restocking clears it.
+5. **Read by** stock readers (the facility admin, pharmacists, pharmacy technicians, storekeepers, the finance manager and the auditor), per store or for all. They hold no patient data, so reads are not audited.
+6. **The exit:** the OPD journey test takes Amina's prescription through the pharmacy (prepared, paid, handed over) in place of "not supplied". A scripted pharmacy test checks, for every store and batch, that on hand is the sum of movements and never negative, and that every controlled-drug register page balances. The certification pack's clinical functions gain the pharmacy.
 
 ### P5 · Inpatient clinical
 

@@ -7,10 +7,11 @@ import type { Hospital, StaffMember } from "@/test/hospital";
 
 import app from "@/app";
 import db from "@/db";
-import { auditLog, charges, encounters, mpesaSettings } from "@/db/schema";
+import { auditLog, charges, encounters, mpesaSettings, stockMovements } from "@/db/schema";
 import { runAsFacility } from "@/db/tenant-transaction";
 import { closeFinishedVisits } from "@/jobs/visits";
 import { darajaTimestamp } from "@/lib/daraja";
+import { addDays } from "@/lib/dates";
 import { loadDrugCatalogue } from "@/lib/drug-catalogue-load";
 import { loadIcd11 } from "@/lib/icd11-load";
 import { reconcile } from "@/lib/reconciliation";
@@ -18,12 +19,13 @@ import { addMembership, resetDb, signedInUser } from "@/test/helpers";
 import { call, hospital, TODAY } from "@/test/hospital";
 
 /**
- * The P3 exit (ROADMAP.md P3, slice 8): a day's outpatients, through the API
- * as the staff app would drive it, with no charge posted by hand and the
- * money reconciling at the end. Dispensing joins in P4.
+ * The P3 exit (ROADMAP.md P3, slice 8), taken through the pharmacy as P4's
+ * (slice 6): a day's outpatients, through the API as the staff app would
+ * drive it, with no charge posted by hand and the money reconciling at the end.
  *
  * - Amina pays as she goes, in cash: registration, triage, the clinic, a
- *   lab test, the clinic again with her result, and a printed prescription.
+ *   lab test, the clinic again with her result, a printed prescription, and
+ *   her medicine from the pharmacy.
  * - Baraka comes on an appointment and pays the final bill by M-Pesa paybill.
  * - Chebet is a walk-in for the lab, sent by an outside doctor.
  */
@@ -37,6 +39,9 @@ let supervisor: StaffMember;
 let pharmacist: StaffMember;
 let gopd: string;
 let mrdt: { testId: string; analyteId: string };
+let pharmacy: string;
+/** Artemether/lumefantrine 20/120 mg, at KES 25 a tablet. */
+let coartem: string;
 let token: string;
 
 async function staff(roles: Parameters<typeof addMembership>[2]): Promise<StaffMember> {
@@ -64,12 +69,13 @@ beforeEach(async () => {
   supervisor = await staff(["lab_supervisor"]);
   pharmacist = await staff(["pharmacist"]);
 
-  // The facility's set-up: a triage desk, a clinic with its fee, a malaria test, M-Pesa and the cashier's shift.
+  // The facility's set-up: a triage desk, a clinic with its fee, a malaria test, a stocked pharmacy, M-Pesa and the cashier's shift.
   await api("POST", "/service-points", h.admin, { name: "Triage", kind: "triage" });
   gopd = (await api("POST", "/service-points", h.admin, { name: "General OPD", kind: "consultation" })).id;
   await api("PATCH", `/service-points/${gopd}`, h.admin, { consultationItemId: h.items.consultation });
   const item = (await api("POST", "/billable-items", h.admin, { code: "MRDT", name: "Malaria rapid test", category: "lab" })).id;
-  const change = await api("POST", "/price-changes", h.admin, { effectiveFrom: TODAY, reason: "Tariff", lines: [{ billableItemId: item, unitPriceCents: 30_000 }] });
+  const tablets = (await api("POST", "/billable-items", h.admin, { code: "AL-24", name: "Artemether/lumefantrine 20/120 mg", category: "drug" })).id;
+  const change = await api("POST", "/price-changes", h.admin, { effectiveFrom: TODAY, reason: "Tariff", lines: [{ billableItemId: item, unitPriceCents: 30_000 }, { billableItemId: tablets, unitPriceCents: 2_500 }] });
   await api("POST", `/price-changes/${change.id}/approve`, h.finance);
   const test = await api("POST", "/lab-tests", h.admin, {
     billableItemId: item,
@@ -77,6 +83,9 @@ beforeEach(async () => {
     analytes: [{ code: "MPS", name: "Malaria parasites", resultType: "choice", choices: ["Negative", "Positive"], abnormalChoices: ["Positive"] }],
   });
   mrdt = { testId: test.id, analyteId: test.analytes[0].id };
+  pharmacy = (await api("POST", "/stores", h.admin, { name: "Pharmacy", kind: "pharmacy" }, 201)).id;
+  coartem = (await api("POST", "/stock-items", h.admin, { billableItemId: tablets, drugCode: "AL-20/120-TAB", baseUnit: "tablet", packSize: 24 }, 201)).id;
+  await api("POST", "/goods-received", pharmacist, { storeId: pharmacy, supplier: "KEMSA", lines: [{ stockItemId: coartem, batchNumber: "AL1", expiresOn: addDays(TODAY, 365), units: 240, totalCostCents: 120_000 }] }, 201);
   await api("PUT", "/mpesa/settings", h.admin, { shortcode: "600123", consumerKey: "consumer-key-1", consumerSecret: "consumer-secret-1", passkey: "stk-passkey-1" });
   [{ callbackToken: token }] = await db.select({ callbackToken: mpesaSettings.callbackToken }).from(mpesaSettings);
   await api("POST", "/cashier-shifts", h.cashier, { openingFloatCents: 0 });
@@ -138,7 +147,7 @@ function paybill(transId: string, reference: string, amountCents: number) {
   });
 }
 
-describe("a day's outpatients (the P3 exit)", () => {
+describe("a day's outpatients (the P3 exit, through the pharmacy for P4's)", () => {
   it("runs registration to cashier with no charge posted by hand, and reconciles", async () => {
     // --- Amina: pays as she goes, in cash ---
     const amina = await register("Amina");
@@ -177,9 +186,14 @@ describe("a day's outpatients (the P3 exit)", () => {
     const printed = await call("GET", `/documents/${prescription.prescription.documentId}/pdf`, h.facility.id, doctor);
     expect([printed.status, printed.headers.get("content-type")]).toEqual([200, "application/pdf"]);
     await api("POST", `/queue-entries/${entry}/finish`, doctor, {});
-    // The pharmacy does not stock it, so she takes the paper elsewhere; marked so, her visit can close
-    // (P4 slice 3a). P4's own exit takes the journey through the pharmacy.
-    expect((await call("POST", `/order-items/${prescription.items[0].id}/not-supplied`, h.facility.id, pharmacist, { reason: "buying_elsewhere" })).status).toBe(204);
+    // The pharmacy prepares it from its own stock, which charges it: 24 tablets at KES 25.
+    const waiting = await api("GET", "/pharmacy/worklist", pharmacist);
+    expect(waiting.waiting).toEqual([expect.objectContaining({ orderId: prescription.id, medicines: [expect.objectContaining({ quantity: 24 })] })]);
+    const dispense = await api("POST", "/dispenses", pharmacist, { orderId: prescription.id, storeId: pharmacy, lines: [{ orderItemId: prescription.items[0].id, stockItemId: coartem }] }, 201);
+    expect(dispense).toMatchObject({ unpaid: true, lines: [expect.objectContaining({ quantity: 24, amountCents: 60_000, batches: [expect.objectContaining({ batchNumber: "AL1" })] })] });
+    // She pays at the cashier, and the pharmacist hands it over.
+    expect(await paysCash(amina, aminaVisit)).toBe(60_000);
+    expect(await api("POST", `/dispenses/${dispense.id}/hand-over`, pharmacist)).toMatchObject({ status: "handed_over", unpaid: false });
 
     // --- Baraka: on an appointment, billed at the end, pays by paybill ---
     const baraka = await register("Baraka");
@@ -215,20 +229,25 @@ describe("a day's outpatients (the P3 exit)", () => {
 
     // Every charge came from the work that was done: none was posted by hand.
     const raised = await db.select().from(charges).where(eq(charges.facilityId, h.facility.id));
-    // Two clinic fees and two tests.
-    expect(raised).toHaveLength(4);
+    // Two clinic fees, two tests and a medicine.
+    expect(raised).toHaveLength(5);
     expect(raised.filter(ch => ch.manualReason !== null)).toEqual([]);
-    expect(raised.every(ch => (ch.queueEntryId === null) !== (ch.orderItemId === null))).toBe(true);
+    expect(raised.every(ch => [ch.queueEntryId, ch.orderItemId, ch.dispenseLineId].filter(Boolean).length === 1)).toBe(true);
+    // The pharmacy holds what it received less what it handed over, as its ledger says.
+    const shelf = (await api("GET", `/stores/${pharmacy}/stock`, h.finance)).items;
+    expect(shelf).toEqual([expect.objectContaining({ stockItemId: coartem, onHand: 216 })]);
+    const ledger = await db.select({ quantity: stockMovements.quantity }).from(stockMovements).where(eq(stockMovements.storeId, pharmacy));
+    expect(ledger.reduce((sum, m) => sum + m.quantity, 0)).toBe(216);
 
     // The money reconciles (M7): all charged is billed, all received is applied.
     const { totals, drift } = await runAsFacility(h.facility.id, tx => reconcile(tx));
     expect(drift).toEqual([]);
     expect(totals).toEqual({
-      chargedCents: 160_000,
-      invoicedCents: 160_000,
+      chargedCents: 220_000,
+      invoicedCents: 220_000,
       adjustedCents: 0,
-      receivedCents: 160_000,
-      allocatedCents: 160_000,
+      receivedCents: 220_000,
+      allocatedCents: 220_000,
       refundedCents: 0,
       creditCents: 0,
       owedCents: 0,

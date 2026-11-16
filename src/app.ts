@@ -39,6 +39,7 @@ import sensitiveDrugs from "@/routes/sensitive-drugs/sensitive-drugs.index";
 import shifts from "@/routes/shifts/shifts.index";
 import staff from "@/routes/staff/staff.index";
 import stockAdjustments from "@/routes/stock-adjustments/stock-adjustments.index";
+import stockAlerts from "@/routes/stock-alerts/stock-alerts.index";
 import stockItems from "@/routes/stock-items/stock-items.index";
 import stockTakes from "@/routes/stock-takes/stock-takes.index";
 import stockTransfers from "@/routes/stock-transfers/stock-transfers.index";
@@ -120,6 +121,7 @@ const tenantRoutes = [
   sensitiveDrugs,
   controlledRegister,
   stockTakes,
+  stockAlerts,
   wards,
   prices,
   charges,

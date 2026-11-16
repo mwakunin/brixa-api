@@ -974,6 +974,16 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 - **Final in the database:** a count submitted or cancelled never changes, and its lines change only while it is open, for every role (`stock_takes_final`, `stock_take_lines_while_counting`). A line never changes count or batch (migration 0097).
 - **Who:** storekeepers, pharmacists and pharmacy technicians count, and nurses a ward's store only. Stock readers and ward nurses read counts, which hold no patient data and are not audited when read.
 
+**As built (P4, slice 6): alerts and the exit.** Decided 2026-11-16 (`ROADMAP.md` P4, slice 6; question 10). No table: `src/lib/stock-alerts.ts` works the alerts out from the ledger when read, so there is no nightly scan (`CLAUDE.md` §7) and nothing to dismiss.
+
+- **`GET /stock-alerts`**, for every store or `?storeId=` for one (404 if it isn't there), answers three lists:
+  - `expired`: batches past their last good day and still held, to write off;
+  - `expiring`: batches within 90 days of it (`EXPIRY_WARNING_DAYS`, the window goods received warns with), earliest first, each with `daysLeft`;
+  - `belowReorder`: items strictly below their store's reorder level, so a level of nought flags nothing, an item the store holds none of included. Retired stores and items are left out. Each shows `inTransit`, what has been sent to the store and not received, beside `onHand` rather than in it.
+- An alert lasts while its cause does: writing a batch off (once approved), moving it or restocking clears it.
+- **Who:** stock readers. The lists name no patient, so reads are not audited.
+- **The exit:** `src/routes/opd-journey.test.ts` now takes a prescription through the pharmacy (prepared, paid, handed over), with every charge from its source and the money reconciling. `src/routes/pharmacy-exit.test.ts` scripts deliveries, transfers to the pharmacy and a ward, dispensing with a cancellation and a return, a write-off and a stock take. It then checks every store and batch: on hand is the sum of its movements and never below nought, each controlled-drug page balances, the daily reconciliation finds no drift, and the alerts flag the batch near its expiry and the item below its level.
+
 ---
 
 ## 9. Payers and claims
