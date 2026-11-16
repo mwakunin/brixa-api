@@ -302,7 +302,7 @@ Main store, pharmacy and ward sub-stores; transfers; goods received; batches and
 
 **Slice 5, stock take** (decided 2026-11-16, as recommended; question 9 applied):
 1. **The count sheet** lists every batch the store holds of the items counted (the whole store, or chosen items); the counter may add another of the facility's batches found on the shelf.
-2. **Blind:** the counter never sees what is expected; once the count is submitted, anyone who reads stock takes does.
+2. **Blind:** the counter never sees what is expected; once the count is submitted, anyone who reads stock takes does. A nurse reads the counts of ward stores only (refined 2026-11-17 after CodeRabbit on #22).
 3. **Each line records when it was counted**; what is expected is every movement committed at that moment, read as the count is recorded, so stock moving during the count does not skew it (refined 2026-11-16 after CodeRabbit on #22: a timestamp cutoff counted a movement still open at the count).
 4. **Every line is counted** (zero allowed) before the count is submitted.
 5. **Submitting raises one stock adjustment** (`correction`) for the differences, linked to the stock take, for the finance manager or a pharmacist other than the counter to approve. Each line moves by its difference, so it stays right though stock moves before approval.

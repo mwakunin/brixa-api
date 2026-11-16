@@ -164,8 +164,8 @@ describe("a stock take", () => {
     expect(await refusal(await count(take.id, [{ batchId: p1, quantity: 1 }]))).toBe("not_counting");
 
     const next = await created(await post("/stock-takes", storekeeper, { storeId: pharmacy }));
-    await count(next.id, [{ batchId: p1, quantity: 3000 }]);
-    await post(`/stock-takes/${next.id}/submit`, storekeeper);
+    expect((await count(next.id, [{ batchId: p1, quantity: 3000 }])).status).toBe(200);
+    expect((await post(`/stock-takes/${next.id}/submit`, storekeeper)).status).toBe(200);
     const edit = await db.execute(sql`UPDATE stock_take_lines SET counted_quantity = 1 WHERE stock_take_id = ${next.id}`).then(() => null, (e: unknown) => e);
     expect(pgErrorCode(edit)).toBe("23001");
     const reopen = await db.execute(sql`UPDATE stock_takes SET status = 'counting', submitted_by = NULL, submitted_at = NULL WHERE id = ${next.id}`).then(() => null, (e: unknown) => e);
@@ -200,6 +200,35 @@ describe("a stock take", () => {
     });
 
     expect(pgErrorCode(await write)).toBe("23001");
+  });
+
+  it("has its correction approved by someone who neither submitted nor counted it", async () => {
+    const take = await created(await post("/stock-takes", storekeeper, { storeId: pharmacy }));
+    // The pharmacist counts; the storekeeper submits.
+    await count(take.id, [{ batchId: p1, quantity: 2990 }], pharmacist);
+    const submitted = await (await post(`/stock-takes/${take.id}/submit`, storekeeper)).json();
+
+    expect(await refusal(await post(`/stock-adjustments/${submitted.adjustmentId}/approve`, pharmacist), 403)).toBe("counted_it");
+    expect((await post(`/stock-adjustments/${submitted.adjustmentId}/approve`, h.finance)).status).toBe(200);
+    expect(await shelf()).toBe(2990);
+  });
+
+  it("is read by a nurse only when it is of a ward's store", async () => {
+    const wardStore = (await created(await post("/stores", h.admin, { name: "Ward 1", kind: "ward" }))).id;
+    const nurse = await staff(["ward_nurse"]);
+    const ofWard = await created(await post("/stock-takes", nurse, { storeId: wardStore }));
+    const ofPharmacy = await created(await post("/stock-takes", storekeeper, { storeId: pharmacy }));
+    await count(ofPharmacy.id, [{ batchId: p1, quantity: 3000 }]);
+    await post(`/stock-takes/${ofPharmacy.id}/submit`, storekeeper);
+    const listed = async (who: StaffMember, query = "") => (await (await call("GET", `/stock-takes${query}`, h.facility.id, who)).json()).takes.map((t: { id: string }) => t.id);
+
+    // The pharmacy's count shows what it holds, which a nurse does not otherwise read.
+    expect(await listed(nurse)).toEqual([ofWard.id]);
+    expect(await listed(nurse, `?storeId=${pharmacy}`)).toEqual([]);
+    expect((await call("GET", `/stock-takes/${ofPharmacy.id}`, h.facility.id, nurse)).status).toBe(404);
+    expect((await call("GET", `/stock-takes/${ofWard.id}`, h.facility.id, nurse)).status).toBe(200);
+    expect((await listed(h.auditor)).sort()).toEqual([ofWard.id, ofPharmacy.id].sort());
+    expect((await call("GET", `/stock-takes/${ofPharmacy.id}`, h.facility.id, h.auditor)).status).toBe(200);
   });
 
   it("never keeps a count without what was expected beside it", async () => {

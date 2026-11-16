@@ -32,7 +32,7 @@ const takeJson = (t: ShownStockTake) => ({ ...listedJson(t), lines: t.lines.map(
 async function answer(c: Context<TenantBindings>, act: () => Promise<{ id: string }>, status: 200 | 201 = HttpStatusCodes.OK) {
   try {
     const { id } = await act();
-    return c.json(takeJson(await takes.stockTakeShown(c.var.db, id)), status);
+    return c.json(takeJson(await takes.stockTakeShown(c.var.db, id, actorOf(c))), status);
   }
   catch (err) {
     const refused = refusal(c, err);
@@ -49,7 +49,7 @@ export const openTake: TenantRouteHandler<OpenTakeRoute> = async (c) => {
 
 export const listTakes: TenantRouteHandler<ListTakesRoute> = async (c) => {
   const filter = c.req.valid("query");
-  return c.json({ takes: (await takes.listStockTakes(c.var.db, filter)).map(listedJson) }, HttpStatusCodes.OK);
+  return c.json({ takes: (await takes.listStockTakes(c.var.db, filter, actorOf(c))).map(listedJson) }, HttpStatusCodes.OK);
 };
 
 export const getTake: TenantRouteHandler<GetTakeRoute> = async (c) => {

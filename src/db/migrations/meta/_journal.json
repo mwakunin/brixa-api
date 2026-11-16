@@ -729,6 +729,13 @@
       "when": 1794857720724,
       "tag": "0103_one_unit_while_registered",
       "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "7",
+      "when": 1794861194465,
+      "tag": "0104_register_lock_per_store",
+      "breakpoints": true
     }
   ]
 }

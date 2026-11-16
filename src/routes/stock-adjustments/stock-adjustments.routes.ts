@@ -112,7 +112,7 @@ function decision(path: string, summary: string, description: string, middleware
   });
 }
 
-export const approveAdjustment = decision("/stock-adjustments/{id}/approve", "Approve a stock adjustment", "By someone other than its asker (rule 24); its batches move now.", approvers);
+export const approveAdjustment = decision("/stock-adjustments/{id}/approve", "Approve a stock adjustment", "By someone other than its asker (rule 24) and, for a stock take's correction, than anyone who counted it (`counted_it`); its batches move now.", approvers);
 export const rejectAdjustment = decision("/stock-adjustments/{id}/reject", "Reject a stock adjustment", "By someone other than its asker; nothing moves.", approvers);
 export const withdrawAdjustment = decision("/stock-adjustments/{id}/withdraw", "Withdraw a stock adjustment", "By its asker, while pending.", staff);
 

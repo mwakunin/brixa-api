@@ -13,6 +13,7 @@ import { pgErrorCode } from "@/lib/db-errors";
 import { loadDrugCatalogue } from "@/lib/drug-catalogue-load";
 import { receiveGoods } from "@/lib/goods-received";
 import { reconcile } from "@/lib/reconciliation";
+import { sendDirect } from "@/lib/transfers";
 import { addMembership, backendPid, resetDb, signedInUser, waitForBlockedBackend } from "@/test/helpers";
 import { call, hospital, TODAY } from "@/test/hospital";
 
@@ -213,6 +214,51 @@ describe("the controlled-drug register", () => {
     await receive(main, morphine, "M2", 5);
 
     expect((await page(main)).map(l => l.balance)).toEqual([10, 15]);
+  });
+
+  it("lets two movements of the same two drugs in a store, in opposite orders, both through: one waits for the other", async () => {
+    const ibuprofen = await stockItem("IBU-400", "IBU-400-TAB", "tablet");
+    await loadDrugCatalogue((await readFile(SAMPLE, "utf8")).replace("IBU-400-TAB,Ibuprofen,400 mg,Tablet,tablet,oral,", "IBU-400-TAB,Ibuprofen,400 mg,Tablet,tablet,oral,IV"));
+    await receive(main, morphine, "M1", 50);
+    await receive(main, ibuprofen, "I1", 40);
+    const sender = { ...storekeeper.actor, roles: ["storekeeper" as const] };
+    const send = (tx: Parameters<Parameters<typeof runAsFacility>[1]>[0], stockItemId: string) => sendDirect(tx, h.facility.id, { fromStoreId: main, toStoreId: pharmacy, lines: [{ stockItemId, quantity: 1 }] }, sender);
+    let release!: () => void;
+    const mayGoOn = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let ready!: () => void;
+    const started = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    let holderPid = 0;
+    // Morphine leaves, then ibuprofen, in one transaction...
+    const leaving = runAsFacility(h.facility.id, async (tx) => {
+      try {
+        await send(tx, morphine);
+        holderPid = await backendPid(tx);
+      }
+      finally {
+        ready();
+        await mayGoOn;
+      }
+      await send(tx, ibuprofen);
+    });
+    await started;
+
+    // ...while a delivery brings ibuprofen, then morphine.
+    const line = (stockItemId: string, batchNumber: string) => ({ stockItemId, batchNumber, expiresOn: inDays(300), units: 5, totalCostCents: 500 });
+    const arriving = runAsFacility(h.facility.id, tx => receiveGoods(tx, h.facility.id, { storeId: main, supplier: "KEMSA", lines: [line(ibuprofen, "I2"), line(morphine, "M2")] }, storekeeper.actor));
+    try {
+      expect(await waitForBlockedBackend(holderPid)).toBe(true);
+    }
+    finally {
+      release();
+    }
+
+    expect((await Promise.allSettled([leaving, arriving])).map(o => o.status)).toEqual(["fulfilled", "fulfilled"]);
+    expect((await page(main)).map(l => l.balance)).toEqual([50, 49, 54]);
+    expect((await page(main, "IBU-400-TAB")).map(l => l.balance)).toEqual([40, 39, 44]);
   });
 
   it("keeps a drug to one unit while it has a page, though no longer scheduled", async () => {

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, inArray, isNotNull, sql } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 
@@ -9,6 +9,7 @@ import type { DispenseActor } from "./dispensing";
 import { recordAudit } from "./audit";
 import { isUniqueViolation } from "./db-errors";
 import { mayGiveControlled } from "./dispensing";
+import { STOCK_READERS } from "./goods-received";
 import { issueNumber } from "./number-series";
 import { requestStockAdjustment, StockAdjustmentError } from "./stock-adjustments";
 import { TRANSFER_STAFF } from "./transfers";
@@ -39,7 +40,7 @@ export type StockTakeErrorCode
     | "value_too_large";
 
 export class StockTakeError extends Error {
-  constructor(readonly code: StockTakeErrorCode) {
+  constructor(readonly code: StockTakeErrorCode, options?: ErrorOptions) {
     super({
       not_found: "No such stock take",
       store_not_found: "No such store",
@@ -54,7 +55,7 @@ export class StockTakeError extends Error {
       correction_pending: "The last count of this store waits for its correction to be approved or rejected",
       not_enough_stock: "Stock has left the store since it was counted, more than the correction would take off: count those lines again",
       value_too_large: "The differences are worth more than one correction records: count fewer items at a time",
-    }[code]);
+    }[code], options);
     this.name = "StockTakeError";
   }
 }
@@ -74,6 +75,8 @@ async function countsControlled(tx: AppDb, batchIds: string[]): Promise<boolean>
 }
 
 const isStoreStaff = (actor: DispenseActor) => actor.roles.some(r => (TRANSFER_STAFF as readonly string[]).includes(r));
+/** Whether this member reads every store's stock: a nurse, who does not, reads a ward's counts only. */
+const readsEveryStore = (actor: DispenseActor) => actor.roles.some(r => (STOCK_READERS as readonly string[]).includes(r));
 
 /** The store to count, if this member counts it; a retired one only to cancel a count left open in it. */
 async function storeFor(tx: AppDb, storeId: string, actor: DispenseActor, retired: "refused" | "allowed" = "refused"): Promise<{ id: string; name: string }> {
@@ -213,7 +216,7 @@ export async function submitStockTake(tx: AppDb, facilityId: string, id: string,
     }
     catch (err) {
       if (err instanceof StockAdjustmentError && (err.code === "not_enough_stock" || err.code === "value_too_large" || err.code === "controlled_dispenser"))
-        throw new StockTakeError(err.code);
+        throw new StockTakeError(err.code, { cause: err });
       throw err;
     }
   }
@@ -243,9 +246,19 @@ export interface ShownStockTake {
   lines: { batchId: string; code: string; name: string; baseUnit: string; batchNumber: string | null; expiresOn: string | null; counted: number | null; countedAt: Date | null; expected: number | null; difference: number | null }[];
 }
 
-/** A count as its sheet: blind while counting. Not patient data, so not audited. */
-export async function stockTakeShown(tx: AppDb, id: string): Promise<ShownStockTake> {
-  const [take] = await tx.select().from(stockTakes).where(eq(stockTakes.id, id)).limit(1);
+/**
+ * A count as its sheet: blind while counting. Not patient data, so not
+ * audited. A submitted count shows what its store held, so a nurse, who
+ * reads no other store's stock, is shown a ward's count only: another is
+ * not there for them.
+ */
+export async function stockTakeShown(tx: AppDb, id: string, actor: DispenseActor): Promise<ShownStockTake> {
+  const [take] = await tx
+    .select(getTableColumns(stockTakes))
+    .from(stockTakes)
+    .innerJoin(stores, eq(stores.id, stockTakes.storeId))
+    .where(and(eq(stockTakes.id, id), readsEveryStore(actor) ? undefined : eq(stores.kind, "ward")))
+    .limit(1);
   if (!take)
     throw new StockTakeError("not_found");
   const lines = await tx
@@ -278,7 +291,18 @@ export async function stockTakeShown(tx: AppDb, id: string): Promise<ShownStockT
 }
 
 /** Counts, newest first, 50 a page; `?status=counting` for those open. */
-export async function listStockTakes(tx: AppDb, filter: { storeId?: string; status?: TakeRow["status"]; offset?: number } = {}): Promise<Omit<ShownStockTake, "lines">[]> {
-  const rows = await tx.select().from(stockTakes).where(and(filter.storeId ? eq(stockTakes.storeId, filter.storeId) : undefined, filter.status ? eq(stockTakes.status, filter.status) : undefined)).orderBy(desc(stockTakes.openedAt), desc(stockTakes.number)).limit(50).offset(filter.offset ?? 0);
+export async function listStockTakes(tx: AppDb, filter: { storeId?: string; status?: TakeRow["status"]; offset?: number }, actor: DispenseActor): Promise<Omit<ShownStockTake, "lines">[]> {
+  const rows = await tx
+    .select(getTableColumns(stockTakes))
+    .from(stockTakes)
+    .innerJoin(stores, eq(stores.id, stockTakes.storeId))
+    .where(and(
+      filter.storeId ? eq(stockTakes.storeId, filter.storeId) : undefined,
+      filter.status ? eq(stockTakes.status, filter.status) : undefined,
+      readsEveryStore(actor) ? undefined : eq(stores.kind, "ward"),
+    ))
+    .orderBy(desc(stockTakes.openedAt), desc(stockTakes.number))
+    .limit(50)
+    .offset(filter.offset ?? 0);
   return rows.map(t => ({ id: t.id, number: t.number, storeId: t.storeId, scope: t.scope, status: t.status, openedAt: t.openedAt, submittedAt: t.submittedAt, adjustmentId: t.adjustmentId }));
 }

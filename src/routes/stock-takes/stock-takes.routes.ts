@@ -93,7 +93,7 @@ export const listTakes = createRoute({
   method: "get",
   path: "/stock-takes",
   summary: "Stock takes",
-  description: "Newest first, 50 a page.",
+  description: "Newest first, 50 a page. A nurse is shown the counts of ward stores only.",
   middleware: [readers] as const,
   request: { headers: facilityHeaders, query: ListQuerySchema },
   responses: {
@@ -108,7 +108,7 @@ export const getTake = createRoute({
   method: "get",
   path: "/stock-takes/{id}",
   summary: "A count's sheet",
-  description: "Blind while counting: what was expected shows once it is submitted.",
+  description: "Blind while counting: what was expected shows once it is submitted. To a nurse, a count of a store that is not a ward's is not there.",
   middleware: [readers] as const,
   request: { headers: facilityHeaders, params: IdParamsSchema },
   responses: {
