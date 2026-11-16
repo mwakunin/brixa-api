@@ -85,6 +85,7 @@ describe("onboarding a facility", () => {
       ["prescription", "RX-", "yearly", 6],
       ["receipt", "RCT-", "yearly", 6],
       ["refund", "RFD-", "yearly", 6],
+      ["stock_take", "STK-", "yearly", 6],
       ["stock_transfer", "TRF-", "yearly", 6],
     ]);
     const { rows: counters } = await pool.query<{ kind: string; next_value: number }>(`
@@ -104,6 +105,7 @@ describe("onboarding a facility", () => {
       { kind: "prescription", next_value: 1 },
       { kind: "receipt", next_value: 1 },
       { kind: "refund", next_value: 1 },
+      { kind: "stock_take", next_value: 1 },
       { kind: "stock_transfer", next_value: 1 },
     ]);
 

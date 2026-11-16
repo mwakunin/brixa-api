@@ -666,6 +666,20 @@
       "when": 1794823750195,
       "tag": "0094_register_pages",
       "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "7",
+      "when": 1794824413037,
+      "tag": "0095_stock_takes",
+      "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "7",
+      "when": 1794824420735,
+      "tag": "0096_stock_takes_rls",
+      "breakpoints": true
     }
   ]
 }

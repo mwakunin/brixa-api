@@ -300,6 +300,17 @@ Main store, pharmacy and ward sub-stores; transfers; goods received; batches and
 8. **`GET /controlled-register`** shows one drug in one store over a range of days; printing comes with P6's reports.
 9. **Opening balances at go-live** come from the old register's closing balance, at P6's cutover.
 
+**Slice 5, stock take** (decided 2026-11-16, as recommended; question 9 applied):
+1. **The count sheet** lists every batch the store holds of the items counted (the whole store, or chosen items); the counter may add another of the facility's batches found on the shelf.
+2. **Blind:** the counter never sees what is expected; once the count is submitted, anyone who reads stock takes does.
+3. **Each line records when it was counted**; what is expected is every movement up to that moment, so stock moving during the count does not skew it.
+4. **Every line is counted** (zero allowed) before the count is submitted.
+5. **Submitting raises one stock adjustment** (`correction`) for the differences, linked to the stock take, for the finance manager or a pharmacist other than the counter to approve. Each line moves by its difference, so it stays right though stock moves before approval.
+6. **Who counts:** storekeepers, pharmacists and pharmacy technicians; nurses for a ward's store only.
+7. **A count with a controlled drug** is submitted by a pharmacist with a pharmacy licence, as such an adjustment is asked for.
+8. **Expired batches are counted**; writing them off is its own adjustment.
+9. **One open count per store**, numbered from a yearly `STK-` series.
+
 ### P5 · Inpatient clinical
 
 **Size:** L.

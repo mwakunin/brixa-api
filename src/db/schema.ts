@@ -480,6 +480,10 @@ export const auditLog = pgTable("audit_log", {
     | "dispense.viewed"
     | "dispense_return.listed"
     | "controlled_register.viewed"
+    | "stock_take.opened"
+    | "stock_take.counted"
+    | "stock_take.submitted"
+    | "stock_take.cancelled"
   >().notNull().references(() => auditActions.action),
   /** What it happened to. Not a foreign key: the log outlives what it names. */
   entityType: text().notNull(),
@@ -510,7 +514,7 @@ export const auditLog = pgTable("audit_log", {
 export const numberSeries = pgTable("number_series", {
   id: uuid().primaryKey().defaultRandom(),
   facilityId: uuid().notNull().references(() => facilities.id),
-  kind: text().$type<"outpatient" | "inpatient" | "admission" | "receipt" | "invoice" | "credit_note" | "refund" | "prescription" | "lab_accession" | "lab_report" | "goods_received" | "stock_transfer">().notNull(),
+  kind: text().$type<"outpatient" | "inpatient" | "admission" | "receipt" | "invoice" | "credit_note" | "refund" | "prescription" | "lab_accession" | "lab_report" | "goods_received" | "stock_transfer" | "stock_take">().notNull(),
   /** Facility-chosen, e.g. `OP`. Applies to numbers issued from now on. */
   prefix: text().notNull(),
   /** Zero-padded width: 4 gives OP0001. A number grows past it, never truncates. */
@@ -521,7 +525,7 @@ export const numberSeries = pgTable("number_series", {
 }, t => [
   unique("number_series_facility_id_kind_key").on(t.facilityId, t.kind),
   unique("number_series_facility_id_id_key").on(t.facilityId, t.id),
-  oneOf("number_series_kind_known", t.kind, ["outpatient", "inpatient", "admission", "receipt", "invoice", "credit_note", "refund", "prescription", "lab_accession", "lab_report", "goods_received", "stock_transfer"]),
+  oneOf("number_series_kind_known", t.kind, ["outpatient", "inpatient", "admission", "receipt", "invoice", "credit_note", "refund", "prescription", "lab_accession", "lab_report", "goods_received", "stock_transfer", "stock_take"]),
   oneOf("number_series_reset_period_known", t.resetPeriod, ["never", "yearly", "daily"]),
   check("number_series_prefix_shape", sql`${t.prefix} ~ '^[A-Za-z0-9/-]{1,12}$'`),
   check("number_series_padding_range", sql`${t.padding} BETWEEN 1 AND 12`),
@@ -2711,6 +2715,73 @@ export const stockAdjustments = pgTable("stock_adjustments", {
   ),
 ]);
 
+/**
+ * A count of a store's stock (P4 slice 5, decided 2026-11-16): blind, the
+ * store open while it runs, one at a time per store. Its lines are the
+ * batches counted; submitting it asks for one `correction` adjustment for
+ * the differences, which a second person approves.
+ */
+export const stockTakes = pgTable("stock_takes", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  /** `STK-2026-000123`. */
+  number: text().notNull(),
+  storeId: uuid().notNull(),
+  /** The whole store, or chosen items. */
+  scope: text().$type<"store" | "items">().notNull(),
+  status: text().$type<"counting" | "submitted" | "cancelled">().notNull(),
+  openedBy: uuid().notNull(),
+  openedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  submittedBy: uuid(),
+  submittedAt: timestamp({ withTimezone: true }),
+  /** The correction its differences asked for; none when the count matched. */
+  adjustmentId: uuid(),
+  cancelledBy: uuid(),
+  cancelledAt: timestamp({ withTimezone: true }),
+  cancellationReason: text(),
+}, t => [
+  unique("stock_takes_facility_id_id_key").on(t.facilityId, t.id),
+  unique("stock_takes_number_key").on(t.facilityId, t.number),
+  // One count open per store at a time.
+  uniqueIndex("stock_takes_one_open_per_store").on(t.facilityId, t.storeId).where(sql`${t.status} = 'counting'`),
+  foreignKey({ name: "stock_takes_store_fk", columns: [t.facilityId, t.storeId], foreignColumns: [stores.facilityId, stores.id] }),
+  foreignKey({ name: "stock_takes_opened_by_fk", columns: [t.facilityId, t.openedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "stock_takes_submitted_by_fk", columns: [t.facilityId, t.submittedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "stock_takes_cancelled_by_fk", columns: [t.facilityId, t.cancelledBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "stock_takes_adjustment_fk", columns: [t.facilityId, t.adjustmentId], foreignColumns: [stockAdjustments.facilityId, stockAdjustments.id] }),
+  oneOf("stock_takes_scope_known", t.scope, ["store", "items"]),
+  oneOf("stock_takes_status_known", t.status, ["counting", "submitted", "cancelled"]),
+  check(
+    "stock_takes_lifecycle",
+    sql`(${t.status} = 'counting' AND num_nonnulls(${t.submittedBy}, ${t.submittedAt}, ${t.adjustmentId}, ${t.cancelledBy}, ${t.cancelledAt}, ${t.cancellationReason}) = 0)
+      OR (${t.status} = 'submitted' AND ${t.submittedBy} IS NOT NULL AND ${t.submittedAt} IS NOT NULL AND num_nonnulls(${t.cancelledBy}, ${t.cancelledAt}, ${t.cancellationReason}) = 0)
+      OR (${t.status} = 'cancelled' AND ${t.cancelledBy} IS NOT NULL AND ${t.cancelledAt} IS NOT NULL AND length(btrim(${t.cancellationReason})) > 0
+          AND num_nonnulls(${t.submittedBy}, ${t.submittedAt}, ${t.adjustmentId}) = 0)`,
+  ),
+]);
+
+/**
+ * One batch of a count: what was counted, when and by whom, and once the
+ * count is submitted what the ledger expected at that moment.
+ */
+export const stockTakeLines = pgTable("stock_take_lines", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  stockTakeId: uuid().notNull(),
+  batchId: uuid().notNull(),
+  countedQuantity: integer(),
+  countedAt: timestamp({ withTimezone: true }),
+  countedBy: uuid(),
+  /** What the ledger held at `countedAt`, set when the count is submitted. */
+  expectedQuantity: integer(),
+}, t => [
+  unique("stock_take_lines_batch_key").on(t.stockTakeId, t.batchId),
+  foreignKey({ name: "stock_take_lines_take_fk", columns: [t.facilityId, t.stockTakeId], foreignColumns: [stockTakes.facilityId, stockTakes.id] }),
+  foreignKey({ name: "stock_take_lines_batch_fk", columns: [t.facilityId, t.batchId], foreignColumns: [stockBatches.facilityId, stockBatches.id] }),
+  foreignKey({ name: "stock_take_lines_counted_by_fk", columns: [t.facilityId, t.countedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  check("stock_take_lines_counted", sql`(${t.countedQuantity} IS NULL) = (${t.countedAt} IS NULL) AND (${t.countedAt} IS NULL) = (${t.countedBy} IS NULL) AND (${t.countedQuantity} IS NULL OR ${t.countedQuantity} >= 0)`),
+]);
+
 /** One batch of an adjustment: its signed quantity in base units, and its value at the batch's cost. Written once. */
 export const stockAdjustmentLines = pgTable("stock_adjustment_lines", {
   id: uuid().primaryKey().defaultRandom(),
@@ -3709,4 +3780,6 @@ export const TENANT_TABLES = [
   "stock_adjustment_lines",
   "sensitive_drugs",
   "controlled_drug_register",
+  "stock_takes",
+  "stock_take_lines",
 ] as const;

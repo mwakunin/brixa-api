@@ -960,6 +960,18 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 - **`GET /controlled-register?drugCode=&storeId=&from=&to=&offset=`** is read by pharmacists, the facility admin and the auditor. It shows 500 lines at a time, oldest first, with the balance before the first line shown: that line's balance less its quantity, by entry order. It is audited (`controlled_register.viewed`) with the patients' ids, and a drug or store that isn't there answers 404.
 - **Not yet:** opening entries at P6's cutover; the printed register (P6 reports); PPB's answer on what it must hold.
 
+**As built (P4, slice 5): stock takes.** Decided 2026-11-16 (`ROADMAP.md` P4, slice 5; question 9). `stock_takes` and `stock_take_lines`; `src/lib/stock-takes.ts`. Numbered from a yearly `STK-` series, registered at onboarding and backfilled by migration 0096.
+
+- **`POST /stock-takes`** opens a count of a store, or of chosen items (`stockItemIds`). Its sheet lists every batch the store holds of them. Only one count is open per store (`stock_takes_one_open_per_store`).
+- **`PUT /stock-takes/{id}/counts`** records counts, each stamped with when and by whom; a recount overwrites. A batch found on the shelf and not on the sheet is added. The sheet is **blind**: `expected` and `difference` are null until the count is submitted.
+- **`POST /stock-takes/{id}/submit`** requires every line counted (nought allowed). It fixes each line's expected quantity as the ledger at the moment that line was counted, so stock moving during the count doesn't skew it.
+  - It asks for one `correction` stock adjustment for the differences (`stock_takes.adjustment_id`), in the submitter's name, for the finance manager or a pharmacist other than them to approve (rule 24).
+  - Each adjustment line moves by its difference, so it stays right though stock moves before approval.
+  - A count with a controlled drug is submitted by a pharmacist with a pharmacy licence (`controlled_dispenser`), as its adjustment requires.
+- **`POST /stock-takes/{id}/cancel`** (with a reason) closes an open count unmoved.
+- **Final in the database:** a count submitted or cancelled never changes, and its lines change only while it is open, for every role (`stock_takes_final`, `stock_take_lines_while_counting`).
+- **Who:** storekeepers, pharmacists and pharmacy technicians count, and nurses a ward's store only. Stock readers and ward nurses read counts, which hold no patient data and are not audited when read.
+
 ---
 
 ## 9. Payers and claims
