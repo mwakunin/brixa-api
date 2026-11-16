@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -177,6 +177,51 @@ describe("restricted records", () => {
     expect((await call("POST", `/order-items/${order.items[0].id}/cancel`, c.facility.id, c.labTech, { reason: "Kits out" })).status).toBe(200);
     // Staff assigned the category may.
     expect((await call("POST", `/notes/${noteId}/addenda`, c.facility.id, c.cccNurse, { text: "Counselled" })).status).toBe(201);
+  });
+});
+
+describe("sensitive medicines", () => {
+  it("restrict a prescription naming a drug the facility marked, past ones included, while the pharmacy still works from it", async () => {
+    const c = await clinic();
+    const { encounterId } = await c.visit(c.gopd);
+    const prescription = await (await call("POST", `/encounters/${encounterId}/prescriptions`, c.facility.id, c.doctor, { items: [{ drugCode: "AL-20/120-TAB", doseAmount: "4", frequency: "bd", durationDays: 3 }] })).json();
+    expect((await c.read(encounterId, "orders", c.other)).orders).toHaveLength(1);
+    const mark = (drugCode: string, category: string | null, who = c.admin) => call("PUT", "/sensitive-drugs", c.facility.id, who, { drugCode, category });
+
+    // Standing in for an HIV medicine: the sample catalogue has none.
+    const marked = await mark("al-20/120-tab", "hiv");
+    expect(marked.status).toBe(200);
+    expect((await marked.json()).drugs).toEqual([expect.objectContaining({ drugCode: "AL-20/120-TAB", category: "hiv" })]);
+
+    const others = await c.read(encounterId, "orders", c.other);
+    expect([others.orders, others.restricted.length]).toEqual([[], 1]);
+    expect(JSON.stringify(others)).not.toMatch(/Artemether|hiv/i);
+    expect((await c.read(encounterId, "orders", c.doctor)).orders).toHaveLength(1);
+    expect((await call("GET", `/documents/${prescription.prescription.documentId}/pdf`, c.facility.id, c.other)).status).toBe(403);
+    expect((await call("GET", `/documents/${prescription.prescription.documentId}/pdf`, c.facility.id, c.pharmacist)).status).toBe(200);
+
+    // Unmarked, it is an ordinary prescription again.
+    await mark("AL-20/120-TAB", null, c.pharmacist);
+    expect((await c.read(encounterId, "orders", c.other)).orders).toHaveLength(1);
+    expect((await audits(c, "drug.sensitivity_set")).map(a => a.detail)).toEqual(expect.arrayContaining([
+      { drugCode: "AL-20/120-TAB", before: null, after: "hiv" },
+      { drugCode: "AL-20/120-TAB", before: "hiv", after: null },
+    ]));
+    expect((await (await call("GET", "/sensitive-drugs", c.facility.id, c.admin)).json()).drugs).toEqual([]);
+  });
+
+  it("are marked by the facility admin or a pharmacist, from the catalogue", async () => {
+    const c = await clinic();
+
+    expect((await call("PUT", "/sensitive-drugs", c.facility.id, c.doctor, { drugCode: "PCM-500-TAB", category: "hiv" })).status).toBe(403);
+    const unknown = await call("PUT", "/sensitive-drugs", c.facility.id, c.admin, { drugCode: "NOPE-1", category: "hiv" });
+    expect([unknown.status, (await unknown.json()).code]).toEqual([409, "drug_not_found"]);
+    expect((await call("PUT", "/sensitive-drugs", c.facility.id, c.admin, { drugCode: "PCM-500-TAB", category: "leprosy" })).status).toBe(422);
+
+    // A mark on a drug the catalogue later retires still restricts its past prescriptions, so it stays listed.
+    await call("PUT", "/sensitive-drugs", c.facility.id, c.admin, { drugCode: "AMX-500-CAP", category: "mental_health" });
+    await db.execute(sql`UPDATE drug_catalogue SET retired_at = now() WHERE code = 'AMX-500-CAP'`);
+    expect((await (await call("GET", "/sensitive-drugs", c.facility.id, c.pharmacist)).json()).drugs).toEqual([expect.objectContaining({ drugCode: "AMX-500-CAP" })]);
   });
 });
 

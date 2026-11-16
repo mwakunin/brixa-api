@@ -34,6 +34,7 @@ let h: Hospital;
 let doctor: StaffMember;
 let labTech: StaffMember;
 let supervisor: StaffMember;
+let pharmacist: StaffMember;
 let gopd: string;
 let mrdt: { testId: string; analyteId: string };
 let token: string;
@@ -61,6 +62,7 @@ beforeEach(async () => {
   doctor = await staff(["doctor"]);
   labTech = await staff(["lab_tech"]);
   supervisor = await staff(["lab_supervisor"]);
+  pharmacist = await staff(["pharmacist"]);
 
   // The facility's set-up: a triage desk, a clinic with its fee, a malaria test, M-Pesa and the cashier's shift.
   await api("POST", "/service-points", h.admin, { name: "Triage", kind: "triage" });
@@ -175,6 +177,9 @@ describe("a day's outpatients (the P3 exit)", () => {
     const printed = await call("GET", `/documents/${prescription.prescription.documentId}/pdf`, h.facility.id, doctor);
     expect([printed.status, printed.headers.get("content-type")]).toEqual([200, "application/pdf"]);
     await api("POST", `/queue-entries/${entry}/finish`, doctor, {});
+    // The pharmacy does not stock it, so she takes the paper elsewhere; marked so, her visit can close
+    // (P4 slice 3a). P4's own exit takes the journey through the pharmacy.
+    expect((await call("POST", `/order-items/${prescription.items[0].id}/not-supplied`, h.facility.id, pharmacist, { reason: "buying_elsewhere" })).status).toBe(204);
 
     // --- Baraka: on an appointment, billed at the end, pays by paybill ---
     const baraka = await register("Baraka");

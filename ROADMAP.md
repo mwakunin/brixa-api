@@ -174,7 +174,7 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
 - **Who sees it without breaking the glass:** whoever recorded it; staff the facility admin assigns to its category (the HIV clinic's staff to HIV), each assignment audited; and the lab on its own worklist. Every other clinician breaks the glass; non-clinical roles read no clinical content at all.
 - **Breaking the glass** is open to any clinical member with a current licence, always with a reason, emergencies included. It opens that one patient's sensitive items for 12 hours; each read during it is audited, and marked as one.
 - **The alert** is an in-app list for the facility admin and for the clinicians who recorded what was opened, not an SMS or email. The facility admin marks each one reviewed.
-- **Medicines:** an HIV medicine prescribed outside a sensitive clinic is not caught, since the drug list carries no classes. P4's per-facility stock items can carry the mark.
+- ~~**Medicines:** an HIV medicine prescribed outside a sensitive clinic is not caught, since the drug list carries no classes.~~ Done in P4 slice 3c: the facility marks catalogue drugs sensitive, and their prescriptions are restricted.
 - **Neutral names on bills:** a billable item may have a neutral printed name ("Laboratory test"), which invoices and receipts print. The charge copies it at capture, as it copies the price.
 
 **Still open after P3** (2026-11-15), each for its owner:
@@ -208,6 +208,7 @@ Main store, pharmacy and ward sub-stores; transfers; goods received; batches and
 | B | 2 Transfers | Requested, approved, sent and received between stores, with a difference on receipt explained and adjusted |
 | B | 3a Dispensing | The pharmacy's list of prescriptions waiting. Prepared from the pharmacy's stock, earliest expiry first. Raises the charge, then is handed over (question 5). Partly dispensed, or marked not supplied. Visits close only once each medicine is dispensed or marked not supplied |
 | B | 3b Returns and adjustments | A patient's return credits its charge while unbilled, and is credited or refunded once billed. Write-offs (expired, damaged) and other adjustments need a reason and a second person (rule 24) |
+| B | 3c Sensitive medicines | Catalogue drugs a facility marks sensitive; their prescriptions restricted as a sensitive lab test restricts its order (question 12, decided 2026-11-15) |
 | C | 4 Controlled drugs | The register, per item and store, with a running balance (rule 12). Who may dispense them. Its entries balance against the movements |
 | C | 5 Stock take | A count per store, then the variances, each an adjustment approved by a second person |
 | C | 6 Alerts and exit | The nightly expiry and low-stock scan (`CLAUDE.md` §7) and the lists they feed. The OPD journey extended through the pharmacy. The stock identity and the register checked as P4's exit |
@@ -245,6 +246,48 @@ Main store, pharmacy and ward sub-stores; transfers; goods received; batches and
 5. **All or nothing:** one bad row refuses the file, and the report lists every bad row.
 6. **Running it again changes nothing:** a code already set up is matched, not duplicated, and its price is requested only if it differs from today's. A row that disagrees with what is there (another category, drug, base unit or pack size) is refused, never applied; an existing item keeps its name.
 7. **Reorder levels are not in the file**; they are set per store. Opening stock waits for P6.
+
+**Slice 2, transfers** (decided 2026-11-15, as recommended):
+1. **Request, send, receive.** Approving and sending are one act by the sending store's staff; a store may also send without a request (the main store topping up a ward). The pilot's answer on who approves ward transfers (`SPEC.md` §9, question 9) may add an approval step.
+2. **Batches:** the sender picks them, earliest expiry first unless they choose. Stock leaves the sending store when sent and enters the receiving store when received; on the way, it shows on the transfer and in neither store.
+3. **A shortfall** is entered per batch on receipt, with a reason; more than was sent is refused. A second person (the finance manager or a pharmacist, never the receiver) accepts the loss; until then the transfer shows short, awaiting approval. One receipt per transfer: what is still to come is a new transfer.
+4. **Who:** storekeepers, pharmacists and pharmacy technicians request, send and receive, for any store; nurses and ward nurses request for and receive into a ward's store only. **One person cannot both send and receive a transfer.**
+5. **Numbered** from a yearly `TRF-` series. No printed issue voucher in v1.
+6. **Less may be sent** than was asked for; no back-orders, so the rest is a new request.
+7. **Before it is sent**, the requester may cancel a request and the sending store may decline it, each with a reason. Once sent, a transfer is only received.
+8. **An expired batch is never sent**; it is written off where it is (3b).
+9. **Controlled drugs:** nothing special yet; slice 4 writes their register entries for transfers as for dispensing, before anything is live (P6).
+
+**Slice 3a, dispensing** (decided 2026-11-15, as recommended; P4 questions 4–7 already applied):
+1. **The pharmacy's list is the facility's**; the pharmacist dispenses from a store of kind `pharmacy`, the facility's only one unless they name another.
+2. **A dispense is one prescription handed over**, a line per medicine, each line drawing on as many batches as it needs. A medicine may be given part now and the rest later, until its quantity is met or the rest is marked not supplied.
+3. **Preparing raises one charge per line**: the item's cash price per base unit times the quantity, rounded to whole shillings once (D2).
+4. **The quantity**, where the item's base unit is the prescription's dose unit, defaults to what is still owed and may not exceed it. Where the units differ (a 100 mL bottle for 75 mL), the pharmacist gives it.
+5. **A medicine is finished** when its quantity is met, or, in other units, when the pharmacist marks its line as completing it; either way its rest may be marked not supplied.
+6. **Open visits only.** The nightly close takes a visit with undispensed medicines off the list, which then show as never dispensed. A visit no longer finishes early while a medicine is neither dispensed nor marked not supplied.
+7. **Cancelling a prepared dispense** returns its stock and cancels its charges while none is billed; once billed, it is a return (3b).
+8. **Inpatients** are dispensed the same way until P5's ward stock and medication administration record.
+9. **No dispensing label** in 3a; it needs label printers.
+10. **Medicines that disclose a condition** (question 12) become their own slice, **3c**, after 3b: the facility admin marks catalogue drugs sensitive, and a prescription of one is restricted as a sensitive lab test restricts its order. It changes P3's prescriptions, so it is not folded into dispensing.
+
+**Slice 3b, returns and adjustments** (decided 2026-11-15, as recommended):
+1. **A patient returns** only what was handed over, no more than was given less what has come back already. It goes back to the pharmacy it left, into the latest-expiring of the batches it came from; an expired batch takes nothing back.
+2. **The pharmacist judges a return fit to sell again.** One that is not puts nothing back on the shelf, and is a write-off: a second person approves it before the patient is credited.
+3. **Unbilled**, the line's charge is cancelled and a new one raised for what the patient kept, at the original price (charges are cancelled, never edited).
+4. **Billed**, the return asks for a credit note on the invoice through the existing adjustments, which a second person approves; money already paid goes back through the existing refunds.
+5. **Stock adjustments** are `expired`, `damaged`, `lost`, `found` or `correction`, each with a reason, naming batches and quantities; one request may cover many batches (every expired batch in a store). `found` stock goes into an existing batch only: new stock comes by goods received.
+6. **Stock moves only on approval**; a pending request leaves the shelf as it is.
+7. **Store staff ask; the finance manager or a pharmacist approves**, never the person who asked (rule 24, a `CHECK` as well as the service). No value threshold in v1.
+8. **Each adjustment carries its value** at the batch's cost, for the loss report.
+9. **A controlled drug** is returned or adjusted only by a pharmacist with a pharmacy licence, as it is dispensed; its register entries come with slice 4.
+
+**Slice 3c, sensitive medicines** (decided 2026-11-15, as recommended; question 12):
+1. **The facility admin and pharmacists** mark a catalogue drug HIV, mental health or GBV, per strength and form.
+2. **A prescription naming a marked drug is restricted as a whole**, as a sensitive lab test restricts its order: clinicians' order views and the printed prescription. The pharmacy still sees and dispenses it (P3 slice 7).
+3. **Past prescriptions follow the mark**, as for a lab test; unmarking lifts it.
+4. **Bills are untouched**: the item's neutral printed name is set with the existing route.
+5. **Nothing is shipped**: the pilot's clinician supplies the drugs, with the sensitive ICD-11 codes still owed.
+6. **Marking and unmarking are audited** with the old and new category.
 
 ### P5 · Inpatient clinical
 

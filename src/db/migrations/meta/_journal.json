@@ -561,6 +561,83 @@
       "when": 1794755996468,
       "tag": "0079_stock_written_once",
       "breakpoints": true
+    },
+    {
+      "idx": 80,
+      "version": "7",
+      "when": 1794760715947,
+      "tag": "0080_stock_transfers",
+      "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "7",
+      "when": 1794760721148,
+      "tag": "0081_stock_transfers_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1794764068430,
+      "tag": "0082_dispensing",
+      "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1794764073054,
+      "tag": "0083_dispensing_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
+      "when": 1794766844927,
+      "tag": "0084_returns_adjustments",
+      "breakpoints": true
+    },
+    {
+      "idx": 85,
+      "version": "7",
+      "when": 1794766849688,
+      "tag": "0085_returns_adjustments_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1794768202470,
+      "tag": "0086_returns_by_line",
+      "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1794768973148,
+      "tag": "0087_sensitive_drugs",
+      "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "7",
+      "when": 1794768977664,
+      "tag": "0088_sensitive_drugs_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "7",
+      "when": 1794771207152,
+      "tag": "0089_pharmacy_read_audits",
+      "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "7",
+      "when": 1794811576000,
+      "tag": "0090_stock_lifecycles",
+      "breakpoints": true
     }
   ]
 }

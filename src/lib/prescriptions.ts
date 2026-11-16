@@ -12,6 +12,7 @@ import type { PatientActor } from "./patients";
 
 import { recordAudit } from "./audit";
 import { addDays, ageInYears, businessDate, printedAge, printedDate, startOfBusinessDay } from "./dates";
+import { hasPreparedDispense } from "./dispensing";
 import { FIELD_LENGTH, packNotes } from "./document-content";
 import { issueDocument, voidDocument } from "./documents";
 import { currentDrug, describeDrug, ingredientsOf, INJECTED_ROUTES } from "./drug-catalogue";
@@ -114,6 +115,7 @@ export type PrescriptionErrorCode
     | "controlled_prescriber"
     | "not_found"
     | "already_cancelled"
+    | "being_dispensed"
     | "too_much_to_print";
 
 const MESSAGES: Record<Exclude<PrescriptionErrorCode, "drug_allergy">, string> = {
@@ -128,6 +130,7 @@ const MESSAGES: Record<Exclude<PrescriptionErrorCode, "drug_allergy">, string> =
   controlled_prescriber: "Only a doctor or a clinical officer prescribes a controlled drug",
   not_found: "No such prescription",
   already_cancelled: "Nothing on this prescription is left to cancel",
+  being_dispensed: "The pharmacy has prepared some of this prescription; it hands it over or cancels it first",
   too_much_to_print: "The allergy overrides are too long to print on one prescription; split it into two",
 };
 
@@ -496,6 +499,9 @@ export async function cancelPrescription(tx: AppDb, facilityId: string, orderId:
   const guard = (await orderGuards(tx, [orderId])).get(orderId)!;
   if (await isRestricted(tx, { facilityId: found.facilityId, patientId: guard.patientId, encounterId: found.encounterId }, guard, actor))
     throw new PrescriptionError("not_found");
+  // Its stock is taken and charged: cancelling under it would leave a prepared dispense of nothing (P4 slice 3a).
+  if (await hasPreparedDispense(tx, orderId))
+    throw new PrescriptionError("being_dispensed");
 
   const cancelled = await tx.update(orderItems)
     .set({ status: "cancelled", cancelledAt: at, cancelledBy: actor.membershipId, cancellationReason: reason })

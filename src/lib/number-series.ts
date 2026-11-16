@@ -44,10 +44,11 @@ export const CLINICAL_SERIES = [
 
 /**
  * The stores' series every facility gets at onboarding, yearly and six
- * digits wide (`GRN-2026-000123`). Migration 0077 backfills it.
+ * digits wide (`GRN-2026-000123`). Migrations 0077 and 0081 backfill them.
  */
 export const STOCK_SERIES = [
   ["goods_received", "GRN-"],
+  ["stock_transfer", "TRF-"],
 ] as const satisfies readonly (readonly [SeriesKind, string])[];
 
 /**

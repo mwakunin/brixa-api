@@ -65,7 +65,7 @@ export const createFacility: AppRouteHandler<CreateFacilityRoute> = async (c) =>
       // Clinical documents, numbered as they are issued: RX-2026-000123.
       for (const [kind, prefix] of CLINICAL_SERIES)
         await registerSeries(tx, { facilityId: facility.id, kind, prefix, padding: 6, resetPeriod: "yearly" });
-      // Deliveries into the stores, numbered as they are entered: GRN-2026-000123.
+      // The stores' deliveries and transfers, numbered as they are entered: GRN-2026-000123, TRF-2026-000123.
       for (const [kind, prefix] of STOCK_SERIES)
         await registerSeries(tx, { facilityId: facility.id, kind, prefix, padding: 6, resetPeriod: "yearly" });
       // Specimens, numbered as they are taken: L-20261111-017.

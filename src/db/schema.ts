@@ -458,6 +458,27 @@ export const auditLog = pgTable("audit_log", {
     | "goods.received"
     | "stock_batch.reversed"
     | "stock_items.imported"
+    | "stock_transfer.requested"
+    | "stock_transfer.sent"
+    | "stock_transfer.received"
+    | "stock_transfer.shortfall_accepted"
+    | "stock_transfer.cancelled"
+    | "stock_transfer.declined"
+    | "dispense.prepared"
+    | "dispense.handed_over"
+    | "dispense.cancelled"
+    | "medicine.not_supplied"
+    | "pharmacy.worklist_viewed"
+    | "dispense.returned"
+    | "dispense_return.approved"
+    | "dispense_return.rejected"
+    | "stock_adjustment.requested"
+    | "stock_adjustment.approved"
+    | "stock_adjustment.rejected"
+    | "stock_adjustment.withdrawn"
+    | "drug.sensitivity_set"
+    | "dispense.viewed"
+    | "dispense_return.listed"
   >().notNull().references(() => auditActions.action),
   /** What it happened to. Not a foreign key: the log outlives what it names. */
   entityType: text().notNull(),
@@ -488,7 +509,7 @@ export const auditLog = pgTable("audit_log", {
 export const numberSeries = pgTable("number_series", {
   id: uuid().primaryKey().defaultRandom(),
   facilityId: uuid().notNull().references(() => facilities.id),
-  kind: text().$type<"outpatient" | "inpatient" | "admission" | "receipt" | "invoice" | "credit_note" | "refund" | "prescription" | "lab_accession" | "lab_report" | "goods_received">().notNull(),
+  kind: text().$type<"outpatient" | "inpatient" | "admission" | "receipt" | "invoice" | "credit_note" | "refund" | "prescription" | "lab_accession" | "lab_report" | "goods_received" | "stock_transfer">().notNull(),
   /** Facility-chosen, e.g. `OP`. Applies to numbers issued from now on. */
   prefix: text().notNull(),
   /** Zero-padded width: 4 gives OP0001. A number grows past it, never truncates. */
@@ -499,7 +520,7 @@ export const numberSeries = pgTable("number_series", {
 }, t => [
   unique("number_series_facility_id_kind_key").on(t.facilityId, t.kind),
   unique("number_series_facility_id_id_key").on(t.facilityId, t.id),
-  oneOf("number_series_kind_known", t.kind, ["outpatient", "inpatient", "admission", "receipt", "invoice", "credit_note", "refund", "prescription", "lab_accession", "lab_report", "goods_received"]),
+  oneOf("number_series_kind_known", t.kind, ["outpatient", "inpatient", "admission", "receipt", "invoice", "credit_note", "refund", "prescription", "lab_accession", "lab_report", "goods_received", "stock_transfer"]),
   oneOf("number_series_reset_period_known", t.resetPeriod, ["never", "yearly", "daily"]),
   check("number_series_prefix_shape", sql`${t.prefix} ~ '^[A-Za-z0-9/-]{1,12}$'`),
   check("number_series_padding_range", sql`${t.padding} BETWEEN 1 AND 12`),
@@ -2345,6 +2366,29 @@ export const stockItems = pgTable("stock_items", {
 ]);
 
 /**
+ * A catalogue drug whose prescription discloses a condition at this
+ * facility (P4 slice 3c, decided 2026-11-15): an HIV medicine, say. A
+ * prescription naming one is restricted as a whole, as a sensitive lab test
+ * restricts its order (rule 27), its past prescriptions included. Marked by
+ * the facility admin or a pharmacist; a null category unmarks it, since a
+ * mark is changed, never removed.
+ */
+export const sensitiveDrugs = pgTable("sensitive_drugs", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  drugCode: text().notNull(),
+  /** Null once unmarked. */
+  category: text().$type<"hiv" | "mental_health" | "gbv">(),
+  markedBy: uuid().notNull(),
+  markedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+}, t => [
+  unique("sensitive_drugs_drug_key").on(t.facilityId, t.drugCode),
+  foreignKey({ name: "sensitive_drugs_drug_fk", columns: [t.drugCode], foreignColumns: [drugCatalogue.code] }),
+  foreignKey({ name: "sensitive_drugs_marked_by_fk", columns: [t.facilityId, t.markedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  oneOf("sensitive_drugs_category_known", t.category, ["hiv", "mental_health", "gbv"]),
+]);
+
+/**
  * Below this many base units on hand, an item is flagged in that store (the
  * low-stock alert, slice 6). One per item per store; zero flags nothing, so
  * a level is set to zero rather than removed.
@@ -2439,6 +2483,252 @@ export const stockBatches = pgTable("stock_batches", {
 ]);
 
 /**
+ * Stock moved from one store to another (P4 slice 2, decided 2026-11-15):
+ * requested by the receiving side or sent without a request, sent by the
+ * sending side (which approves it in the act), and received by someone
+ * else. Its lifecycle is the columns' privileges; the batches it carries
+ * are `stock_transfer_batches`, and their movements `transfer_out` when
+ * sent and `transfer_in` when received.
+ */
+export const stockTransfers = pgTable("stock_transfers", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  /** `TRF-2026-000123`. */
+  number: text().notNull(),
+  fromStoreId: uuid().notNull(),
+  toStoreId: uuid().notNull(),
+  status: text().$type<"requested" | "sent" | "received" | "cancelled" | "declined">().notNull(),
+  /** Null for one sent without a request. */
+  requestedBy: uuid(),
+  requestedAt: timestamp({ withTimezone: true }),
+  sentBy: uuid(),
+  sentAt: timestamp({ withTimezone: true }),
+  receivedBy: uuid(),
+  receivedAt: timestamp({ withTimezone: true }),
+  /** Why less arrived than was sent; the loss waits for a second person. */
+  shortfallReason: text(),
+  shortfallAcceptedBy: uuid(),
+  shortfallAcceptedAt: timestamp({ withTimezone: true }),
+  /** Who cancelled (the requester) or declined (the sending side) it, and why. */
+  closedBy: uuid(),
+  closedAt: timestamp({ withTimezone: true }),
+  closeReason: text(),
+  createdAt: createdAt(),
+}, t => [
+  unique("stock_transfers_facility_id_id_key").on(t.facilityId, t.id),
+  unique("stock_transfers_number_key").on(t.facilityId, t.number),
+  foreignKey({ name: "stock_transfers_from_store_fk", columns: [t.facilityId, t.fromStoreId], foreignColumns: [stores.facilityId, stores.id] }),
+  foreignKey({ name: "stock_transfers_to_store_fk", columns: [t.facilityId, t.toStoreId], foreignColumns: [stores.facilityId, stores.id] }),
+  foreignKey({ name: "stock_transfers_requested_by_fk", columns: [t.facilityId, t.requestedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "stock_transfers_sent_by_fk", columns: [t.facilityId, t.sentBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "stock_transfers_received_by_fk", columns: [t.facilityId, t.receivedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "stock_transfers_shortfall_accepted_by_fk", columns: [t.facilityId, t.shortfallAcceptedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "stock_transfers_closed_by_fk", columns: [t.facilityId, t.closedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  index("stock_transfers_from_index").on(t.facilityId, t.fromStoreId, t.status),
+  index("stock_transfers_to_index").on(t.facilityId, t.toStoreId, t.status),
+  oneOf("stock_transfers_status_known", t.status, ["requested", "sent", "received", "cancelled", "declined"]),
+  check("stock_transfers_two_stores", sql`${t.fromStoreId} <> ${t.toStoreId}`),
+  // Each step's who and when together, and only the steps its status has reached.
+  check(
+    "stock_transfers_lifecycle",
+    sql`(${t.requestedBy} IS NULL) = (${t.requestedAt} IS NULL)
+      AND (${t.sentBy} IS NULL) = (${t.sentAt} IS NULL)
+      AND (${t.receivedBy} IS NULL) = (${t.receivedAt} IS NULL)
+      AND (${t.closedBy} IS NULL) = (${t.closedAt} IS NULL) AND (${t.closedBy} IS NULL) = (${t.closeReason} IS NULL)
+      AND (${t.closeReason} IS NULL OR length(btrim(${t.closeReason})) > 0)
+      AND CASE ${t.status}
+        WHEN 'requested' THEN ${t.requestedBy} IS NOT NULL AND ${t.sentBy} IS NULL AND ${t.receivedBy} IS NULL AND ${t.closedBy} IS NULL
+        WHEN 'sent' THEN ${t.sentBy} IS NOT NULL AND ${t.receivedBy} IS NULL AND ${t.closedBy} IS NULL
+        WHEN 'received' THEN ${t.sentBy} IS NOT NULL AND ${t.receivedBy} IS NOT NULL AND ${t.closedBy} IS NULL
+        ELSE ${t.requestedBy} IS NOT NULL AND ${t.sentBy} IS NULL AND ${t.receivedBy} IS NULL AND ${t.closedBy} IS NOT NULL
+      END`,
+  ),
+  // Received by someone other than its sender (decided 2026-11-15).
+  check("stock_transfers_received_by_another", sql`${t.receivedBy} IS NULL OR ${t.receivedBy} <> ${t.sentBy}`),
+  // A shortfall only on receipt, with its reason; accepted by a second person (rule 24).
+  check(
+    "stock_transfers_shortfall",
+    sql`(${t.shortfallReason} IS NULL OR (${t.receivedBy} IS NOT NULL AND length(btrim(${t.shortfallReason})) > 0))
+      AND (${t.shortfallAcceptedBy} IS NULL) = (${t.shortfallAcceptedAt} IS NULL)
+      AND (${t.shortfallAcceptedBy} IS NULL OR (${t.shortfallReason} IS NOT NULL AND ${t.shortfallAcceptedBy} <> ${t.receivedBy}))`,
+  ),
+]);
+
+/** What a request asks for, per item, in base units. None for a transfer sent without one. */
+export const stockTransferItems = pgTable("stock_transfer_items", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  transferId: uuid().notNull(),
+  stockItemId: uuid().notNull(),
+  quantityRequested: integer().notNull(),
+}, t => [
+  unique("stock_transfer_items_item_key").on(t.transferId, t.stockItemId),
+  foreignKey({ name: "stock_transfer_items_transfer_fk", columns: [t.facilityId, t.transferId], foreignColumns: [stockTransfers.facilityId, stockTransfers.id] }),
+  foreignKey({ name: "stock_transfer_items_stock_item_fk", columns: [t.facilityId, t.stockItemId], foreignColumns: [stockItems.facilityId, stockItems.id] }),
+  check("stock_transfer_items_quantity_positive", sql`${t.quantityRequested} > 0`),
+]);
+
+/** Each batch a transfer carries: how much was sent, and, once received, how much arrived. */
+export const stockTransferBatches = pgTable("stock_transfer_batches", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  transferId: uuid().notNull(),
+  batchId: uuid().notNull(),
+  quantitySent: integer().notNull(),
+  quantityReceived: integer(),
+}, t => [
+  unique("stock_transfer_batches_batch_key").on(t.transferId, t.batchId),
+  foreignKey({ name: "stock_transfer_batches_transfer_fk", columns: [t.facilityId, t.transferId], foreignColumns: [stockTransfers.facilityId, stockTransfers.id] }),
+  foreignKey({ name: "stock_transfer_batches_batch_fk", columns: [t.facilityId, t.batchId], foreignColumns: [stockBatches.facilityId, stockBatches.id] }),
+  index("stock_transfer_batches_batch_index").on(t.facilityId, t.batchId),
+  check("stock_transfer_batches_quantities", sql`${t.quantitySent} > 0 AND (${t.quantityReceived} IS NULL OR ${t.quantityReceived} BETWEEN 0 AND ${t.quantitySent})`),
+]);
+
+/**
+ * A prescription handed over, or being (P4 slice 3a, decided 2026-11-15):
+ * prepared from a pharmacy's stock, which takes the stock and raises the
+ * charges, then handed over, which finishes the medicines it completes. A
+ * prepared one not handed over may be cancelled, giving both back while no
+ * charge is billed. Its lines are `dispense_lines`.
+ */
+export const dispenses = pgTable("dispenses", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  encounterId: uuid().notNull(),
+  /** The prescription: an order of medicines. */
+  orderId: uuid().notNull(),
+  /** The pharmacy it is dispensed from. */
+  storeId: uuid().notNull(),
+  status: text().$type<"prepared" | "handed_over" | "cancelled">().notNull(),
+  preparedBy: uuid().notNull(),
+  preparedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  handedOverBy: uuid(),
+  handedOverAt: timestamp({ withTimezone: true }),
+  cancelledBy: uuid(),
+  cancelledAt: timestamp({ withTimezone: true }),
+  cancellationReason: text(),
+}, t => [
+  unique("dispenses_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({ name: "dispenses_encounter_fk", columns: [t.facilityId, t.encounterId], foreignColumns: [encounters.facilityId, encounters.id] }),
+  foreignKey({ name: "dispenses_order_fk", columns: [t.facilityId, t.orderId], foreignColumns: [orders.facilityId, orders.id] }),
+  foreignKey({ name: "dispenses_store_fk", columns: [t.facilityId, t.storeId], foreignColumns: [stores.facilityId, stores.id] }),
+  foreignKey({ name: "dispenses_prepared_by_fk", columns: [t.facilityId, t.preparedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "dispenses_handed_over_by_fk", columns: [t.facilityId, t.handedOverBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "dispenses_cancelled_by_fk", columns: [t.facilityId, t.cancelledBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  index("dispenses_order_index").on(t.facilityId, t.orderId),
+  index("dispenses_status_index").on(t.facilityId, t.status),
+  oneOf("dispenses_status_known", t.status, ["prepared", "handed_over", "cancelled"]),
+  check(
+    "dispenses_lifecycle",
+    sql`(${t.status} = 'prepared' AND num_nonnulls(${t.handedOverBy}, ${t.handedOverAt}, ${t.cancelledBy}, ${t.cancelledAt}, ${t.cancellationReason}) = 0)
+      OR (${t.status} = 'handed_over' AND ${t.handedOverBy} IS NOT NULL AND ${t.handedOverAt} IS NOT NULL
+          AND num_nonnulls(${t.cancelledBy}, ${t.cancelledAt}, ${t.cancellationReason}) = 0)
+      OR (${t.status} = 'cancelled' AND ${t.cancelledBy} IS NOT NULL AND ${t.cancelledAt} IS NOT NULL
+          AND ${t.cancellationReason} IS NOT NULL AND length(btrim(${t.cancellationReason})) > 0
+          AND num_nonnulls(${t.handedOverBy}, ${t.handedOverAt}) = 0)`,
+  ),
+]);
+
+/**
+ * One medicine of a dispense: the stock item that fills it and how much, in
+ * the item's base unit. Its batches are its `dispense` movements, and its
+ * price its charge. Written once.
+ */
+export const dispenseLines = pgTable("dispense_lines", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  dispenseId: uuid().notNull(),
+  /** The medicine on the prescription. */
+  orderItemId: uuid().notNull(),
+  stockItemId: uuid().notNull(),
+  quantity: integer().notNull(),
+  /** Handing it over finishes the medicine: its quantity met, or, in other units, the pharmacist's word. */
+  completes: boolean().notNull(),
+}, t => [
+  unique("dispense_lines_facility_id_id_key").on(t.facilityId, t.id),
+  unique("dispense_lines_medicine_key").on(t.dispenseId, t.orderItemId),
+  foreignKey({ name: "dispense_lines_dispense_fk", columns: [t.facilityId, t.dispenseId], foreignColumns: [dispenses.facilityId, dispenses.id] }),
+  foreignKey({ name: "dispense_lines_order_item_fk", columns: [t.facilityId, t.orderItemId], foreignColumns: [orderItems.facilityId, orderItems.id] }),
+  foreignKey({ name: "dispense_lines_stock_item_fk", columns: [t.facilityId, t.stockItemId], foreignColumns: [stockItems.facilityId, stockItems.id] }),
+  index("dispense_lines_order_item_index").on(t.facilityId, t.orderItemId),
+  check("dispense_lines_quantity_positive", sql`${t.quantity} > 0`),
+]);
+
+/**
+ * A medicine the pharmacy did not supply, or not all of (P4 question 7):
+ * why, which ends it without a charge for what was not given. Written once.
+ */
+export const medicinesNotSupplied = pgTable("medicines_not_supplied", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  orderItemId: uuid().notNull(),
+  reason: text().$type<"out_of_stock" | "patient_declined" | "buying_elsewhere" | "other">().notNull(),
+  /** In the pharmacist's words; needed for `other`. */
+  note: text(),
+  recordedBy: uuid().notNull(),
+  recordedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+}, t => [
+  unique("medicines_not_supplied_order_item_key").on(t.orderItemId),
+  foreignKey({ name: "medicines_not_supplied_order_item_fk", columns: [t.facilityId, t.orderItemId], foreignColumns: [orderItems.facilityId, orderItems.id] }),
+  foreignKey({ name: "medicines_not_supplied_recorded_by_fk", columns: [t.facilityId, t.recordedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  oneOf("medicines_not_supplied_reason_known", t.reason, ["out_of_stock", "patient_declined", "buying_elsewhere", "other"]),
+  check("medicines_not_supplied_note", sql`(${t.note} IS NULL OR length(btrim(${t.note})) > 0) AND (${t.reason} <> 'other' OR ${t.note} IS NOT NULL)`),
+]);
+
+/**
+ * A change to a store's stock that no delivery, transfer or dispense
+ * explains (P4 slice 3b): a write-off (expired, damaged, lost), stock found,
+ * or a correction. Asked for by the stores' staff, approved by a second
+ * person (rule 24); its batches move only on approval.
+ */
+export const stockAdjustments = pgTable("stock_adjustments", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  storeId: uuid().notNull(),
+  kind: text().$type<"expired" | "damaged" | "lost" | "found" | "correction">().notNull(),
+  reason: text().notNull(),
+  status: text().$type<"pending" | "approved" | "rejected" | "withdrawn">().notNull(),
+  requestedBy: uuid().notNull(),
+  requestedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  decidedBy: uuid(),
+  decidedAt: timestamp({ withTimezone: true }),
+}, t => [
+  unique("stock_adjustments_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({ name: "stock_adjustments_store_fk", columns: [t.facilityId, t.storeId], foreignColumns: [stores.facilityId, stores.id] }),
+  foreignKey({ name: "stock_adjustments_requested_by_fk", columns: [t.facilityId, t.requestedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "stock_adjustments_decided_by_fk", columns: [t.facilityId, t.decidedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  index("stock_adjustments_status_index").on(t.facilityId, t.status),
+  oneOf("stock_adjustments_kind_known", t.kind, ["expired", "damaged", "lost", "found", "correction"]),
+  oneOf("stock_adjustments_status_known", t.status, ["pending", "approved", "rejected", "withdrawn"]),
+  check("stock_adjustments_reason_present", sql`length(btrim(${t.reason})) > 0`),
+  // Decided once, by someone other than its requester (rule 24); withdrawn by the requester.
+  check(
+    "stock_adjustments_decision",
+    sql`(${t.decidedBy} IS NULL) = (${t.decidedAt} IS NULL)
+      AND (${t.status} = 'pending') = (${t.decidedBy} IS NULL)
+      AND (${t.decidedBy} IS NULL OR (${t.status} = 'withdrawn') = (${t.decidedBy} = ${t.requestedBy}))`,
+  ),
+]);
+
+/** One batch of an adjustment: its signed quantity in base units, and its value at the batch's cost. Written once. */
+export const stockAdjustmentLines = pgTable("stock_adjustment_lines", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  adjustmentId: uuid().notNull(),
+  batchId: uuid().notNull(),
+  /** Below zero takes stock off the shelf; above zero puts found stock on it. */
+  quantity: integer().notNull(),
+  /** At the batch's own cost, signed as the quantity, rounded once. */
+  valueCents: integer().notNull(),
+}, t => [
+  unique("stock_adjustment_lines_facility_id_id_key").on(t.facilityId, t.id),
+  unique("stock_adjustment_lines_batch_key").on(t.adjustmentId, t.batchId),
+  foreignKey({ name: "stock_adjustment_lines_adjustment_fk", columns: [t.facilityId, t.adjustmentId], foreignColumns: [stockAdjustments.facilityId, stockAdjustments.id] }),
+  foreignKey({ name: "stock_adjustment_lines_batch_fk", columns: [t.facilityId, t.batchId], foreignColumns: [stockBatches.facilityId, stockBatches.id] }),
+  check("stock_adjustment_lines_quantity_nonzero", sql`${t.quantity} <> 0`),
+]);
+
+/**
  * Every change to what a store holds, per batch: a signed quantity in base
  * units (SCHEMA.md §8). Append-only, for every role. On hand per store and
  * batch is their sum, never stored (rule 4) and never negative, which a
@@ -2450,10 +2740,16 @@ export const stockMovements = pgTable("stock_movements", {
   facilityId: uuid().notNull().references(() => facilities.id),
   storeId: uuid().notNull(),
   batchId: uuid().notNull(),
-  kind: text().$type<"receipt" | "receipt_reversed">().notNull(),
+  kind: text().$type<"receipt" | "receipt_reversed" | "transfer_out" | "transfer_in" | "dispense" | "dispense_cancelled" | "dispense_returned" | "adjustment">().notNull(),
   quantity: integer().notNull(),
   /** The note a receipt, or its reversal, belongs to. */
   goodsReceivedId: uuid(),
+  /** The transfer a batch left one store by, and entered another by (slice 2). */
+  transferId: uuid(),
+  /** The dispense line a batch was taken for, given back by if it was cancelled (slice 3a), or taken back by from the patient (slice 3b). */
+  dispenseLineId: uuid(),
+  /** An approved stock adjustment's line (slice 3b). */
+  stockAdjustmentLineId: uuid(),
   /** Why, for a reversal. */
   reason: text(),
   recordedBy: uuid().notNull(),
@@ -2462,18 +2758,38 @@ export const stockMovements = pgTable("stock_movements", {
   foreignKey({ name: "stock_movements_store_fk", columns: [t.facilityId, t.storeId], foreignColumns: [stores.facilityId, stores.id] }),
   foreignKey({ name: "stock_movements_batch_fk", columns: [t.facilityId, t.batchId], foreignColumns: [stockBatches.facilityId, stockBatches.id] }),
   foreignKey({ name: "stock_movements_goods_received_fk", columns: [t.facilityId, t.goodsReceivedId], foreignColumns: [goodsReceived.facilityId, goodsReceived.id] }),
+  foreignKey({ name: "stock_movements_transfer_fk", columns: [t.facilityId, t.transferId], foreignColumns: [stockTransfers.facilityId, stockTransfers.id] }),
+  foreignKey({ name: "stock_movements_dispense_line_fk", columns: [t.facilityId, t.dispenseLineId], foreignColumns: [dispenseLines.facilityId, dispenseLines.id] }),
+  foreignKey({ name: "stock_movements_adjustment_line_fk", columns: [t.facilityId, t.stockAdjustmentLineId], foreignColumns: [stockAdjustmentLines.facilityId, stockAdjustmentLines.id] }),
   foreignKey({ name: "stock_movements_recorded_by_fk", columns: [t.facilityId, t.recordedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
   index("stock_movements_store_batch_index").on(t.facilityId, t.storeId, t.batchId),
   index("stock_movements_batch_index").on(t.facilityId, t.batchId),
   // A batch is received once, and its receipt reversed at most once.
   uniqueIndex("stock_movements_one_receipt").on(t.batchId).where(sql`${t.kind} = 'receipt'`),
   uniqueIndex("stock_movements_one_receipt_reversal").on(t.batchId).where(sql`${t.kind} = 'receipt_reversed'`),
-  oneOf("stock_movements_kind_known", t.kind, ["receipt", "receipt_reversed"]),
+  // A batch leaves by a transfer once, and arrives by it once.
+  uniqueIndex("stock_movements_one_transfer_out").on(t.transferId, t.batchId).where(sql`${t.kind} = 'transfer_out'`),
+  uniqueIndex("stock_movements_one_transfer_in").on(t.transferId, t.batchId).where(sql`${t.kind} = 'transfer_in'`),
+  // A dispense line takes from a batch once, and gives it back at most once.
+  uniqueIndex("stock_movements_one_dispense").on(t.dispenseLineId, t.batchId).where(sql`${t.kind} = 'dispense'`),
+  uniqueIndex("stock_movements_one_dispense_cancelled").on(t.dispenseLineId, t.batchId).where(sql`${t.kind} = 'dispense_cancelled'`),
+  index("stock_movements_dispense_line_index").on(t.facilityId, t.dispenseLineId),
+  // An adjustment's line moves its batch once.
+  uniqueIndex("stock_movements_one_adjustment").on(t.stockAdjustmentLineId).where(sql`${t.kind} = 'adjustment'`),
+  oneOf("stock_movements_kind_known", t.kind, ["receipt", "receipt_reversed", "transfer_out", "transfer_in", "dispense", "dispense_cancelled", "dispense_returned", "adjustment"]),
+  // Each kind's sign, its one source, and a reason only where one is asked for.
   check(
     "stock_movements_shape",
-    sql`(${t.kind} = 'receipt' AND ${t.quantity} > 0 AND ${t.goodsReceivedId} IS NOT NULL AND ${t.reason} IS NULL)
-      OR (${t.kind} = 'receipt_reversed' AND ${t.quantity} < 0 AND ${t.goodsReceivedId} IS NOT NULL
-          AND ${t.reason} IS NOT NULL AND length(btrim(${t.reason})) > 0)`,
+    sql`num_nonnulls(${t.goodsReceivedId}, ${t.transferId}, ${t.dispenseLineId}, ${t.stockAdjustmentLineId}) = 1
+      AND ((${t.kind} = 'receipt' AND ${t.quantity} > 0 AND ${t.goodsReceivedId} IS NOT NULL AND ${t.reason} IS NULL)
+        OR (${t.kind} = 'receipt_reversed' AND ${t.quantity} < 0 AND ${t.goodsReceivedId} IS NOT NULL
+            AND ${t.reason} IS NOT NULL AND length(btrim(${t.reason})) > 0)
+        OR (${t.kind} = 'transfer_out' AND ${t.quantity} < 0 AND ${t.transferId} IS NOT NULL AND ${t.reason} IS NULL)
+        OR (${t.kind} = 'transfer_in' AND ${t.quantity} > 0 AND ${t.transferId} IS NOT NULL AND ${t.reason} IS NULL)
+        OR (${t.kind} = 'dispense' AND ${t.quantity} < 0 AND ${t.dispenseLineId} IS NOT NULL AND ${t.reason} IS NULL)
+        OR (${t.kind} = 'dispense_cancelled' AND ${t.quantity} > 0 AND ${t.dispenseLineId} IS NOT NULL AND ${t.reason} IS NULL)
+        OR (${t.kind} = 'dispense_returned' AND ${t.quantity} > 0 AND ${t.dispenseLineId} IS NOT NULL AND ${t.reason} IS NULL)
+        OR (${t.kind} = 'adjustment' AND ${t.quantity} <> 0 AND ${t.stockAdjustmentLineId} IS NOT NULL AND ${t.reason} IS NULL))`,
   ),
 ]);
 
@@ -2515,6 +2831,8 @@ export const charges = pgTable("charges", {
   queueEntryId: uuid(),
   /** A lab test or service, charged as it is ordered (P3). */
   orderItemId: uuid(),
+  /** A medicine, charged as it is prepared for dispensing (P4 slice 3a). */
+  dispenseLineId: uuid(),
   /** Why it was posted by hand, when it has no source. */
   manualReason: text(),
   /** Who posted it; null when the system captured it (a bed-day). */
@@ -2533,6 +2851,7 @@ export const charges = pgTable("charges", {
   foreignKey({ name: "charges_bed_stay_fk", columns: [t.facilityId, t.bedStayId], foreignColumns: [bedStays.facilityId, bedStays.id] }),
   foreignKey({ name: "charges_queue_entry_fk", columns: [t.facilityId, t.queueEntryId], foreignColumns: [queueEntries.facilityId, queueEntries.id] }),
   foreignKey({ name: "charges_order_item_fk", columns: [t.facilityId, t.orderItemId], foreignColumns: [orderItems.facilityId, orderItems.id] }),
+  foreignKey({ name: "charges_dispense_line_fk", columns: [t.facilityId, t.dispenseLineId], foreignColumns: [dispenseLines.facilityId, dispenseLines.id] }),
   foreignKey({ name: "charges_captured_by_fk", columns: [t.facilityId, t.capturedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
   foreignKey({ name: "charges_cancelled_by_fk", columns: [t.facilityId, t.cancelledBy], foreignColumns: [memberships.facilityId, memberships.id] }),
   index("charges_encounter_index").on(t.facilityId, t.encounterId, t.serviceDate),
@@ -2542,6 +2861,8 @@ export const charges = pgTable("charges", {
   uniqueIndex("charges_one_per_queue_entry").on(t.queueEntryId).where(sql`${t.queueEntryId} IS NOT NULL`),
   // An order item is charged once.
   uniqueIndex("charges_one_per_order_item").on(t.orderItemId).where(sql`${t.orderItemId} IS NOT NULL`),
+  // A dispense line has one standing charge: a return replaces it for what was kept (slice 3b).
+  uniqueIndex("charges_one_standing_per_dispense_line").on(t.dispenseLineId).where(sql`${t.dispenseLineId} IS NOT NULL AND ${t.cancelledAt} IS NULL`),
   check("charges_quantity_positive", sql`${t.quantity} > 0`),
   check("charges_unit_price_nonnegative", sql`${t.unitPriceCents} >= 0`),
   // Whole shillings: neither cash nor M-Pesa carries cents (SPEC.md D2).
@@ -2549,8 +2870,8 @@ export const charges = pgTable("charges", {
   // At most one source; none means a manual posting, which needs a reason and a person.
   check(
     "charges_source_or_reason",
-    sql`num_nonnulls(${t.bedStayId}, ${t.queueEntryId}, ${t.orderItemId}) <= 1
-      AND ((num_nonnulls(${t.bedStayId}, ${t.queueEntryId}, ${t.orderItemId}) = 0) = (${t.manualReason} IS NOT NULL AND length(btrim(${t.manualReason})) > 0))`,
+    sql`num_nonnulls(${t.bedStayId}, ${t.queueEntryId}, ${t.orderItemId}, ${t.dispenseLineId}) <= 1
+      AND ((num_nonnulls(${t.bedStayId}, ${t.queueEntryId}, ${t.orderItemId}, ${t.dispenseLineId}) = 0) = (${t.manualReason} IS NOT NULL AND length(btrim(${t.manualReason})) > 0))`,
   ),
   check("charges_manual_has_person", sql`${t.manualReason} IS NULL OR ${t.capturedBy} IS NOT NULL`),
   check(
@@ -2802,6 +3123,50 @@ export const invoiceAdjustments = pgTable("invoice_adjustments", {
   check(
     "invoice_adjustments_credit_note_document",
     sql`(${t.kind} = 'credit_note' AND ${t.status} = 'approved') = (${t.documentId} IS NOT NULL)`,
+  ),
+]);
+
+/**
+ * Medicines a patient brought back (P4 slice 3b, decided 2026-11-15). One
+ * fit to sell again goes back on the shelf at once (`dispense_returned`)
+ * and the patient is credited; one that is not is a write-off, and waits
+ * for a second person before the patient is credited. Credited by a
+ * replacement charge while unbilled, or by a credit note once billed.
+ */
+export const dispenseReturns = pgTable("dispense_returns", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  dispenseLineId: uuid().notNull(),
+  /** In the line's base unit. */
+  quantity: integer().notNull(),
+  reason: text().notNull(),
+  fitForResale: boolean().notNull(),
+  /** `done` once credited; an unfit one is `pending` a second person, who may reject it. */
+  status: text().$type<"done" | "pending" | "rejected">().notNull(),
+  receivedBy: uuid().notNull(),
+  receivedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  decidedBy: uuid(),
+  decidedAt: timestamp({ withTimezone: true }),
+  /** The credit note asked for, when the charge was already billed. */
+  invoiceAdjustmentId: uuid(),
+}, t => [
+  unique("dispense_returns_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({ name: "dispense_returns_line_fk", columns: [t.facilityId, t.dispenseLineId], foreignColumns: [dispenseLines.facilityId, dispenseLines.id] }),
+  foreignKey({ name: "dispense_returns_received_by_fk", columns: [t.facilityId, t.receivedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "dispense_returns_decided_by_fk", columns: [t.facilityId, t.decidedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  foreignKey({ name: "dispense_returns_adjustment_fk", columns: [t.facilityId, t.invoiceAdjustmentId], foreignColumns: [invoiceAdjustments.facilityId, invoiceAdjustments.id] }),
+  index("dispense_returns_line_index").on(t.facilityId, t.dispenseLineId),
+  index("dispense_returns_status_index").on(t.facilityId, t.status),
+  oneOf("dispense_returns_status_known", t.status, ["done", "pending", "rejected"]),
+  check("dispense_returns_quantity_positive", sql`${t.quantity} > 0`),
+  check("dispense_returns_reason_present", sql`length(btrim(${t.reason})) > 0`),
+  // Fit: done at once, by nobody else. Unfit: pending, then decided by someone other than its receiver (rule 24).
+  check(
+    "dispense_returns_lifecycle",
+    sql`(${t.decidedBy} IS NULL) = (${t.decidedAt} IS NULL)
+      AND ((${t.fitForResale} AND ${t.status} = 'done' AND ${t.decidedBy} IS NULL)
+        OR (NOT ${t.fitForResale} AND ${t.status} = 'pending' AND ${t.decidedBy} IS NULL)
+        OR (NOT ${t.fitForResale} AND ${t.status} IN ('done', 'rejected') AND ${t.decidedBy} IS NOT NULL AND ${t.decidedBy} <> ${t.receivedBy}))`,
   ),
 ]);
 
@@ -3283,4 +3648,14 @@ export const TENANT_TABLES = [
   "goods_received",
   "stock_batches",
   "stock_movements",
+  "stock_transfers",
+  "stock_transfer_items",
+  "stock_transfer_batches",
+  "dispenses",
+  "dispense_lines",
+  "medicines_not_supplied",
+  "dispense_returns",
+  "stock_adjustments",
+  "stock_adjustment_lines",
+  "sensitive_drugs",
 ] as const;

@@ -702,7 +702,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 - **Reading:** `GET /encounters/{id}/lab-results` (clinical roles, audited) shows released and verified results and each order's current report. The lab's worklist adds the results to verify, and keeps a specimen "in the lab" until each of its tests has a result.
 - **A visit closes itself** (`src/lib/visit-finish.ts`; `POST /internal/jobs/finish-visits`, Cloud Scheduler every 15 minutes) once all of these hold:
   - the open outpatient visit's patient is in no queue;
-  - every lab test is resulted or cancelled, and every service done or cancelled. A medicine is not waited for until dispensing exists (P4);
+  - every lab test is resulted or cancelled, and every service done or cancelled. Since P4 slice 3a, every medicine is dispensed, marked not supplied, or cancelled too;
   - no money is due, as the cashier's list counts it (the same SQL, `lib/cashier.ts`);
   - the patient was seen or tested.
   - It is closed by nobody, re-checked under the encounter's lock. Failures are recorded as `visit_finish` by the runner the nightly close shares (`src/jobs/visits.ts`).
@@ -782,7 +782,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 - **The alert list** (`GET /break-glass`, audited): every grant for the facility admin, and for a clinician those that alerted them, latest first, 100 a page, `unreviewed=true` for those still to review. The facility admin reviews each once, with a note if wanted (`POST /break-glass/{id}/review`).
 - **Triggers (0071):** a grant changes only by its review, once, and none is deleted; alerts are added, never changed; a note's mark is set once, as a change of its own, on a draft or signed note, and never taken off or changed.
 - **Neutral names on bills:** `billable_items.printed_name` (set at creation or with `PUT /billable-items/{id}/printed-name`, by the price keepers, audited) prints in place of the name. `charges.printed_name` copies it, or the name, at capture: a trigger sets it on every insert, so no capture path can leave it out, and the charge's cancel-only trigger freezes it. Invoice lines print the charge's copy, so a later change never alters a bill (rule 7). Migration 0070 fills it for charges captured before. The bill also prints the item's code, so a facility should choose codes that do not name the test.
-- **Not yet:** medicines that disclose a condition outside a sensitive clinic (no drug classes; P4's stock items can carry the mark); the GBV codes; ward and department scoping (later, D5).
+- **Not yet:** the GBV codes; ward and department scoping (later, D5). Medicines that disclose a condition came with P4 slice 3c.
 
 **Clinical record.** `observations` (vitals and charted values, with `entered_in_error` instead of deletion), `diagnoses` (ICD code, provisional \| final \| secondary), `clinical_notes` (`signed_at`, `addendum_of`: a signed note is corrected only by an addendum), `orders` and `order_items` (lab, imaging, procedure, medication, service; medication items carry dose, route, frequency and duration). Every clinical act records the acting membership, whose licence details live on `memberships` (rule 25).
 
@@ -864,6 +864,83 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - a row that disagrees with what's set up (another category, drug, base unit or pack size, or a retired item) is a problem, never applied.
 - **Who:** the facility admin only, since an import creates billable items as well as stock items.
 - **Not yet:** reorder levels and opening stock (set per store; P6's cutover); matching drugs by anything cleverer than a name's first word.
+
+**As built (P4, slice 2): transfers.** Decided 2026-11-15 (`ROADMAP.md` P4, slice 2). `stock_transfers` (built as `stock_transfers`, with `stock_transfer_items` for what a request asks and `stock_transfer_batches` for what each batch sent and received). Numbered from a yearly `TRF-` series, registered at onboarding and backfilled by migration 0081.
+
+- **Lifecycle:** `requested` → `sent` → `received`, or a request `cancelled` (by its requester) or `declined` (by the sending store), with a reason, before it is sent. A store may also send without a request (`POST /stock-transfers/send`). `stock_transfers_lifecycle` holds which steps each status has reached, each step's who and when together; the app role may update only the lifecycle columns.
+- **Sending** takes each line by quantity, earliest expiry first, or by the batches named, through `allocate` (`src/lib/stock-allocation.ts`), which dispensing will share:
+  - an expired batch is never taken, nor a batch of another item or not in the store;
+  - a line the store cannot fill from stock in date is refused, naming the line;
+  - every batch the item has had in the store is locked before its balance is read, so two sends from one batch queue (tested).
+
+  Each batch's `transfer_out` movement leaves the sending store. A request's send carries only items it asked for, and never more of one (`not_requested`, `more_than_requested`). Less may be sent, and the request is then closed as sent.
+- **Receiving** happens once, by someone other than the sender (`stock_transfers_received_by_another`).
+  - A batch not named arrived whole, and more than was sent is refused.
+  - Less needs a `shortfall_reason`. Each batch that arrived gets a `transfer_in` movement into the receiving store.
+  - On its way, stock is in neither store: the transfer shows it.
+- **A shortfall's loss** is accepted by the finance manager or a pharmacist, never the receiver (`stock_transfers_shortfall`, rule 24). Until then the transfer is `awaitingAcceptance`, and `GET /stock-transfers?awaitingAcceptance=true` is the approvers' list.
+- **Who:**
+  - storekeepers, pharmacists and pharmacy technicians request, send and receive for any store;
+  - nurses and ward nurses request for and receive into a ward's store only (`ward_store_only`, 403);
+  - the stores' staff, nurses, the facility admin, the finance manager and the auditor read transfers;
+  - every step is audited (`stock_transfer.*`).
+- **A transfer only moves forward**, for every role (`stock_transfers_forward`, migration 0090): a request to sent, cancelled or declined; sent to received; once received, only a shortfall's acceptance, once. One carries at most 4,000 batches (`MAX_TRANSFER_BATCHES`), as many as its receipt can name.
+- **A store with a transfer still open** from or to it cannot be retired (`open_transfers`). A batch some of which has been sent can no longer have its receipt reversed (`batch_moved`).
+- **The stock ledger** gains `transfer_out` and `transfer_in`, each with the transfer as its typed source. One of each per transfer and batch.
+- **Not yet:** the controlled-drug register's entries for transfers (slice 4); an approval step for ward transfers, if the pilot wants one (`SPEC.md` §9, question 9).
+
+**As built (P4, slice 3a): dispensing.** Decided 2026-11-15 (`ROADMAP.md` P4, slice 3a; questions 4–7). `dispenses`, `dispense_lines` and `medicines_not_supplied`; `src/lib/dispensing.ts` and `src/lib/dispensing-views.ts`.
+
+- **`GET /pharmacy/worklist`**:
+  - lists prescriptions on open visits that still have a medicine to give, oldest first, each medicine with what has been handed over and whether it is prepared;
+  - lists dispenses prepared and not yet collected;
+  - is audited (`pharmacy.worklist_viewed`), since it names patients.
+- **`POST /dispenses`** prepares one prescription from a `pharmacy` store: the facility's only one, unless another is named.
+  - Each line names the medicine and the stock item filling it, which must be the drug prescribed. Its stock is taken through `allocate`: earliest expiry first, never an expired batch, unless batches are named. It gets one `dispense` movement per batch.
+  - Each line gets one charge (`charges.dispense_line_id`, a fourth typed source): the item's cash price per base unit on the day, times the quantity, rounded to whole shillings once. An unpriced item is refused (`not_priced`) before anything is taken.
+  - Where the item's base unit is the dose unit, the quantity defaults to what's still owed and can't exceed it. Otherwise it must be given (`quantity_needed`), and the line completes the medicine unless `complete: false`.
+  - A medicine is on one prepared dispense at a time. A refused line refuses the whole dispense, naming the line.
+- **A controlled drug** is prepared and handed over only by a member holding `pharmacist` with a `pharmacy` licence (`controlled_dispenser`, 403). The request's membership now carries `licenceProfession`.
+- **Units:** a medicine some of which was given in a unit other than the prescription's dose unit has its quantity and completion given by the pharmacist from then on. One unit is never subtracted from another.
+- **`GET /dispenses/{id}`** is audited (`dispense.viewed`), as it names the patient and medicines.
+- **`POST /dispenses/{id}/hand-over`** sets each medicine its lines complete to `done`. A medicine given in part stays on the list with what has been given. The dispense's `unpaid` flag (an outpatient's charges not yet paid) is a warning and never blocks.
+- **`POST /dispenses/{id}/cancel`** (prepared only, with a reason) puts each batch's stock back with a `dispense_cancelled` movement and cancels the charges, while none is on a bill (`billed`, then a return in 3b). A prescription with a prepared dispense cannot be cancelled (`being_dispensed`).
+- **`POST /order-items/{id}/not-supplied`** ends a medicine, or its rest, without a charge for what wasn't given. The reason is `out_of_stock`, `patient_declined`, `buying_elsewhere`, or `other` with a note. The medicine becomes `done`; what was given comes from its dispense lines, and why not from `medicines_not_supplied`.
+- **Open visits only.** A visit no longer finishes early while a medicine is undispensed, so the P3 journey marks its medicine not supplied, and the nightly close still ends whatever is left.
+- **Who:** pharmacists and pharmacy technicians, under a current licence (`requireClinicalRole`), including a nurse who holds the pharmacy technician role.
+- **Final in the database:** a dispense handed over or cancelled never changes, for any role (`dispenses_final`, migration 0090). A line's charge over KES 20 million is refused (`amount_too_large`) before anything is taken.
+- **Lock order:** the encounter (M8), the dispense, its medicines, the store's items and batches, then the charges.
+- **Not yet:**
+  - returns and adjustments (3b);
+  - sensitive medicines (3c);
+  - the controlled-drug register (4);
+  - the pharmacy's outcome on the clinicians' order view;
+  - dispensing labels.
+
+**As built (P4, slice 3b): returns and stock adjustments.** Decided 2026-11-15 (`ROADMAP.md` P4, slice 3b). `dispense_returns`, `stock_adjustments` and `stock_adjustment_lines`; `src/lib/dispense-returns.ts` and `src/lib/stock-adjustments.ts`.
+
+- **`POST /dispense-lines/{id}/returns`** takes back what a patient returns of a medicine handed over: at most what was given, less what has come back or is waiting to.
+  - **Fit to sell again**, it goes back on the shelf: into the dispense's pharmacy, latest-expiring batch first, never an expired one (`nowhere_to_return`), and never more into a batch than came out of it for that line. Each batch gets a `dispense_returned` movement against the line. The patient is credited at once.
+  - **Unfit**, nothing goes back on the shelf: it is a write-off, `pending` until the finance manager or a pharmacist other than the receiver approves (`/approve`, which credits) or rejects it (`dispense_returns_lifecycle`).
+  - **The credit:**
+    - While the charge is unbilled, it is cancelled and a replacement charge raised for what was kept, at the price first charged (`replaceDispenseCharge`). A line has one standing charge (`charges_one_standing_per_dispense_line`).
+    - Once billed on a finalised invoice, a credit note is asked for through the existing invoice adjustments, for the difference between what was kept and what is kept now, each rounded as a charge is. Its id is on the return.
+    - The return is refused when the charge is on a draft bill (`on_draft_bill`), split across bills (`split_billed`), or the bill is paid (`bill_paid`: the cashier frees the payment first, and the money goes back as a refund).
+  - A controlled drug is taken back by a pharmacist with a pharmacy licence. `GET /dispense-returns?status=pending` is the approvers' list. Each return names a visit, so the list is audited (`dispense_return.listed`, with the encounters' ids).
+  - A charge billed in part (a payer's share, P7) is refused as `split_billed`, like one across bills.
+- **`POST /stock-adjustments`** asks for `expired`, `damaged`, `lost`, `found` or `correction`, with a reason, naming batches and signed quantities.
+  - A write-off takes stock off and `found` puts it on (`wrong_sign`). `expired` takes only batches past their date, and a removal can be no more than the store holds.
+  - Each line carries its value at the batch's cost. A controlled drug needs a pharmacist with a pharmacy licence.
+  - Nothing moves until `/approve`, by the finance manager or a pharmacist other than the asker. Approval locks the batches, checks the stock again, and writes an `adjustment` movement per line. `/reject` (another person) and `/withdraw` (the asker) close it unmoved.
+  - `stock_adjustments_decision` holds who decides in the database (rule 24). An adjustment and a return are each decided once, for every role (`stock_adjustments_decided_once`, `dispense_returns_decided_once`, migration 0090). A fit return is written once, already credited.
+- **The stock ledger** gains `dispense_returned` (against its dispense line) and `adjustment` (against its line), keeping one source per movement.
+- **Not yet:** the controlled-drug register's entries for returns and write-offs (4); the stock-take that adjusts by count (5); a loss report built on the adjustments' values (P6's stock reports).
+
+**As built (P4, slice 3c): sensitive medicines.** Decided 2026-11-15 (`ROADMAP.md` P4, slice 3c; question 12). `sensitive_drugs` and `src/lib/sensitive-drugs.ts`.
+
+- **`PUT /sensitive-drugs`** (facility admin, pharmacists) marks a catalogue drug `hiv`, `mental_health` or `gbv`, changes it, or unmarks it (a null category: a mark is changed, never removed). Each change is audited (`drug.sensitivity_set`) with the old and new category. `GET /sensitive-drugs` lists those marked. Nothing is shipped.
+- **`orderGuards`** (`src/lib/sensitivity.ts`) now takes a medicine's category from the facility's mark beside a lab test's. A prescription naming a marked drug is restricted as a whole, wherever an order is shown or printed, its past ones included, by the same rules as a sensitive test (rule 27, break-glass). The pharmacy's own work is unaffected: it opens prescriptions as P3 slice 7 allowed, and its list is not filtered.
+- **Not yet:** marking every strength of a generic in one call (the screen does it a drug at a time); the pilot clinician's list.
 
 ---
 

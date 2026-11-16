@@ -9,6 +9,8 @@ import appointments from "@/routes/appointments/appointments.index";
 import breakGlass from "@/routes/break-glass/break-glass.index";
 import charges from "@/routes/charges/charges.index";
 import diagnoses from "@/routes/diagnoses/diagnoses.index";
+import dispenseReturns from "@/routes/dispense-returns/dispense-returns.index";
+import dispensing from "@/routes/dispensing/dispensing.index";
 import documents from "@/routes/documents/documents.index";
 import encounters from "@/routes/encounters/encounters.index";
 import facility from "@/routes/facility/facility.index";
@@ -32,9 +34,12 @@ import prescriptions from "@/routes/prescriptions/prescriptions.index";
 import prices from "@/routes/prices/prices.index";
 import queues from "@/routes/queues/queues.index";
 import refunds from "@/routes/refunds/refunds.index";
+import sensitiveDrugs from "@/routes/sensitive-drugs/sensitive-drugs.index";
 import shifts from "@/routes/shifts/shifts.index";
 import staff from "@/routes/staff/staff.index";
+import stockAdjustments from "@/routes/stock-adjustments/stock-adjustments.index";
 import stockItems from "@/routes/stock-items/stock-items.index";
+import stockTransfers from "@/routes/stock-transfers/stock-transfers.index";
 import stores from "@/routes/stores/stores.index";
 import superadmin from "@/routes/superadmin/superadmin.index";
 import verify from "@/routes/verify/verify.index";
@@ -106,6 +111,11 @@ const tenantRoutes = [
   stores,
   stockItems,
   goodsReceived,
+  stockTransfers,
+  dispensing,
+  dispenseReturns,
+  stockAdjustments,
+  sensitiveDrugs,
   wards,
   prices,
   charges,

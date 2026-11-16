@@ -18,6 +18,7 @@ import {
   patientNumbers,
   patients,
   queueEntries,
+  sensitiveDrugs,
   servicePoints,
   user,
 } from "@/db/schema";
@@ -219,7 +220,11 @@ export async function patientOfEncounter(tx: AppDb, encounterId: string): Promis
   return found?.patientId ?? null;
 }
 
-/** Each order's guard: its lab tests' categories and its visit's clinics, recorded by whoever ordered and entered it. */
+/**
+ * Each order's guard: its lab tests' categories, its medicines' (a drug the
+ * facility marked sensitive, P4 slice 3c) and its visit's clinics, recorded
+ * by whoever ordered and entered it.
+ */
 export async function orderGuards(tx: AppDb, orderIds: readonly string[]): Promise<Map<string, Guarded & { encounterId: string; patientId: string }>> {
   if (orderIds.length === 0)
     return new Map();
@@ -233,11 +238,20 @@ export async function orderGuards(tx: AppDb, orderIds: readonly string[]): Promi
     .from(orderItems)
     .innerJoin(labTests, eq(labTests.id, orderItems.labTestId))
     .where(and(inArray(orderItems.orderId, [...orderIds]), isNotNull(labTests.sensitiveCategory)));
+  const medicines = await tx
+    .selectDistinct({ orderId: orderItems.orderId, category: sensitiveDrugs.category })
+    .from(orderItems)
+    .innerJoin(sensitiveDrugs, eq(sensitiveDrugs.drugCode, orderItems.drugCode))
+    .where(and(inArray(orderItems.orderId, [...orderIds]), isNotNull(sensitiveDrugs.category)));
   const clinics = await clinicCategoriesOf(tx, [...new Set(rows.map(r => r.encounterId))]);
   return new Map(rows.map(r => [r.id, {
     encounterId: r.encounterId,
     patientId: r.patientId,
-    categories: categoriesOf(clinics.get(r.encounterId), tests.filter(t => t.orderId === r.id).map(t => t.category)),
+    categories: categoriesOf(
+      clinics.get(r.encounterId),
+      tests.filter(t => t.orderId === r.id).map(t => t.category),
+      medicines.filter(m => m.orderId === r.id).map(m => m.category),
+    ),
     recordedBy: [r.orderedBy, r.enteredBy],
   }]));
 }
