@@ -631,6 +631,13 @@
       "when": 1794771207152,
       "tag": "0089_pharmacy_read_audits",
       "breakpoints": true
+    },
+    {
+      "idx": 90,
+      "version": "7",
+      "when": 1794811576000,
+      "tag": "0090_stock_lifecycles",
+      "breakpoints": true
     }
   ]
 }

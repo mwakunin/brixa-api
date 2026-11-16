@@ -12,6 +12,7 @@ import { recordAudit } from "./audit";
 import { assignedByCharge } from "./billing";
 import { cancelDispenseCharges, captureDispenseCharge, dispenseCharges } from "./charges";
 import { businessDate } from "./dates";
+import { chargeAmountCents } from "./money";
 import { cashPriceList, resolvePrice } from "./prices";
 import { allocate } from "./stock-allocation";
 
@@ -52,6 +53,7 @@ export type DispenseErrorCode
     | "quantity_needed"
     | "more_than_owed"
     | "not_priced"
+    | "amount_too_large"
     | "controlled_dispenser"
     | "not_prepared"
     | "billed";
@@ -72,6 +74,7 @@ export class DispenseError extends Error {
       quantity_needed: "The item is counted in another unit than the prescription: give the quantity",
       more_than_owed: "More than is still to be given",
       not_priced: "That item has no price; the finance manager prices it before it is dispensed",
+      amount_too_large: "One line's charge would exceed KES 20 million; split it",
       controlled_dispenser: "A controlled drug is dispensed by a pharmacist with a pharmacy licence",
       not_prepared: "This dispense has been handed over or cancelled",
       billed: "A charge of this dispense is on a bill; take the medicines back as a return instead",
@@ -237,6 +240,15 @@ export async function prepareDispense(
     const price = await resolvePrice(tx, { billableItemId: p.item.billableItemId, priceListId: listId, serviceDate });
     if (!price)
       throw new DispenseError("not_priced", index + 1);
+    // Checked before anything is taken: one charge holds at most KES 20 million, and rounding refuses more.
+    try {
+      chargeAmountCents(String(p.quantity), price.unitPriceCents);
+    }
+    catch (err) {
+      if (err instanceof RangeError)
+        throw new DispenseError("amount_too_large", index + 1);
+      throw err;
+    }
     prices.push(price);
   }
   const taken = await allocate(tx, facilityId, storeId, planned.map(p => ({ stockItemId: p.item.id, quantity: p.line.batches ? undefined : p.quantity, batches: p.line.batches })), serviceDate);

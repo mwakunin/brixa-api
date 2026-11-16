@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -217,6 +217,11 @@ describe("sensitive medicines", () => {
     const unknown = await call("PUT", "/sensitive-drugs", c.facility.id, c.admin, { drugCode: "NOPE-1", category: "hiv" });
     expect([unknown.status, (await unknown.json()).code]).toEqual([409, "drug_not_found"]);
     expect((await call("PUT", "/sensitive-drugs", c.facility.id, c.admin, { drugCode: "PCM-500-TAB", category: "leprosy" })).status).toBe(422);
+
+    // A mark on a drug the catalogue later retires still restricts its past prescriptions, so it stays listed.
+    await call("PUT", "/sensitive-drugs", c.facility.id, c.admin, { drugCode: "AMX-500-CAP", category: "mental_health" });
+    await db.execute(sql`UPDATE drug_catalogue SET retired_at = now() WHERE code = 'AMX-500-CAP'`);
+    expect((await (await call("GET", "/sensitive-drugs", c.facility.id, c.pharmacist)).json()).drugs).toEqual([expect.objectContaining({ drugCode: "AMX-500-CAP" })]);
   });
 });
 

@@ -105,6 +105,9 @@ describe("a patient's return", () => {
     await created(await giveBack(lineId, { quantity: 10, reason: "All of it", fitForResale: true }));
     expect(await standing(encounterId)).toEqual([]);
     expect(await shelf()).toBe(3000);
+    // Given back whole, the line has no charge left to show.
+    const after = await (await call("GET", `/dispenses/${dispenseId}`, h.facility.id, pharmacist)).json();
+    expect(after.lines.map((l: { amountCents: number }) => l.amountCents)).toEqual([0]);
   });
 
   it("once billed, asks for a credit note instead, which a second person approves", async () => {
@@ -137,6 +140,8 @@ describe("a patient's return", () => {
     const approved = await (await post(`/dispense-returns/${back.id}/approve`, h.finance)).json();
     expect(approved.status).toBe("done");
     expect(await shelf()).toBe(2985);
+    const undo = await db.execute(sql`UPDATE dispense_returns SET status = 'rejected' WHERE id = ${back.id}`).then(() => null, (e: unknown) => e);
+    expect(pgErrorCode(undo)).toBe("23001");
     expect(await standing(encounterId)).toEqual([{ quantity: "10.000", amountCents: 2500 }]);
     expect(await refusal(await post(`/dispense-returns/${back.id}/reject`, h.finance))).toBe("not_pending");
   });
@@ -211,7 +216,10 @@ describe("a stock adjustment", () => {
     expect((await (await post(`/stock-adjustments/${two.id}/withdraw`, storekeeper)).json()).status).toBe("withdrawn");
 
     const err = await db.execute(sql`UPDATE stock_adjustments SET status = 'approved', decided_by = requested_by, decided_at = now() WHERE id = ${two.id}`).then(() => null, (e: unknown) => e);
-    expect(pgErrorCode(err)).toBe("23514");
+    // Withdrawn is decided: nothing changes it, not even the owner.
+    expect(pgErrorCode(err)).toBe("23001");
+    const undo = await db.execute(sql`UPDATE stock_adjustments SET status = 'rejected' WHERE id = ${one.id}`).then(() => null, (e: unknown) => e);
+    expect(pgErrorCode(undo)).toBe("23001");
     expect((await call("GET", "/stock-adjustments?status=approved", h.facility.id, h.auditor)).status).toBe(200);
     expect((await call("GET", "/stock-adjustments", h.facility.id, h.cashier)).status).toBe(403);
   });

@@ -1,4 +1,4 @@
-import { and, asc, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { asc, eq, isNotNull, sql } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 import type { MembershipRole } from "@/db/schema";
@@ -61,13 +61,14 @@ export async function setDrugSensitivity(tx: AppDb, facilityId: string, drugCode
   });
 }
 
-/** The drugs marked sensitive here, by generic name. Not patient data, so not audited. */
+/** The drugs marked sensitive here, retired ones included, by generic name. Not patient data, so not audited. */
 export async function listSensitiveDrugs(tx: AppDb): Promise<ShownSensitiveDrug[]> {
   const rows = await tx
     .select({ drugCode: sensitiveDrugs.drugCode, genericName: drugCatalogue.genericName, strength: drugCatalogue.strength, form: drugCatalogue.form, category: sensitiveDrugs.category })
     .from(sensitiveDrugs)
     .innerJoin(drugCatalogue, eq(drugCatalogue.code, sensitiveDrugs.drugCode))
-    .where(and(isNotNull(sensitiveDrugs.category), isNull(drugCatalogue.retiredAt)))
+    // A retired drug's mark still restricts its past prescriptions, so it stays listed to be seen and cleared.
+    .where(isNotNull(sensitiveDrugs.category))
     .orderBy(asc(drugCatalogue.genericName), asc(drugCatalogue.strength));
   return rows.map(r => ({ ...r, category: r.category! }));
 }

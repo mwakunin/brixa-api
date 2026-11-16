@@ -155,7 +155,7 @@ async function billOf(tx: AppDb, chargeId: string): Promise<string> {
  * while the charge is unbilled, or a credit note asked for once it is
  * billed. Answers the credit note's adjustment, if one was asked for.
  */
-async function credit(tx: AppDb, facilityId: string, line: LineContext, ret: ReturnRow, actor: PatientActor): Promise<string | null> {
+async function credit(tx: AppDb, facilityId: string, line: LineContext, ret: { quantity: number; reason: string; id?: string }, actor: PatientActor): Promise<string | null> {
   const [charge] = await dispenseCharges(tx, [line.id]);
   if (!charge)
     return null;
@@ -203,6 +203,12 @@ export async function recordReturn(
   if (input.quantity > line.quantity - await returnedOf(tx, line.id, ["done", "pending"]))
     throw new ReturnError("more_than_given");
 
+  // A fit return is credited before it is written, so it is written once, done (a decided return never changes).
+  let adjustmentId: string | null = null;
+  if (input.fitForResale) {
+    await backOnShelf(tx, facilityId, line, input.quantity, actor, today);
+    adjustmentId = await credit(tx, facilityId, line, input, actor);
+  }
   const [ret] = await tx.insert(dispenseReturns).values({
     facilityId,
     dispenseLineId: line.id,
@@ -211,14 +217,8 @@ export async function recordReturn(
     fitForResale: input.fitForResale,
     status: input.fitForResale ? "done" : "pending",
     receivedBy: actor.membershipId,
+    invoiceAdjustmentId: adjustmentId,
   }).returning();
-  let adjustmentId: string | null = null;
-  if (input.fitForResale) {
-    await backOnShelf(tx, facilityId, line, input.quantity, actor, today);
-    adjustmentId = await credit(tx, facilityId, line, ret, actor);
-    if (adjustmentId)
-      await tx.update(dispenseReturns).set({ invoiceAdjustmentId: adjustmentId }).where(eq(dispenseReturns.id, ret.id));
-  }
   await recordAudit(tx, {
     facilityId,
     actorId: actor.userId,
@@ -228,7 +228,7 @@ export async function recordReturn(
     summary: `Took back ${input.quantity} of ${line.code}${input.fitForResale ? "" : ", unfit to sell again"}`,
     detail: { returnId: ret.id, dispenseLineId: line.id, quantity: input.quantity, fitForResale: input.fitForResale, reason: input.reason, invoiceAdjustmentId: adjustmentId },
   });
-  return { ...ret, invoiceAdjustmentId: adjustmentId };
+  return ret;
 }
 
 async function lockPending(tx: AppDb, id: string, actor: PatientActor): Promise<{ ret: ReturnRow; line: LineContext }> {

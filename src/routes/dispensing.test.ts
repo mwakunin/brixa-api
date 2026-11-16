@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -9,6 +9,7 @@ import type { Hospital, StaffMember } from "@/test/hospital";
 import db from "@/db";
 import { auditLog, charges, orderItems } from "@/db/schema";
 import { addDays, businessDate } from "@/lib/dates";
+import { pgErrorCode } from "@/lib/db-errors";
 import { loadDrugCatalogue } from "@/lib/drug-catalogue-load";
 import { addMembership, resetDb, signedInUser } from "@/test/helpers";
 import { call, hospital, TODAY } from "@/test/hospital";
@@ -108,6 +109,9 @@ describe("dispensing a prescription", () => {
     expect(waiting.prepared.map((d: { id: string }) => d.id)).toEqual([dispense.id]);
 
     const handed = await (await post(`/dispenses/${dispense.id}/hand-over`, pharmTech)).json();
+    // Handed over is final, for every role.
+    const undo = await db.execute(sql`UPDATE dispenses SET status = 'prepared', handed_over_by = NULL, handed_over_at = NULL WHERE id = ${dispense.id}`).then(() => null, (e: unknown) => e);
+    expect(pgErrorCode(undo)).toBe("23001");
     expect(handed).toMatchObject({ status: "handed_over", unpaid: true, handedOver: { byName: "Test User" } });
     expect(await medicineStatus(rx.medicines[0])).toBe("done");
     expect((await (await call("GET", "/pharmacy/worklist", h.facility.id, pharmacist)).json()).waiting).toEqual([]);
@@ -132,6 +136,15 @@ describe("dispensing a prescription", () => {
     await post(`/dispenses/${rest.id}/hand-over`, pharmacist);
     expect(await medicineStatus(rx.medicines[0])).toBe("done");
     expect(await refusal(await prepare(line()))).toBe("medicine_finished");
+  });
+
+  it("refuses a line whose charge would exceed what one charge holds, before taking anything", async () => {
+    const dear = await stocked("PCM-PK", "PCM-120-SUSP", "pack", 1_000_000, 3000);
+    const rx = await prescribed([{ drugCode: "PCM-120-SUSP", doseAmount: "5", frequency: "tds", durationDays: 5 }]);
+
+    const res = await prepare({ orderId: rx.orderId, lines: [{ orderItemId: rx.medicines[0], stockItemId: dear, quantity: 2001 }] });
+
+    expect(await res.json()).toMatchObject({ code: "amount_too_large", line: 1 });
   });
 
   it("asks the quantity of an item counted in another unit than the prescription, and lets it finish the medicine", async () => {
@@ -209,6 +222,7 @@ describe("dispensing a prescription", () => {
     const dispense = await created(await prepare({ orderId: rx.orderId, lines: [{ orderItemId: rx.medicines[0], stockItemId: paracetamol }] }));
 
     expect((await call("GET", `/dispenses/${dispense.id}`, h.facility.id, pharmTech)).status).toBe(200);
+    expect((await call("GET", `/dispenses/${dispense.id.toUpperCase()}`, h.facility.id, pharmTech)).status).toBe(200);
 
     const [entry] = await db.select().from(auditLog).where(eq(auditLog.action, "dispense.viewed"));
     expect(entry).toMatchObject({ actorId: pharmTech.id, entityId: rx.encounterId, detail: { dispenseId: dispense.id } });

@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -10,6 +10,7 @@ import db from "@/db";
 import { auditLog } from "@/db/schema";
 import { runAsFacility } from "@/db/tenant-transaction";
 import { addDays, businessDate } from "@/lib/dates";
+import { pgErrorCode } from "@/lib/db-errors";
 import { loadDrugCatalogue } from "@/lib/drug-catalogue-load";
 import { receiveGoods } from "@/lib/goods-received";
 import { sendDirect } from "@/lib/transfers";
@@ -244,6 +245,9 @@ describe("a shortfall", () => {
     const accepted = await (await post(`/stock-transfers/${transferId}/accept-shortfall`, h.finance)).json();
     expect(accepted).toMatchObject({ awaitingAcceptance: false, shortfallAccepted: { byName: "Test User" } });
     expect(await refusal(await post(`/stock-transfers/${transferId}/accept-shortfall`, h.finance))).toBe("no_shortfall");
+    // Received and accepted, it only stands: not even the owner sends it again.
+    const undo = await db.execute(sql`UPDATE stock_transfers SET status = 'sent', received_by = NULL, received_at = NULL, shortfall_reason = NULL, shortfall_accepted_by = NULL, shortfall_accepted_at = NULL WHERE id = ${transferId}`).then(() => null, (e: unknown) => e);
+    expect(pgErrorCode(undo)).toBe("23001");
     expect(await refusal(await receive({}))).toBe("not_sent");
   });
 });

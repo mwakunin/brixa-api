@@ -179,8 +179,10 @@ async function namesOf(tx: AppDb, ids: (string | null)[]): Promise<Map<string, s
 /**
  * Each line's charge as the dispense shows it: the standing one, which a
  * return may have replaced; for a cancelled dispense, the last it had.
+ * A line given back whole has none (`cancelledDispenseLines` decides which
+ * lines fall back).
  */
-async function lineCharges(tx: AppDb, lineIds: string[]): Promise<Map<string, { id: string; amountCents: number }>> {
+async function lineCharges(tx: AppDb, lineIds: string[], cancelledLines: Set<string>): Promise<Map<string, { id: string; amountCents: number }>> {
   if (lineIds.length === 0)
     return new Map();
   const rows = await tx
@@ -191,7 +193,9 @@ async function lineCharges(tx: AppDb, lineIds: string[]): Promise<Map<string, { 
   const chosen = new Map<string, { id: string; amountCents: number; standing: boolean }>();
   for (const r of rows) {
     const standing = r.cancelledAt === null;
-    // A standing charge wins; else the latest.
+    // A standing charge wins; a cancelled dispense's line falls back to its latest.
+    if (!standing && !cancelledLines.has(r.lineId!))
+      continue;
     if (!chosen.get(r.lineId!)?.standing || standing)
       chosen.set(r.lineId!, { id: r.id, amountCents: r.amountCents, standing });
   }
@@ -200,14 +204,15 @@ async function lineCharges(tx: AppDb, lineIds: string[]): Promise<Map<string, { 
 
 async function linesOf(tx: AppDb, dispenseIds: string[]): Promise<Map<string, (ShownDispenseLine & { chargeId: string | null })[]>> {
   const rows = await tx
-    .select({ line: dispenseLines, description: orderItems.drugDescription, code: billableItems.code, name: billableItems.name, baseUnit: stockItems.baseUnit })
+    .select({ line: dispenseLines, description: orderItems.drugDescription, code: billableItems.code, name: billableItems.name, baseUnit: stockItems.baseUnit, dispenseStatus: dispenses.status })
     .from(dispenseLines)
+    .innerJoin(dispenses, eq(dispenses.id, dispenseLines.dispenseId))
     .innerJoin(orderItems, eq(orderItems.id, dispenseLines.orderItemId))
     .innerJoin(stockItems, eq(stockItems.id, dispenseLines.stockItemId))
     .innerJoin(billableItems, eq(billableItems.id, stockItems.billableItemId))
     .where(inArray(dispenseLines.dispenseId, dispenseIds))
     .orderBy(asc(billableItems.code));
-  const chargeOf = await lineCharges(tx, rows.map(r => r.line.id));
+  const chargeOf = await lineCharges(tx, rows.map(r => r.line.id), new Set(rows.filter(r => r.dispenseStatus === "cancelled").map(r => r.line.id)));
   const taken = rows.length === 0
     ? []
     : await tx
@@ -239,9 +244,11 @@ async function linesOf(tx: AppDb, dispenseIds: string[]): Promise<Map<string, (S
 }
 
 /** These dispenses, in the order given. */
-async function dispensesShown(tx: AppDb, ids: string[]): Promise<ShownDispense[]> {
-  if (ids.length === 0)
+async function dispensesShown(tx: AppDb, given: string[]): Promise<ShownDispense[]> {
+  if (given.length === 0)
     return [];
+  // Postgres answers a uuid in lowercase, however it was asked for.
+  const ids = given.map(id => id.toLowerCase());
   const rows = await tx
     .select({ dispense: dispenses, number: documents.number, storeName: stores.name, kind: encounters.kind, ...patientColumns })
     .from(dispenses)
