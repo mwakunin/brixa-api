@@ -31,6 +31,8 @@ const PageSchema = z.object({
     quantityOut: z.number(),
     balance: z.number(),
     patient: z.object({ id: z.uuid(), name: z.string(), opNumber: z.string().nullable() }).nullable(),
+    /** A patient you may not see: the medicine is marked sensitive (rule 27). */
+    patientHidden: z.boolean(),
     /** With the licence they held at the time. */
     prescriber: PersonSchema,
     recordedBy: PersonSchema,
@@ -52,7 +54,9 @@ export const viewRegister = createRoute({
   summary: "A controlled drug's register in a store",
   description:
     "Every movement of the drug there, oldest first, 500 at a time (`?offset=` for the next), with the "
-    + "running balance, the patient, the prescriber and who moved it, each with their licence then. Audited.",
+    + "running balance, the patient, the prescriber and who moved it, each with their licence then. On a medicine "
+    + "marked sensitive, the patient shows to the pharmacist, to a member given its category, or through a "
+    + "break-glass grant on that patient; to anyone else the line shows with `patientHidden`. Audited.",
   middleware: [readers] as const,
   request: { headers: facilityHeaders, query: QuerySchema },
   responses: {

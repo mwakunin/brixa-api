@@ -21,8 +21,10 @@ import type { AppDb } from "@/db";
  * - M-Pesa: a placed transaction has exactly one live payment, of its
  *   amount; one not placed has none.
  *
- * - Controlled register: each scheduled drug's last register balance in a
- *   store equals the ledger's sum for it there (P4 slice 4).
+ * - Controlled register: each register page's last balance equals the
+ *   ledger's sum for its drug in its store (P4 slice 4), the page kept after
+ *   the drug is unscheduled; a scheduled drug held in a store with no page
+ *   there is drift too, named by the drug's first stock item there.
  *
  * M7 is the sum of these: with no drift, Σ payments = Σ allocations +
  * Σ refunds + credit, and Σ invoiced = Σ allocations + Σ adjustments + Σ owed.
@@ -115,17 +117,19 @@ const CHECKS: { identity: Identity; query: SQL }[] = [
     // balance in a store equals what the ledger says the store holds of it. The subject is that last line.
     identity: "controlled_register",
     query: sql`
-      SELECT r.id AS subject, r.balance AS cap, coalesce(m.total, 0) AS used
+      SELECT coalesce(r.id::text, m.first_item) AS subject, coalesce(r.balance, 0) AS cap, coalesce(m.total, 0) AS used
       FROM (
         SELECT DISTINCT ON (store_id, drug_code) id, store_id, drug_code, balance
         FROM controlled_drug_register ORDER BY store_id, drug_code, entry DESC
       ) r
-      LEFT JOIN (
-        SELECT m.store_id, si.drug_code, sum(m.quantity) AS total
+      FULL JOIN (
+        SELECT m.store_id, si.drug_code, sum(m.quantity) AS total, min(si.id::text) AS first_item
         FROM stock_movements m JOIN stock_batches b ON b.id = m.batch_id JOIN stock_items si ON si.id = b.stock_item_id
+        WHERE si.drug_code IS NOT NULL
         GROUP BY m.store_id, si.drug_code
       ) m ON m.store_id = r.store_id AND m.drug_code = r.drug_code
-      WHERE r.balance <> coalesce(m.total, 0)`,
+      WHERE coalesce(r.balance, 0) <> coalesce(m.total, 0)
+        AND (r.id IS NOT NULL OR m.drug_code IN (SELECT code FROM drug_catalogue WHERE controlled_schedule IS NOT NULL))`,
   },
 ];
 

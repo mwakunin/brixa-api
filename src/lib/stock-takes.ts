@@ -1,13 +1,14 @@
-import { and, asc, desc, eq, inArray, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 
-import { billableItems, stockBatches, stockItems, stockMovements, stockTakeLines, stockTakes, stores } from "@/db/schema";
+import { billableItems, drugCatalogue, stockAdjustments, stockBatches, stockItems, stockMovements, stockTakeLines, stockTakes, stores } from "@/db/schema";
 
 import type { DispenseActor } from "./dispensing";
 
 import { recordAudit } from "./audit";
 import { isUniqueViolation } from "./db-errors";
+import { mayGiveControlled } from "./dispensing";
 import { issueNumber } from "./number-series";
 import { requestStockAdjustment, StockAdjustmentError } from "./stock-adjustments";
 import { TRANSFER_STAFF } from "./transfers";
@@ -15,8 +16,8 @@ import { TRANSFER_STAFF } from "./transfers";
 /**
  * Stock takes (SCHEMA.md §8, P4 slice 5, decided 2026-11-16): a blind count
  * of a store, the store open while it runs. Each line's expected quantity is
- * the ledger at the moment it was counted, so stock moving meanwhile does
- * not skew it. Submitting asks for one `correction` adjustment for the
+ * the ledger as committed when it was counted, read then and kept hidden, so
+ * stock moving meanwhile does not skew it. Submitting asks for one `correction` adjustment for the
  * differences, which a second person approves (rule 24).
  */
 
@@ -32,7 +33,10 @@ export type StockTakeErrorCode
     | "batch_not_found"
     | "not_counting"
     | "uncounted"
-    | "controlled_dispenser";
+    | "controlled_dispenser"
+    | "correction_pending"
+    | "not_enough_stock"
+    | "value_too_large";
 
 export class StockTakeError extends Error {
   constructor(readonly code: StockTakeErrorCode) {
@@ -47,9 +51,26 @@ export class StockTakeError extends Error {
       not_counting: "This count has been submitted or cancelled",
       uncounted: "Every line is counted, nought included, before the count is submitted",
       controlled_dispenser: "A count with a controlled drug is submitted by a pharmacist with a pharmacy licence",
+      correction_pending: "The last count of this store waits for its correction to be approved or rejected",
+      not_enough_stock: "Stock has left the store since it was counted, more than the correction would take off: count those lines again",
+      value_too_large: "The differences are worth more than one correction records: count fewer items at a time",
     }[code]);
     this.name = "StockTakeError";
   }
+}
+
+/** Whether any of these batches is of a controlled drug. */
+async function countsControlled(tx: AppDb, batchIds: string[]): Promise<boolean> {
+  if (batchIds.length === 0)
+    return false;
+  const [found] = await tx
+    .select({ id: stockBatches.id })
+    .from(stockBatches)
+    .innerJoin(stockItems, eq(stockItems.id, stockBatches.stockItemId))
+    .innerJoin(drugCatalogue, eq(drugCatalogue.code, stockItems.drugCode))
+    .where(and(inArray(stockBatches.id, batchIds), isNotNull(drugCatalogue.controlledSchedule)))
+    .limit(1);
+  return found !== undefined;
 }
 
 const isStoreStaff = (actor: DispenseActor) => actor.roles.some(r => (TRANSFER_STAFF as readonly string[]).includes(r));
@@ -68,6 +89,15 @@ async function storeFor(tx: AppDb, storeId: string, actor: DispenseActor): Promi
 /** Opens a count of a store, or of chosen items in it: a sheet of every batch it holds of them. */
 export async function openStockTake(tx: AppDb, facilityId: string, input: { storeId: string; stockItemIds?: string[] }, actor: DispenseActor): Promise<TakeRow> {
   const store = await storeFor(tx, input.storeId, actor);
+  // Counted again before the last correction is decided, the same difference would be asked for twice.
+  const [waiting] = await tx
+    .select({ id: stockTakes.id })
+    .from(stockTakes)
+    .innerJoin(stockAdjustments, eq(stockAdjustments.id, stockTakes.adjustmentId))
+    .where(and(eq(stockTakes.storeId, store.id), eq(stockAdjustments.status, "pending")))
+    .limit(1);
+  if (waiting)
+    throw new StockTakeError("correction_pending");
   const itemIds = input.stockItemIds?.map(id => id.toLowerCase());
   if (itemIds) {
     const found = await tx.select({ id: stockItems.id }).from(stockItems).where(inArray(stockItems.id, itemIds));
@@ -117,7 +147,10 @@ async function lockCounting(tx: AppDb, id: string, actor: DispenseActor): Promis
 
 /**
  * Records counts, now, by this member: a batch on the sheet is counted (again,
- * if it was); one found on the shelf and not on it is added.
+ * if it was); one found on the shelf and not on it is added. Beside each goes
+ * what the ledger holds of it as committed now, hidden until the count is
+ * submitted: a movement still open as the shelf is counted has not happened
+ * there yet, whenever its transaction began.
  */
 export async function recordCounts(tx: AppDb, facilityId: string, id: string, counts: { batchId: string; quantity: number }[], actor: DispenseActor): Promise<TakeRow> {
   const take = await lockCounting(tx, id, actor);
@@ -127,24 +160,29 @@ export async function recordCounts(tx: AppDb, facilityId: string, id: string, co
     throw new StockTakeError("batch_not_found");
   const at = new Date();
   for (const [index, count] of counts.entries()) {
+    const counted = { countedQuantity: count.quantity, countedAt: at, countedBy: actor.membershipId, expectedQuantity: await committedOnHand(tx, take.storeId, ids[index]) };
     await tx.insert(stockTakeLines)
-      .values({ facilityId, stockTakeId: take.id, batchId: ids[index], countedQuantity: count.quantity, countedAt: at, countedBy: actor.membershipId })
-      .onConflictDoUpdate({ target: [stockTakeLines.stockTakeId, stockTakeLines.batchId], set: { countedQuantity: count.quantity, countedAt: at, countedBy: actor.membershipId } });
+      .values({ facilityId, stockTakeId: take.id, batchId: ids[index], ...counted })
+      .onConflictDoUpdate({ target: [stockTakeLines.stockTakeId, stockTakeLines.batchId], set: counted });
   }
   await recordAudit(tx, { facilityId, actorId: actor.userId, action: "stock_take.counted", entityType: "stock_take", entityId: take.id, summary: `Counted ${counts.length} batch${counts.length === 1 ? "" : "es"} for ${take.number}`, detail: { batches: ids.length } });
   return take;
 }
 
-/** What the store held of a batch at the moment it was counted. */
-async function expectedAt(tx: AppDb, storeId: string, batchId: string, at: Date): Promise<number> {
-  const [{ total }] = await tx.select({ total: sql<string>`coalesce(sum(${stockMovements.quantity}), 0)` }).from(stockMovements).where(and(eq(stockMovements.storeId, storeId), eq(stockMovements.batchId, batchId), lte(stockMovements.recordedAt, at)));
+/**
+ * What the ledger holds of a batch in a store, as this statement sees it:
+ * every movement committed before it began, none still open (read committed).
+ */
+async function committedOnHand(tx: AppDb, storeId: string, batchId: string): Promise<number> {
+  const [{ total }] = await tx.select({ total: sql<string>`coalesce(sum(${stockMovements.quantity}), 0)` }).from(stockMovements).where(and(eq(stockMovements.storeId, storeId), eq(stockMovements.batchId, batchId)));
   return Number(total);
 }
 
 /**
- * Submits a count once every line is counted: each line's expected quantity
- * is fixed, and one correction is asked for the differences, for a second
- * person to approve; none is asked for when nothing differed.
+ * Submits a count once every line is counted: one correction is asked for
+ * the differences from what was expected as each was counted, for a second
+ * person to approve; none is asked for when nothing differed. A count with a
+ * controlled drug is the pharmacist's, though nothing differs.
  */
 export async function submitStockTake(tx: AppDb, facilityId: string, id: string, actor: DispenseActor): Promise<TakeRow> {
   const take = await lockCounting(tx, id, actor);
@@ -152,13 +190,12 @@ export async function submitStockTake(tx: AppDb, facilityId: string, id: string,
   if (lines.some(l => l.countedQuantity === null))
     throw new StockTakeError("uncounted");
 
-  const differences: { batchId: string; quantity: number }[] = [];
-  for (const line of lines) {
-    const expected = await expectedAt(tx, take.storeId, line.batchId, line.countedAt!);
-    await tx.update(stockTakeLines).set({ expectedQuantity: expected }).where(eq(stockTakeLines.id, line.id));
-    if (line.countedQuantity! !== expected)
-      differences.push({ batchId: line.batchId, quantity: line.countedQuantity! - expected });
-  }
+  if (!mayGiveControlled(actor) && await countsControlled(tx, lines.map(l => l.batchId)))
+    throw new StockTakeError("controlled_dispenser");
+
+  const differences = lines
+    .filter(l => l.countedQuantity !== l.expectedQuantity)
+    .map(l => ({ batchId: l.batchId, quantity: l.countedQuantity! - l.expectedQuantity! }));
 
   let adjustmentId: string | null = null;
   if (differences.length > 0) {
@@ -166,8 +203,8 @@ export async function submitStockTake(tx: AppDb, facilityId: string, id: string,
       adjustmentId = (await requestStockAdjustment(tx, facilityId, { storeId: take.storeId, kind: "correction", reason: `Stock take ${take.number}`, lines: differences }, actor)).id;
     }
     catch (err) {
-      if (err instanceof StockAdjustmentError && err.code === "controlled_dispenser")
-        throw new StockTakeError("controlled_dispenser");
+      if (err instanceof StockAdjustmentError && (err.code === "not_enough_stock" || err.code === "value_too_large" || err.code === "controlled_dispenser"))
+        throw new StockTakeError(err.code);
       throw err;
     }
   }

@@ -6,9 +6,11 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { Hospital, StaffMember } from "@/test/hospital";
 
 import db from "@/db";
+import { runAsFacility } from "@/db/tenant-transaction";
 import { addDays, businessDate } from "@/lib/dates";
 import { pgErrorCode } from "@/lib/db-errors";
 import { loadDrugCatalogue } from "@/lib/drug-catalogue-load";
+import { sendDirect } from "@/lib/transfers";
 import { addMembership, resetDb, signedInUser } from "@/test/helpers";
 import { call, hospital, TODAY } from "@/test/hospital";
 
@@ -95,6 +97,35 @@ describe("a stock take", () => {
     expect(submitted).toMatchObject({ adjustmentId: null, lines: [expect.objectContaining({ counted: 3000, expected: 3000, difference: 0 })] });
   });
 
+  it("expects what the ledger held, committed, as a line was counted: a movement begun before and committed after is not on the sheet", async () => {
+    const take = await created(await post("/stock-takes", storekeeper, { storeId: pharmacy }));
+    await runAsFacility(h.facility.id, async (tx) => {
+      await sendDirect(tx, h.facility.id, { fromStoreId: pharmacy, toStoreId: main, lines: [{ stockItemId: paracetamol, quantity: 100 }] }, { ...storekeeper.actor, roles: ["storekeeper"] });
+      // The transfer is not done as the shelf is counted: 3,000 are there.
+      expect((await count(take.id, [{ batchId: p1, quantity: 3000 }])).status).toBe(200);
+    });
+
+    const submitted = await (await post(`/stock-takes/${take.id}/submit`, storekeeper)).json();
+
+    expect(submitted).toMatchObject({ adjustmentId: null, lines: [expect.objectContaining({ counted: 3000, expected: 3000, difference: 0 })] });
+  });
+
+  it("is not opened again while the last count's correction waits, and stock gone since it was counted is counted again", async () => {
+    const first = await created(await post("/stock-takes", storekeeper, { storeId: pharmacy }));
+    await count(first.id, [{ batchId: p1, quantity: 2990 }]);
+    const submitted = await (await post(`/stock-takes/${first.id}/submit`, storekeeper)).json();
+
+    // Counted again now, the same ten would be asked for twice.
+    expect(await refusal(await post("/stock-takes", storekeeper, { storeId: pharmacy }))).toBe("correction_pending");
+    await post(`/stock-adjustments/${submitted.adjustmentId}/approve`, h.finance);
+    const second = await created(await post("/stock-takes", storekeeper, { storeId: pharmacy }));
+
+    // Ten short on the shelf, then all but five leave before the count is submitted: the correction cannot be made.
+    await count(second.id, [{ batchId: p1, quantity: 2980 }]);
+    await created(await post("/stock-transfers/send", storekeeper, { fromStoreId: pharmacy, toStoreId: main, lines: [{ stockItemId: paracetamol, quantity: 2985 }] }));
+    expect(await refusal(await post(`/stock-takes/${second.id}/submit`, storekeeper))).toBe("not_enough_stock");
+  });
+
   it("adds a batch found on the shelf, one open count per store at a time", async () => {
     const other = await created(await post("/goods-received", storekeeper, { storeId: main, supplier: "MEDS", lines: [{ stockItemId: paracetamol, batchNumber: "M1", expiresOn: inDays(200), units: 50, totalCostCents: 5000 }] }));
     const take = await created(await post("/stock-takes", storekeeper, { storeId: pharmacy, stockItemIds: [paracetamol] }));
@@ -105,6 +136,7 @@ describe("a stock take", () => {
     const submitted = await (await post(`/stock-takes/${take.id}/submit`, storekeeper)).json();
 
     expect(submitted.lines.map((l: Record<string, unknown>) => [l.batchNumber, l.expected, l.difference])).toEqual([["M1", 0, 5], ["P1", 3000, 0]]);
+    expect((await post(`/stock-adjustments/${submitted.adjustmentId}/approve`, h.finance)).status).toBe(200);
     expect((await post("/stock-takes", pharmacist, { storeId: pharmacy })).status).toBe(201);
   });
 
@@ -115,8 +147,9 @@ describe("a stock take", () => {
     const morphine = (await created(await post("/stock-items", h.admin, { billableItemId: morphineItem, drugCode: "MOR-10-INJ", baseUnit: "mL", packSize: 1 }))).id;
     const note = await created(await post("/goods-received", storekeeper, { storeId: main, supplier: "KEMSA", lines: [{ stockItemId: morphine, batchNumber: "M1", expiresOn: inDays(300), units: 20, totalCostCents: 2000 }] }));
     const take = await created(await post("/stock-takes", storekeeper, { storeId: main }));
-    await count(take.id, [{ batchId: note.items[0].batchId, quantity: 19 }]);
+    await count(take.id, [{ batchId: note.items[0].batchId, quantity: 20 }]);
 
+    // Though nothing differs.
     expect(await refusal(await post(`/stock-takes/${take.id}/submit`, storekeeper), 403)).toBe("controlled_dispenser");
     expect((await post(`/stock-takes/${take.id}/submit`, pharmacist)).status).toBe(200);
 
@@ -136,5 +169,9 @@ describe("a stock take", () => {
     expect(pgErrorCode(edit)).toBe("23001");
     const reopen = await db.execute(sql`UPDATE stock_takes SET status = 'counting', submitted_by = NULL, submitted_at = NULL WHERE id = ${next.id}`).then(() => null, (e: unknown) => e);
     expect(pgErrorCode(reopen)).toBe("23001");
+    // Nor is a final count's line moved to an open one.
+    const open = await created(await post("/stock-takes", storekeeper, { storeId: main }));
+    const moved = await db.execute(sql`UPDATE stock_take_lines SET stock_take_id = ${open.id} WHERE stock_take_id = ${next.id}`).then(() => null, (e: unknown) => e);
+    expect(pgErrorCode(moved)).toBe("23001");
   });
 });

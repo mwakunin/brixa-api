@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -163,6 +163,17 @@ describe("the controlled-drug register", () => {
     expect(drift.filter(d => d.identity === "controlled_register")).toEqual([expect.objectContaining({ detail: "controlled_register: 50 against 55" })]);
   });
 
+  it("finds a scheduled drug held in a store with no page there", async () => {
+    const ibuprofen = await stockItem("IBU-400", "IBU-400-TAB", "tablet");
+    await receive(pharmacy, ibuprofen, "I1", 40);
+
+    // Scheduled behind the catalogue load's back, so nothing was brought forward.
+    await db.execute(sql`UPDATE drug_catalogue SET controlled_schedule = 'IV' WHERE code = 'IBU-400-TAB'`);
+
+    const { drift } = await runAsFacility(h.facility.id, tx => reconcile(tx));
+    expect(drift.filter(d => d.identity === "controlled_register")).toEqual([{ identity: "controlled_register", subjectId: ibuprofen, detail: "controlled_register: 40 against 0" }]);
+  });
+
   it("is read by the pharmacist, the facility admin and the auditor, audited with the patients it names", async () => {
     await receive(pharmacy, morphine, "M1", 50);
     const { patientId } = await dispensed();
@@ -190,5 +201,29 @@ describe("the controlled-drug register", () => {
     expect([next.balanceBefore, next.lines.map((l: { balance: number }) => l.balance)]).toEqual([50, [48]]);
     // A drug or store that is not there answers as nothing.
     expect((await read(pharmacist, `drugCode=NOPE-1&storeId=${pharmacy}`)).status).toBe(404);
+  });
+
+  it("hides the patient on a sensitive medicine's lines outside the pharmacy, unless given its category or through the glass", async () => {
+    await receive(pharmacy, morphine, "M1", 50);
+    const { patientId } = await dispensed();
+    expect((await call("PUT", "/sensitive-drugs", h.facility.id, h.admin, { drugCode: "MOR-10-INJ", category: "mental_health" })).status).toBe(200);
+    const dispenseLine = async (who: StaffMember) => (await (await call("GET", `/controlled-register?drugCode=MOR-10-INJ&storeId=${pharmacy}`, h.facility.id, who)).json()).lines[1];
+    const audited = async (who: StaffMember) => (await db.select().from(auditLog).where(and(eq(auditLog.action, "controlled_register.viewed"), eq(auditLog.actorId, who.id))).orderBy(desc(auditLog.at)).limit(1))[0].detail;
+    const named = expect.objectContaining({ id: patientId });
+
+    expect(await dispenseLine(pharmacist)).toMatchObject({ patient: named, patientHidden: false });
+    // The auditor sees the line, its balance and who prescribed it, never whose it was.
+    expect(await dispenseLine(h.auditor)).toMatchObject({ kind: "dispense", quantityOut: 2, balance: 48, patient: null, patientHidden: true, prescriber: { licence: "KMPDC-111" } });
+    expect(await audited(h.auditor)).toMatchObject({ patients: [], hidden: 1 });
+
+    expect((await call("PUT", `/staff/members/${h.auditor.actor.membershipId}/sensitive-access`, h.facility.id, h.admin, { categories: ["mental_health"] })).status).toBe(200);
+    expect(await dispenseLine(h.auditor)).toMatchObject({ patient: named, patientHidden: false });
+
+    // An admin who is also a doctor sees the patient only after breaking the glass, and the dispenser is told.
+    const medicalAdmin = await staff(["facility_admin", "doctor"], "KMPDC-444");
+    expect((await dispenseLine(medicalAdmin)).patientHidden).toBe(true);
+    const grant = await created(await post(`/patients/${patientId}/break-glass`, medicalAdmin, { reason: "A missing ampoule" }));
+    expect(await dispenseLine(medicalAdmin)).toMatchObject({ patient: named });
+    expect(await audited(medicalAdmin)).toMatchObject({ patients: [patientId], viaGrants: [grant.id] });
   });
 });

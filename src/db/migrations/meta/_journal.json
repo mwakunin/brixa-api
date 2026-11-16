@@ -680,6 +680,13 @@
       "when": 1794824420735,
       "tag": "0096_stock_takes_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 97,
+      "version": "7",
+      "when": 1794828668166,
+      "tag": "0097_stock_take_lines_identity",
+      "breakpoints": true
     }
   ]
 }
