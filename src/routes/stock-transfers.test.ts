@@ -13,7 +13,8 @@ import { addDays, businessDate } from "@/lib/dates";
 import { pgErrorCode } from "@/lib/db-errors";
 import { loadDrugCatalogue } from "@/lib/drug-catalogue-load";
 import { receiveGoods } from "@/lib/goods-received";
-import { sendDirect } from "@/lib/transfers";
+import { transferShown } from "@/lib/transfer-views";
+import { receiveTransfer, sendDirect } from "@/lib/transfers";
 import { addMembership, backendPid, resetDb, signedInUser, waitForBlockedBackend } from "@/test/helpers";
 import { call, hospital } from "@/test/hospital";
 
@@ -220,6 +221,41 @@ describe("sending", () => {
     }
 
     await expect(second).rejects.toMatchObject({ code: "not_enough_stock" });
+  });
+
+  it("is shown as one moment: a read waits for a receipt being written, then shows it whole", async () => {
+    const sent = await created(await post("/stock-transfers/send", storekeeper, { fromStoreId: main, toStoreId: pharmacy, lines: [{ stockItemId: paracetamol, quantity: 100 }] }));
+    let release!: () => void;
+    const mayCommit = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let ready!: () => void;
+    const started = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    let holderPid = 0;
+    const receipt = runAsFacility(h.facility.id, async (tx) => {
+      try {
+        await receiveTransfer(tx, h.facility.id, sent.id, {}, actorOf(pharmacist, ["pharmacist"]));
+        holderPid = await backendPid(tx);
+      }
+      finally {
+        ready();
+        await mayCommit;
+      }
+    });
+    await started;
+
+    const shown = runAsFacility(h.facility.id, tx => transferShown(tx, sent.id));
+    try {
+      expect(await waitForBlockedBackend(holderPid)).toBe(true);
+    }
+    finally {
+      release();
+      await Promise.allSettled([receipt, shown]);
+    }
+
+    expect(await shown).toMatchObject({ status: "received", batches: [expect.objectContaining({ quantitySent: 100, quantityReceived: 100 })] });
   });
 });
 

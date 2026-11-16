@@ -106,7 +106,8 @@ export async function transferShown(tx: AppDb, id: string): Promise<ShownTransfe
   const [row] = await listTransfers(tx, { id });
   if (!row)
     throw new TransferError("not_found");
-  const [t] = await tx.select().from(stockTransfers).where(eq(stockTransfers.id, id));
+  // Held shared, so a step being written (each locks the transfer) commits before it is read, or after: its batches read below match it.
+  const [t] = await tx.select().from(stockTransfers).where(eq(stockTransfers.id, id)).for("share");
   const state = listed({ transfer: t, fromName: row.fromStore.name, toName: row.toStore.name });
   const names = await namesOf(tx, [t.requestedBy, t.sentBy, t.receivedBy, t.shortfallAcceptedBy, t.closedBy]);
   const step = (by: string | null, at: Date | null): Step | null => by && at ? { byName: names.get(by) ?? "", at } : null;
