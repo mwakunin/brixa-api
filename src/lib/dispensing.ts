@@ -299,9 +299,12 @@ async function lockDispense(tx: AppDb, id: string): Promise<DispenseRow> {
 /**
  * Hands a prepared dispense over, finishing each medicine its lines
  * complete. Never held up over money: the response says whether it is paid.
+ * Its moment is read once the dispense is held, so a wait for the lock that
+ * runs past a batch's last day does not hand that batch over (`clock` is for tests).
  */
-export async function handOver(tx: AppDb, facilityId: string, id: string, actor: DispenseActor, at = new Date()): Promise<DispenseRow> {
+export async function handOver(tx: AppDb, facilityId: string, id: string, actor: DispenseActor, clock?: Date): Promise<DispenseRow> {
   await lockDispense(tx, id);
+  const at = clock ?? new Date();
   const lines = await tx.select({ line: dispenseLines, schedule: drugCatalogue.controlledSchedule })
     .from(dispenseLines)
     .innerJoin(stockItems, eq(stockItems.id, dispenseLines.stockItemId))

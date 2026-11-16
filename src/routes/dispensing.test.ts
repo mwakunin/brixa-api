@@ -2,7 +2,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Hospital, StaffMember } from "@/test/hospital";
 
@@ -13,7 +13,7 @@ import { addDays, businessDate } from "@/lib/dates";
 import { pgErrorCode } from "@/lib/db-errors";
 import { handOver } from "@/lib/dispensing";
 import { loadDrugCatalogue } from "@/lib/drug-catalogue-load";
-import { addMembership, resetDb, signedInUser } from "@/test/helpers";
+import { addMembership, backendPid, resetDb, signedInUser, waitForBlockedBackend } from "@/test/helpers";
 import { call, hospital, TODAY } from "@/test/hospital";
 
 /** P4 slice 3a: dispensing. */
@@ -231,6 +231,29 @@ describe("dispensing a prescription", () => {
       .then(() => null, (e: unknown) => e);
 
     expect(late).toMatchObject({ code: "batch_expired" });
+  });
+
+  it("reads the day of a hand-over once it holds the dispense, so a wait past the batch's last day still refuses it", async () => {
+    const rx = await prescribed();
+    const dispense = await created(await prepare({ orderId: rx.orderId, lines: [{ orderItemId: rx.medicines[0], stockItemId: paracetamol }] }));
+    const actor = { ...pharmacist.actor, roles: ["pharmacist" as const], licenceProfession: "pharmacy" as const };
+
+    let handed: Promise<unknown> | undefined;
+    try {
+      // The visit is held while the hand-over is asked for; when it is let go, batch P1 (300 days) has expired.
+      await db.transaction(async (holder) => {
+        await holder.execute(sql`SELECT id FROM encounters WHERE id = ${rx.encounterId} FOR UPDATE`);
+        handed = runAsFacility(h.facility.id, tx => handOver(tx, h.facility.id, dispense.id, actor)).then(() => null, (e: unknown) => e);
+        expect(await waitForBlockedBackend(await backendPid(holder))).toBe(true);
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(Date.now() + 365 * 86_400_000);
+      });
+      expect(await handed).toMatchObject({ code: "batch_expired" });
+    }
+    finally {
+      await handed;
+      vi.useRealTimers();
+    }
   });
 
   it("audits opening a dispense on its own, as it names the patient", async () => {
