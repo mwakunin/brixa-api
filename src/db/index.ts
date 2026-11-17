@@ -54,6 +54,9 @@ function poolFor(connectionString: string, name: string) {
 
 export const pool = poolFor(env.DATABASE_URL, "owner");
 
+/** The host the owner connection reaches, for the development seed to refuse any database not on this machine. */
+export const ownerDatabaseHost = new URL(env.DATABASE_URL).hostname;
+
 const db = drizzle({
   client: pool,
   casing: "snake_case",
