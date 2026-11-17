@@ -1,7 +1,6 @@
+import { count } from "drizzle-orm";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-
-import { count } from "drizzle-orm";
 
 import app from "@/app";
 import db, { connectionHosts } from "@/db";
