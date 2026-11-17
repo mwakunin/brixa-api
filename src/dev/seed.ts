@@ -19,10 +19,13 @@ import { invitationToken } from "@/lib/invitations";
  * invented patients spread across the desks, so each screen of the staff
  * app has something to show (brixa-web `docs/outpatient-journey.md`).
  *
- * Everything goes through the API as the staff app would drive it, so every
- * rule, charge and audit entry is real. Synthetic data only, and never a
- * message sent: it refuses to run with email or SMS credentials set, against
- * a database that is not on this machine, or in production (CLAUDE.md §8).
+ * The hospital is built through the API as the staff app would drive it, so
+ * every rule, charge and audit entry is real. Three things are not, as no
+ * route makes them: the superadmin account (`createAccount`) and the shared
+ * drug and ICD-11 catalogues (their lib loaders). Synthetic data only, and
+ * never a message sent: it refuses to run with email or SMS credentials set,
+ * against a database that is not on this machine, or in production
+ * (CLAUDE.md §8).
  */
 
 export const SEED_FACILITY = "Sample Hospital";

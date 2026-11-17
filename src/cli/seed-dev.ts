@@ -26,6 +26,6 @@ async function main() {
 
 main().then(() => process.exit(0), (err) => {
   // A database error's message carries its SQL parameters (CLAUDE.md rule 10).
-  console.error("Could not seed:", err instanceof Error && err.name === "SeedError" ? err.message : errorLine(err));
+  console.error("Could not seed:", errorLine(err));
   process.exit(1);
 });
