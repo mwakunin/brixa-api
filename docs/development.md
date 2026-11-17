@@ -13,6 +13,8 @@ pnpm dev                 # http://localhost:9999; every endpoint at /reference
 
 The staff app (`brixa-web`) runs beside it on http://localhost:3000. That is the API's default `APP_URL`, so sign-in works without changing anything.
 
+No email is sent in development. The API prints each message to its log instead, starting `[dev email]`, so the link in an invitation or a password reset can still be followed.
+
 ## Seeding
 
 ```sh
