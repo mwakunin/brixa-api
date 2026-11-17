@@ -1,4 +1,4 @@
-import { and, isNotNull, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, count, eq, isNotNull, isNull, notInArray, sql } from "drizzle-orm";
 
 import db from "@/db";
 import { controlledDrugRegister, drugCatalogue, stockBatches, stockItems, stockMovements } from "@/db/schema";
@@ -212,6 +212,28 @@ async function bringForward(tx: OwnerTx, codes: string[]): Promise<void> {
       )
     GROUP BY m.facility_id, m.store_id, si.drug_code
     HAVING sum(m.quantity) <> 0`);
+}
+
+/** How many drugs the catalogue holds, retired ones included: nought before any load. */
+export async function drugCatalogueSize(): Promise<number> {
+  const [{ n }] = await db.select({ n: count() }).from(drugCatalogue);
+  return n;
+}
+
+/**
+ * A current drug's code by its generic name (in any case), strength and form
+ * exactly, or null. For the development seed, which stocks two medicines
+ * before any facility exists to search from, and must not depend on where
+ * they fall in a search's first page.
+ */
+export async function drugCodeOf(genericName: string, strength: string, form: string): Promise<string | null> {
+  const [found] = await db
+    .select({ code: drugCatalogue.code })
+    .from(drugCatalogue)
+    .where(and(sql`lower(${drugCatalogue.genericName}) = lower(${genericName})`, eq(drugCatalogue.strength, strength), eq(drugCatalogue.form, form), isNull(drugCatalogue.retiredAt)))
+    .orderBy(asc(drugCatalogue.code))
+    .limit(1);
+  return found?.code ?? null;
 }
 
 /** Loads a file's drugs, retiring those it no longer has; returns the counts. */

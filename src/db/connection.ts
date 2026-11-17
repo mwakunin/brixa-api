@@ -11,25 +11,42 @@ import { parse } from "pg-connection-string";
 
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
+/** Whether a host name is this machine's loopback: the one list the TLS decision and the development seed share. */
+export function isLocalHostName(host: string): boolean {
+  return LOCAL_HOSTS.has(host);
+}
+
+/**
+ * The host `pg` will connect to, read with pg's own parser: a `?host=`
+ * parameter wins over the URL's host, so reading the URL alone would judge
+ * the wrong server. A socket directory comes back as it is. Null when the
+ * DSN names no host (pg then uses PGHOST, or localhost) or pg cannot parse it.
+ */
+export function effectiveHost(connectionString: string): string | null {
+  try {
+    return parse(connectionString).host || null;
+  }
+  catch {
+    return null;
+  }
+}
+
 /**
  * Whether the DSN points at a database on this machine, which is the only
  * case where running without TLS is acceptable.
  *
- * Compares the parsed *hostname* rather than searching the whole connection
- * string: a substring test silently disables TLS for a remote host whenever
- * "localhost" appears anywhere else in the URL — in a password, a query
- * parameter, or a hostname like `localhost.example.com`.
+ * Compares the host pg will use (`effectiveHost`) rather than searching the
+ * whole connection string: a substring test silently disables TLS for a
+ * remote host whenever "localhost" appears anywhere else in the URL — in a
+ * password, a query parameter, or a hostname like `localhost.example.com` —
+ * and the URL's own host is overridden by a `?host=`.
  *
- * An unparseable DSN is treated as remote. Failing closed keeps a malformed
- * production URL from quietly downgrading to plaintext.
+ * A DSN naming no host, or unparseable, is treated as remote. Failing closed
+ * keeps a malformed production URL from quietly downgrading to plaintext.
  */
 export function isLocalDatabase(connectionString: string): boolean {
-  try {
-    return LOCAL_HOSTS.has(new URL(connectionString).hostname);
-  }
-  catch {
-    return false;
-  }
+  const host = effectiveHost(connectionString);
+  return host !== null && isLocalHostName(host);
 }
 
 /**
