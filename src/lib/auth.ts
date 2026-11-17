@@ -11,10 +11,23 @@ import * as authSchema from "@/db/auth-schema";
 import env from "@/env";
 
 import { emailEnabled, EmailError, sendEmail } from "./email";
+import { errorLine, summarizeError } from "./error-summary";
 import { logger } from "./logger";
 
 /** The staff app's origin: scheme, host and port, whatever path APP_URL carries. */
 export const appOrigin = new URL(env.APP_URL).origin;
+
+/**
+ * Better Auth's own log lines, written through the process's logger. It logs
+ * an unexpected error whole, and a database error's message carries its SQL
+ * parameters: a reset token being looked up, an email address (rule 10). So
+ * the message is cut to its first line without parameters, and each argument
+ * to what errorLine keeps.
+ */
+export function logForBetterAuth(level: "debug" | "info" | "warn" | "error", message: string, ...args: unknown[]): void {
+  const detail = args.map(errorLine);
+  logger[level]({ source: "better-auth", ...(detail.length > 0 ? { detail } : {}) }, summarizeError(message).message);
+}
 
 /**
  * Sends a password email without letting its failure reach the response. A
@@ -94,6 +107,7 @@ export const auth = betterAuth({
    * which is its CSRF defence, so the app's origin is the one it adds.
    */
   trustedOrigins: [appOrigin],
+  logger: { log: logForBetterAuth },
   advanced: {
     // Better Auth turns the origin check off by default under NODE_ENV=test.
     // Stated here so the suite tests the CSRF defence production runs.

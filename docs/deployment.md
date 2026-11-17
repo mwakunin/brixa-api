@@ -7,6 +7,11 @@ What the API needs from Google Cloud before it can run in production. The code r
 - **Image:** the `Dockerfile` in this repository. Run migrations as a separate release step from the same image (`node ./dist/src/db/migrate.js`), never at container start.
 - **Startup and readiness probe:** an HTTP probe on `/health`. It answers 503 until every database connection works and the role check has passed. The default TCP probe passes as soon as the port opens, and requests would then meet the startup gate's 503.
 - **Secrets** come from Secret Manager, never from the image: `BETTER_AUTH_SECRET`, the three database URLs, `REDIS_URL`, `RESEND_API_KEY`.
+- **CPU allocation, to decide when the service is set up.** With request-based billing, Cloud Run may slow an instance's CPU once a response has gone. Two emails can still be sending then, when the provider is slow:
+  - the password reset link, which is not awaited, though the request answers only after a fixed 1.5 s;
+  - the "password changed" notice, waited for at most 1 s.
+
+  Such a send can arrive late, or be lost if the instance stops. The person can ask again, and a failure that is caught is logged. "CPU always allocated" (instance-based billing) removes the risk, at a higher cost.
 
 | Variable | Production value |
 |---|---|

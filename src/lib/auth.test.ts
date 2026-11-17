@@ -4,8 +4,9 @@ import app from "@/app";
 import db from "@/db";
 import { user } from "@/db/schema";
 import { AccountExistsError } from "@/lib/accounts";
-import { appOrigin, auth, RESET_REQUEST_ANSWER_MS } from "@/lib/auth";
+import { appOrigin, auth, logForBetterAuth, RESET_REQUEST_ANSWER_MS } from "@/lib/auth";
 import { sentEmails } from "@/lib/email";
+import { logger } from "@/lib/logger";
 import { createTestAccount, nextEmail, nextIp, postJson, resetDb, signIn, TEST_PASSWORD } from "@/test/helpers";
 
 /**
@@ -203,5 +204,59 @@ describe("resetting a forgotten password", () => {
     expect(begunBefore.headers.get("set-cookie") ?? "").not.toContain("session_token");
     // One begun now, after the change, signs in.
     expect((await postJson("/api/auth/sign-in/email", { email, password: NEW_PASSWORD })).status).toBe(200);
+  });
+
+  it("refuses a link after its hour, leaving the password and the person's sessions as they were", async () => {
+    const email = nextEmail();
+    await createTestAccount(email);
+    const signedIn = await signIn(email);
+    await requestReset(email);
+    const token = lastLink().searchParams.get("token");
+
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 61 * 60_000);
+    const late = await postJson("/api/auth/reset-password", { token, newPassword: NEW_PASSWORD });
+    vi.useRealTimers();
+
+    expect(late.status).toBe(400);
+    expect((await late.json()).code).toBe("INVALID_TOKEN");
+    expect((await postJson("/api/auth/sign-in/email", { email, password: TEST_PASSWORD })).status).toBe(200);
+    const session = await app.request("/api/auth/get-session", { headers: { "cookie": signedIn.cookie, "x-forwarded-for": nextIp() } });
+    expect(await session.json()).not.toBeNull();
+  });
+});
+
+/**
+ * Better Auth logs an unexpected error whole, and a database error's message
+ * carries its SQL parameters: a reset token, an address. Its log lines go
+ * through the process's logger, cut as errorLine cuts them (rule 10).
+ */
+describe("the log lines Better Auth writes", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const failedLookup = "Failed query: select \"value\" from \"verification\" where \"identifier\" = $1\nparams: reset-password:secret-token-123";
+
+  it("keep a database error's first line and drop its parameters", () => {
+    const written = vi.spyOn(logger, "error").mockImplementation(() => {});
+
+    logForBetterAuth("error", "Error", new Error(failedLookup));
+    logForBetterAuth("error", failedLookup);
+
+    const lines = JSON.stringify(written.mock.calls);
+    expect(lines).toContain("Failed query: select");
+    expect(lines).not.toContain("secret-token-123");
+  });
+
+  it("are where Better Auth writes", async () => {
+    const written = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    await resetDb();
+    const email = nextEmail();
+    await createTestAccount(email);
+
+    await postJson("/api/auth/sign-in/email", { email, password: "not-the-password" });
+
+    expect(written).toHaveBeenCalledWith({ source: "better-auth" }, "Invalid password");
   });
 });
