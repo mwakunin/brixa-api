@@ -27,6 +27,7 @@ The earlier scoping (2026-09-21) targeted small outpatient clinics, with inpatie
 - **Cashier channels in v1:** cash (with cashier shifts), card and bank (recorded with a reference, no terminal integration), M-Pesa paybill (C2B), M-Pesa STK push. *(2026-11-03)*
 - **Pilot:** a candidate identified 2026-11-03, not yet confirmed. Its situation:
   - a newly opened private hospital, cash-only today, planning to add insurers and SHA later;
+  - it has no inpatient service yet *(2026-11-17)*;
   - it runs an HMIS whose vendor says it is DHA-certified (check it on DHA's register);
   - staff find that system **too involved and complex for ordinary users**. That complaint is the reason to switch, and the reason simplicity is a product principle (§7.9).
 
@@ -54,7 +55,7 @@ The earlier scoping (2026-09-21) targeted small outpatient clinics, with inpatie
 | Area | Proposal |
 |---|---|
 | Database | PostgreSQL with tenant isolation via row-level security. Production host and region per question 4 |
-| Frontend | Next.js, built as a PWA for connectivity drops at service points |
+| Frontend | Next.js 16 as a PWA for connectivity drops at service points, in its own repository (`brixa-web`): React 19, TanStack Query, Tailwind 4 with shadcn/ui, the Better Auth client, types generated from the API's OpenAPI document. Desktop and tablet; English first *(2026-11-17, `ROADMAP.md` §1)* |
 | Money model | Charge → invoice → claim → remittance, debtor accounts, allocations ported from school-saas (`SCHEMA.md` §7) |
 | Payer integration | `PayerGateway`: a `manual` channel (claim packs, remittance import) for private insurers in P7; an `afyaconnect` channel for SHA through DHA's integration platform, built against the sandbox and live only after certification |
 | External calls | Transactional outbox drained by Cloud Tasks workers |
@@ -62,7 +63,7 @@ The earlier scoping (2026-09-21) targeted small outpatient clinics, with inpatie
 | File storage design | Private bucket behind a small storage interface (provider decided: Google Cloud Storage) |
 | Background jobs | Cloud Tasks (one-off) and Cloud Scheduler (recurring) |
 | Rate limiting library | `rate-limiter-flexible` |
-| Phase order | Cash billing, then clinical modules, then the pilot goes live (P6); payers (P7) and certification (P8) after (`ROADMAP.md` §1) |
+| Phase order | Cash billing, then the outpatient clinical modules, then the frontend, then the pilot goes live as an outpatient hospital (P6); inpatient (P5), payers (P7) and certification (P8) after (`ROADMAP.md` §1) |
 
 ---
 
@@ -96,7 +97,7 @@ All taken 2026-11-03. D1 and D8 were revised the same day, once it was clear tha
 | **D5** | Access model for sensitive records (HIV, mental health, GBV) | **v1: facility-wide roles, plus break-glass** for sensitive categories: state a reason, audit it, alert the record owner. Ward and department scoping later |
 | **D6** | Is the facility the RLS boundary? | **Yes** (tenant = facility). Two branches of one group keep separate patient registers. Sharing patients across a group later needs a cross-facility patient index above the tenants, not a looser tenant |
 | **D7** | eTIMS in v1? | **Decided by a tax adviser's answer in Phase 0.** Fiscal numbering (`SCHEMA.md` §6.1) and the outbox already leave room for an eTIMS gateway, so waiting costs little |
-| **D8** | When does the pilot go live, and with what? | **As a complete cash hospital system in P6**, before payer billing (P7) and certification (P8). The pilot is a new, cash-only hospital that can only switch once it can leave its current system entirely. Insurer billing follows as it signs insurers; SHA follows certification, which must land before the hospital's planned SHA date. The lesson the school SaaS recorded still applies: put it in front of a real user before building further. *(Revised twice on 2026-11-03: first narrowed to cash and insurer billing, then reordered for the pilot.)* |
+| **D8** | When does the pilot go live, and with what? | **As a complete cash outpatient hospital system in P6**, before inpatient (P5), payer billing (P7) and certification (P8). The pilot is a new, cash-only hospital that can only switch once it can leave its current system entirely; it has no inpatient service yet, so outpatient is the whole of it. Insurer billing follows as it signs insurers; SHA follows certification, which must land before the hospital's planned SHA date. The lesson the school SaaS recorded still applies: put it in front of a real user before building further. *(Revised twice on 2026-11-03: first narrowed to cash and insurer billing, then reordered for the pilot. Revised 2026-11-17: outpatient only at go-live, inpatient after.)* |
 
 ---
 
@@ -276,7 +277,7 @@ The pilot candidate's staff find their certified system too complex (§2). In a 
   - **Levels 2 and 3 later**, through the outpatient package, once the Level 4 pilot is live. They are mostly outpatient and price-sensitive, and SHA pays their primary care mostly by capitation rather than per claim (§10, question 9), so the payer module works differently for them.
   - **Code impact:** a per-facility module switch, built when the first optional module lands. Nothing in P1.
 - Paid onboarding, data migration, and staff training.
-- Pilot with one hospital before generalizing across hospital types. The pilot goes live as a complete cash hospital system in P6 (D8).
+- Pilot with one hospital before generalizing across hospital types. The pilot goes live as a complete cash outpatient hospital system in P6 (D8).
 - **The market is a replacement market.** SHA-contracted private hospitals must be on a certified HMIS by the end of 2026, so by launch each one already runs an incumbent system. Implications:
   - Migration from the main incumbent systems (patients, numbers, open balances, open claims) is a v1 feature, not a services extra.
   - Pilot interviews should ask what the hospital dislikes about its current system, as well as how it works (§9).

@@ -8,13 +8,14 @@ Status: proposed · Last updated: 2026-11-06
 
 ## 1. How the phases are ordered
 
-**Cash billing first (P2), then the clinical modules in workflow order (P3–P5), then the pilot goes live (P6). Payers (P7) and certification (P8) follow.**
+**Cash billing first (P2), then the outpatient clinical modules in workflow order (P3–P4), then the frontend, and the pilot goes live as an outpatient hospital (P6). Inpatient (P5), payers (P7) and certification (P8) follow.**
 
 - **The cash money spine goes first** because every clinical module emits charges: a consultation, a lab order, a dispense, a bed-day. If the charge model is wrong, every one of those modules is rewritten.
-- **Payers come after the pilot goes live.** The pilot candidate (`SPEC.md` §2) is a new, cash-only hospital. It can only switch once it can leave its current system entirely, so it needs every clinical module and no payer billing yet. Building payers first would delay its go-live by a whole phase for work it does not use.
+- **Payers come after the pilot goes live.** The pilot candidate (`SPEC.md` §2) is a new, cash-only hospital. It can only switch once it can leave its current system entirely, so it needs every clinical module it uses (outpatient, lab and pharmacy; it has no wards yet) and no payer billing yet. Building payers first would delay its go-live by a whole phase for work it does not use.
 - **That is safe because the payer design already exists** (`SCHEMA.md` §7, §9). P2 builds the account and charge-assignment structures payers depend on, and proves them with a test that bills a dummy insurer, so P7 adds a layer rather than reworking charges.
 - **Certification is not delayed.** It almost certainly judges the complete system, so it needs P2–P7 whatever the order.
 - **Reorder made 2026-11-03.** The earlier order put payers straight after P2.
+- **Reorder made 2026-11-17: inpatient (P5) follows go-live.** The pilot has no inpatient service yet, so it can leave its current system without one. What stands between it and go-live is the screens, so the frontend comes next, straight after P4. P5 keeps its number and starts when the pilot plans to open wards, or when another facility needs it. Admissions, wards, beds and bed-day charges (P2) stay as built.
 
 **SHA's risk is external, and code cannot remove it.** No SHA claim can leave this system until DHA has certified it, and SHA's manual portal is closing, so there is no workaround (`SPEC.md` §8). **The pilot's planned SHA date is P8's deadline:** if the hospital wants SHA before this system is certified, it will stay on its current, certified system. Three things keep certification from becoming a late surprise:
 
@@ -22,17 +23,27 @@ Status: proposed · Last updated: 2026-11-06
 2. **A one-week AfyaConnect sandbox spike happens the moment access is granted**, whatever phase is running then. What it learns feeds back into `SCHEMA.md` §9 before P7 builds the SHA channel.
 3. **Every phase keeps a certification pack current**: self-attestation answers, security evidence, test scripts. P8 then submits a pack rather than starting one.
 
-The lesson carried from the school SaaS is that nothing tests a design like a real user. The pilot goes live in P6 as a **complete cash hospital system** (decision D8 in `SPEC.md`), and every later phase is built with live staff using the product.
+The lesson carried from the school SaaS is that nothing tests a design like a real user. The pilot goes live in P6 as a **complete cash outpatient hospital system** (decision D8 in `SPEC.md`, revised 2026-11-17), and every later phase is built with live staff using the product.
 
-**The frontend runs as its own track, designed before it is built (decided 2026-11-06).** An outpatient visit is one journey across service points (registration, triage, consultation, lab, pharmacy, cashier), so its screens are built once every step's API exists, and come out as one flow rather than being retrofitted as each module lands.
+**The frontend is the next piece of work, designed before it is built (track decided 2026-11-06; made the main line 2026-11-17).** An outpatient visit is one journey across service points (registration, triage, consultation, lab, pharmacy, cashier). Every step's API exists since P4, so its screens are built as one flow rather than retrofitted module by module.
 
-| When | Frontend work |
+Decided 2026-11-17, as recommended:
+
+1. **Stack:** Next.js 16 as a PWA, React 19, TanStack Query, Tailwind 4 with shadcn/ui, the Better Auth client, and types generated from this API's OpenAPI document (`/doc`). It is the stack of the sibling project `hbserenity-web`.
+2. **Its own repository,** `brixa-web`, beside this one, with its own CI.
+3. **Design before build:** each role's screens are sketched as a clickable mockup of one patient's visit, end to end, and the pilot's staff are walked through it before the screens are built. That is the cheapest test of simplicity (`SPEC.md` §7.9). Where a sketch needs something the API cannot give, or asks for something it could derive, the API changes while that is still cheap.
+4. **Order of screens:** sign-in and the facility picker; then front desk, triage, consultation, lab, pharmacy and cashier; then stores and administration. Each role lands on its own work queue.
+5. **Devices:** desktop and tablet, over a slow or dropping connection. Not phones in v1.
+6. **Language and look:** English in v1, with every string in one place so Swahili can follow. A plain, high-contrast design until there is a brand.
+
+| Step | Frontend work |
 |---|---|
-| During P3 and P4 | Settle the stack (`SPEC.md` proposes Next.js as a PWA) and set up its repo. Sketch the whole outpatient journey, screen by screen for each role, and walk the pilot's staff through it: the cheapest test of simplicity (`SPEC.md` §7.9). Where a sketch needs something the API cannot give, or asks for something it could derive, the API changes while that is still cheap. |
-| From P5 | Build the outpatient screens against the finished P2–P4 API, then the inpatient screens as P5 lands. |
+| F1 Foundation | The `brixa-web` repository, its stack and CI, and the typed API client. |
+| F2 The journey, sketched | The outpatient journey as a clickable mockup, screen by screen for each role, walked through with the pilot's staff. The API gaps it shows are fixed here. |
+| F3 The outpatient screens | Built in the order above against the P2–P4 API. |
 | P6 | Reports, offline support at the service points that need it, and the timed simplicity test with real staff before go-live. |
 
-The risk is a crowded P5 and P6. If P5 slips, the inpatient screens start alongside it rather than waiting for it.
+The inpatient screens come with P5.
 
 ---
 
@@ -330,7 +341,7 @@ Main store, pharmacy and ward sub-stores; transfers; goods received; batches and
 
 ### P5 · Inpatient clinical
 
-**Size:** L.
+**Size:** L. **After P6** (reordered 2026-11-17, §1): the pilot has no inpatient service yet.
 
 Bed board; transfers; nursing notes; observation charts, with the NEWS2 early-warning score for adults (moved here from P3 on 2026-11-10: it is built for spotting deterioration on the wards, and outpatient triage uses the emergency/urgent/routine priority instead); the medication administration record (MAR); ward rounds; the discharge summary.
 
@@ -340,7 +351,10 @@ Bed board; transfers; nursing notes; observation charts, with the NEWS2 early-wa
 
 **Size:** M.
 
-Everything the pilot needs to leave its current system on one day:
+Everything the pilot needs to leave its current system on one day. The pilot is outpatient only (reordered 2026-11-17, §1), so this follows the frontend's outpatient screens, not P5:
+
+- **The outpatient screens** (§1, steps F1–F3), which every item below is used through.
+- **Consumables on orders** (P4 question 11) were decided and not built: a dressing's bandage is charged today by manual posting, with a reason. Ask the pilot whether it bills outpatients for consumables item by item; build it before go-live only if it does.
 
 - **Migration** from the pilot's current system: patients and legacy numbers (`SCHEMA.md` §6), open balances and deposits. The hospital is new, so the volume is small; the tooling is still built to be reused.
 - **Opening stock**, from a physical count on cutover day: per store and batch (batch number, expiry, quantity, cost), loaded as `opening_balance` movements (`SCHEMA.md` §8). Controlled drugs also get an opening entry in their register, matching the old register's closing balance. Without this, stock on hand would be zero on day one and nothing could be dispensed.
@@ -354,7 +368,7 @@ Everything the pilot needs to leave its current system on one day:
 - **Legal clearance** from P0: written confirmation that the pilot may run this system before certification.
 
 **Exit:**
-- The pilot runs entirely on this system for cash and M-Pesa patients, with the old system switched off.
+- The pilot runs its outpatient services entirely on this system for cash and M-Pesa patients, with the old system switched off.
 - Stock on hand per store and batch, after the opening load, equals the signed count sheets.
 - Each controlled drug's register balance equals the old register's closing balance.
 
