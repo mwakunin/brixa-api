@@ -54,6 +54,14 @@ describe("the development seed", () => {
     const booked = await (await as(SEED_STAFF.clerk.email))(`/appointments`);
     expect(booked.appointments).toEqual([expect.objectContaining({ patient: expect.objectContaining({ name: "Peter Otieno" }), status: "booked" })]);
 
+    // The staff app's facility picker: the relief clerk works at three, one of them suspended.
+    const relief = await (await as(SEED_STAFF.relief.email))("/me/facilities");
+    expect(relief.facilities.map((f: { name: string; status: string; roles: string[] }) => [f.name, f.status, [...f.roles].sort()])).toEqual([
+      ["Sample Hospital", "active", ["records_clerk"]],
+      ["Sample Hospital, East", "suspended", ["records_clerk"]],
+      ["Sample Hospital, Westside", "active", ["cashier", "records_clerk"]],
+    ]);
+
     await expect(seedDevelopment()).rejects.toThrow(/seeded already/);
   });
 

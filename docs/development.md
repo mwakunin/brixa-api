@@ -22,6 +22,7 @@ pnpm db:seed
 This fills the dev database with **Sample Hospital**, a made-up facility, through the API, so every rule, charge and audit entry is real:
 
 - **Staff:** one member of staff per desk (front desk, triage, doctor, lab, lab supervisor, pharmacy, stores, cashier, finance, admin), each `<desk>@sample-hospital.test`. They all share the password the command prints.
+- **Two more facilities,** Sample Hospital, Westside and Sample Hospital, East (suspended), each with its own admin. A relief clerk, `relief@sample-hospital.test`, works at all three, so the staff app's facility picker has something to show.
 - **Set-up:** triage, General OPD and the Dental clinic with their fees, a malaria test and a blood count, and a pharmacy stocked with two medicines.
 - **Patients**, invented, at every outpatient desk:
   - two waiting at triage, and one at the clinic;
