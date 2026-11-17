@@ -180,6 +180,8 @@ export async function markReviewed(
     .from(labResults)
     .innerJoin(specimens, eq(specimens.id, labResults.specimenId))
     .where(eq(labResults.id, resultId.toLowerCase()))
+    // Held, so a correction being written settles first and is read as superseded, never reviewed.
+    .for("share", { of: labResults })
     .limit(1);
   if (!result)
     throw new ReviewError("not_found");

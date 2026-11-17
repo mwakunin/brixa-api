@@ -16,12 +16,13 @@ import { joinLocked, liveEntryOf, QueueError } from "./queues";
  * who had paid could have their visit closed before the doctor saw the
  * result.
  *
- * Called as a result is released or verified, with the visit locked. When no
- * lab test on the visit still waits, the patient is in no queue, and the
- * last thing that happened in the queues was a clinic finishing with them
- * and asking them to come back, they rejoin that clinic's queue. No second
- * fee: a clinic charges once per visit. Whoever released or verified the
- * last result is recorded as sending them back.
+ * Called as a result is released or verified, or a lab test cancelled, with
+ * the visit locked. When no lab test on the visit still waits, the patient is
+ * in no queue, and the last thing that happened in the queues was a clinic
+ * finishing with them and asking them to come back, they rejoin that
+ * clinic's queue. No second fee: a clinic charges once per visit. Whoever
+ * released, verified or cancelled the last of them is recorded as sending
+ * them back.
  *
  * A clinic that cannot take them now (out of use, or its fee unpriced)
  * leaves them where they are, in a savepoint so nothing half-done stays:

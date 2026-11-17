@@ -5,7 +5,9 @@ import type { Hospital, StaffMember } from "@/test/hospital";
 
 import db from "@/db";
 import { auditLog } from "@/db/schema";
-import { addMembership, resetDb, signedInUser } from "@/test/helpers";
+import { runAsFacility } from "@/db/tenant-transaction";
+import { enterResult } from "@/lib/lab-results";
+import { addMembership, backendPid, resetDb, signedInUser, waitForBlockedBackend } from "@/test/helpers";
 import { call, hospital, TODAY } from "@/test/hospital";
 
 /**
@@ -23,6 +25,7 @@ let gopd: string;
 let dental: string;
 let mrdt: { testId: string; analyteId: string };
 let hb: { testId: string; analyteId: string };
+let urine: { testId: string; analyteId: string };
 
 async function staff(roles: Parameters<typeof addMembership>[2]): Promise<StaffMember> {
   const user = await signedInUser();
@@ -44,11 +47,11 @@ async function refusal(res: Response, status = 409): Promise<string> {
   return (await res.json()).code;
 }
 
-async function labTest(code: string, analyte: Record<string, unknown>) {
+async function labTest(code: string, analyte: Record<string, unknown>, specimenType = "blood") {
   const item = (await api("POST", "/billable-items", h.admin, { code, name: code, category: "lab" })).id;
   const change = await api("POST", "/price-changes", h.admin, { effectiveFrom: TODAY, reason: "Tariff", lines: [{ billableItemId: item, unitPriceCents: 30_000 }] });
   await api("POST", `/price-changes/${change.id}/approve`, h.finance);
-  const test = await api("POST", "/lab-tests", h.admin, { billableItemId: item, specimenType: "blood", analytes: [analyte] });
+  const test = await api("POST", "/lab-tests", h.admin, { billableItemId: item, specimenType, analytes: [analyte] });
   return { testId: test.id as string, analyteId: test.analytes[0].id as string };
 }
 
@@ -65,6 +68,7 @@ beforeEach(async () => {
   dental = (await api("POST", "/service-points", h.admin, { name: "Dental", kind: "consultation" })).id;
   mrdt = await labTest("MRDT", { code: "MPS", name: "Malaria parasites", resultType: "choice", choices: ["Negative", "Positive"], abnormalChoices: ["Positive"] });
   hb = await labTest("HB", { code: "HB", name: "Haemoglobin", resultType: "numeric", unit: "g/dL", criticalLow: 7, ranges: [{ sex: "any", low: 12, high: 16 }] });
+  urine = await labTest("URINE", { code: "PROT", name: "Protein", resultType: "choice", choices: ["Nil", "Trace", "+"] }, "urine");
 });
 
 async function entryOf(encounterId: string): Promise<string | null> {
@@ -161,6 +165,23 @@ describe("a patient sent for tests", () => {
     expect(await queueOf(visit)).toBe(gopd);
   });
 
+  it("comes back as the last test still waiting is cancelled, the others being ready", async () => {
+    const { visit, entry } = await withTheDoctor();
+    const order = await api("POST", `/encounters/${visit}/orders`, doctor, { items: [{ labTestId: mrdt.testId }, { labTestId: urine.testId }] }, 201);
+    await api("POST", `/queue-entries/${entry}/finish`, doctor, {});
+    const blood = order.items.filter((i: { labTestId: string }) => i.labTestId === mrdt.testId);
+    const { results } = await enter({ ...order, items: blood }, { MRDT: "Negative" });
+    await api("POST", `/lab-results/${results.MRDT}/verify`, supervisor, {});
+    // The urine sample is still to come.
+    expect(await queueOf(visit)).toBeNull();
+
+    const urineItem = order.items.find((i: { labTestId: string }) => i.labTestId === urine.testId);
+    await api("POST", `/order-items/${urineItem.id}/cancel`, labTech, { reason: "Could not give a sample" });
+
+    expect(await queueOf(visit)).toBe(gopd);
+    expect((await api("GET", `/service-points/${gopd}/queue`, doctor)).entries).toEqual([expect.objectContaining({ encounterId: visit, returnedWithResults: true })]);
+  });
+
   it("is told to come back only from a clinic", async () => {
     const patientId = await h.patient();
     const visit = (await api("POST", "/encounters", h.nurse, { patientId, kind: "opd" }, 201)).id;
@@ -225,6 +246,42 @@ describe("the results-to-review list", () => {
     expect(reads[0]).toMatchObject({ actorId: doctor.id, detail: expect.objectContaining({ scope: "mine", patients: expect.arrayContaining([expect.any(String)]) }) });
     const [reviewed] = await db.select().from(auditLog).where(eq(auditLog.action, "lab_result.reviewed"));
     expect(reviewed).toMatchObject({ actorId: doctor.id, detail: { resultId: abnormal.resultId } });
+  });
+
+  it("waits, as a result is reviewed, for a correction of it being written, then refuses it", async () => {
+    const { order, specimenId, resultId } = await resulted(doctor, "MRDT", "Positive");
+    let release!: () => void;
+    const mayCommit = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let ready!: () => void;
+    const started = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    let holderPid = 0;
+    const correcting = runAsFacility(h.facility.id, async (tx) => {
+      try {
+        await enterResult(tx, h.facility.id, specimenId, { orderItemId: order.items[0].id, values: [{ analyteId: mrdt.analyteId, value: "Negative" }], correctionReason: "Read the wrong cassette" }, labTech.actor);
+        holderPid = await backendPid(tx);
+      }
+      finally {
+        ready();
+        await mayCommit;
+      }
+    });
+    await started;
+
+    const reviewing = call("POST", `/lab-results/${resultId}/reviewed`, h.facility.id, doctor);
+    try {
+      expect(await waitForBlockedBackend(holderPid)).toBe(true);
+    }
+    finally {
+      release();
+      await Promise.allSettled([correcting, reviewing]);
+    }
+
+    // The result it was is superseded: not reviewable, and not a failure.
+    expect(await refusal(await reviewing)).toBe("not_reviewable");
   });
 
   it("is a clinician's, not the lab's or the front desk's", async () => {

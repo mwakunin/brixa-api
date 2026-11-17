@@ -12,6 +12,7 @@ import type { Filtered } from "./sensitivity";
 import { recordAudit } from "./audit";
 import { cancelOrderItemCharge, captureOrderItemCharge, ChargeError } from "./charges";
 import { refreshReport } from "./lab-results";
+import { returnWithResults } from "./results-return";
 import { alertRecorders, filterFor, isRestricted, orderGuards, readDetail, readerOf } from "./sensitivity";
 
 /**
@@ -329,9 +330,12 @@ export async function cancelOrderItem(tx: AppDb, facilityId: string, itemId: str
     .where(eq(orderItems.id, itemId))
     .returning();
   const chargeCancelled = await cancelOrderItemCharge(tx, facilityId, itemId, reason, actor);
-  // The rest of its order may now be resulted: its report is due.
-  if (item.labTestId)
+  // The rest of its order may now be resulted: its report is due. And if it was the
+  // last test the visit waited for, the patient goes back to the clinic that asked.
+  if (item.labTestId) {
     await refreshReport(tx, facilityId, item.orderId, actor, at);
+    await returnWithResults(tx, facilityId, encounterId, actor, at);
+  }
 
   const code = await chargedCode(tx, item);
   await recordAudit(tx, {
