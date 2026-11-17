@@ -5,8 +5,7 @@ import { authDb } from "@/db";
 import * as authSchema from "@/db/auth-schema";
 import env from "@/env";
 
-import { emailEnabled, sendEmail } from "./email";
-import { errorLine } from "./error-summary";
+import { emailEnabled, EmailError, sendEmail } from "./email";
 import { logger } from "./logger";
 
 /** The staff app's origin: scheme, host and port, whatever path APP_URL carries. */
@@ -17,17 +16,34 @@ export const appOrigin = new URL(env.APP_URL).origin;
  * reset request that failed only for a real account would tell a stranger
  * the account exists, and a notice that failed after the password changed
  * would report a change that happened as one that did not. The failure is
- * logged with the account's id, never its address (rule 10); the person can
- * ask again.
+ * logged with the account's id and the kind of failure, never the
+ * provider's message: Resend's can quote an email address (rule 10). The
+ * person can ask again.
  */
 async function sendQuietly(userId: string, what: string, mail: Parameters<typeof sendEmail>[0]): Promise<void> {
   try {
     await sendEmail(mail);
   }
   catch (err) {
-    logger.error({ userId, error: errorLine(err) }, `Could not send the ${what}`);
+    logger.error({ userId, failure: failureKind(err) }, `Could not send the ${what}`);
   }
 }
+
+/** Resend's error name (`rate_limit_exceeded`, `validation_error`…) when there is one, else the error's class. */
+function failureKind(err: unknown): string {
+  const cause = err instanceof EmailError ? err.cause : undefined;
+  if (typeof cause === "object" && cause !== null && "name" in cause && typeof cause.name === "string")
+    return cause.name;
+  return err instanceof Error ? err.name : typeof err;
+}
+
+/**
+ * How long a request for a reset link takes to answer, whatever happens
+ * behind it (`middlewares/answer-time.ts`): well above the time Resend
+ * usually takes to accept a message, so an address with an account is not
+ * told apart by the wait.
+ */
+export const RESET_REQUEST_ANSWER_MS = 1_500;
 
 /**
  * Email and password, for staff at a desk. Invite-only.
@@ -65,6 +81,8 @@ export const auth = betterAuth({
   database: drizzleAdapter(authDb, {
     provider: "pg",
     schema: authSchema,
+    // A reset spends its link, ends the sessions and writes the password together, or does none of it.
+    transaction: true,
   }),
 
   emailAndPassword: {
@@ -80,8 +98,9 @@ export const auth = betterAuth({
 
     /*
      * A forgotten password, reset by email. Better Auth answers the request
-     * the same whether or not the address has an account, so it tells nobody
-     * who has one, and the /api/auth rate limit covers it. The link goes
+     * with the same words whether or not the address has an account, and
+     * RESET_REQUEST_ANSWER_MS makes it take the same time, so it tells nobody
+     * who has one; the /api/auth rate limit covers it too. The link goes
      * straight to the staff app's reset page, as an invitation's does, and
      * works for an hour, once.
      *

@@ -4,7 +4,7 @@ import app from "@/app";
 import db from "@/db";
 import { user } from "@/db/schema";
 import { AccountExistsError } from "@/lib/accounts";
-import { appOrigin, auth } from "@/lib/auth";
+import { appOrigin, auth, RESET_REQUEST_ANSWER_MS } from "@/lib/auth";
 import { sentEmails } from "@/lib/email";
 import { createTestAccount, nextEmail, nextIp, postJson, resetDb, signIn, TEST_PASSWORD } from "@/test/helpers";
 
@@ -119,6 +119,18 @@ describe("resetting a forgotten password", () => {
     expect(sentEmails).toEqual([]);
   });
 
+  it("takes the same fixed time to answer either, so the wait does not tell who has an account", async () => {
+    const known = nextEmail();
+    await createTestAccount(known);
+
+    for (const email of [known, nextEmail()]) {
+      const asked = performance.now();
+      await requestReset(email);
+      // A timer may fire a millisecond early.
+      expect(performance.now() - asked, email).toBeGreaterThanOrEqual(RESET_REQUEST_ANSWER_MS - 2);
+    }
+  });
+
   it("sets the new password, ends every session the person had, and tells them", async () => {
     const email = nextEmail();
     await createTestAccount(email);
@@ -148,5 +160,20 @@ describe("resetting a forgotten password", () => {
     expect(again.status).toBe(400);
     expect((await again.json()).code).toBe("INVALID_TOKEN");
     expect((await postJson("/api/auth/sign-in/email", { email, password: NEW_PASSWORD })).status).toBe(200);
+  });
+
+  it("lets only one of two resets sent at once with the same link through", async () => {
+    const email = nextEmail();
+    await createTestAccount(email);
+    await requestReset(email);
+    const token = lastLink().searchParams.get("token");
+    const passwords = ["first-new-password", "second-new-password"];
+
+    const answers = await Promise.all(passwords.map(newPassword => postJson("/api/auth/reset-password", { token, newPassword })));
+
+    expect(answers.map(a => a.status).sort()).toEqual([200, 400]);
+    const [won, lost] = answers[0].status === 200 ? passwords : [...passwords].reverse();
+    expect((await postJson("/api/auth/sign-in/email", { email, password: won })).status).toBe(200);
+    expect((await postJson("/api/auth/sign-in/email", { email, password: lost })).status).toBe(401);
   });
 });
