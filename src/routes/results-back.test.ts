@@ -195,24 +195,68 @@ describe("a patient sent for tests", () => {
     expect(await db.select().from(auditLog).where(and(eq(auditLog.action, "queue.joined"), eq(auditLog.actorId, supervisor.id)))).toEqual([]);
   });
 
-  it("stays where she is, with nothing half-done kept, when the clinic's fee has no price", async () => {
+  it("comes back with no second fee, though her first was cancelled, and whatever the fee is priced at now", async () => {
     const { visit, entry } = await withTheDoctor();
     const order = await api("POST", `/encounters/${visit}/orders`, doctor, { items: [{ labTestId: mrdt.testId }] }, 201);
     await api("POST", `/queue-entries/${entry}/finish`, doctor, {});
-    // Her fee was cancelled, and the clinic now charges an item with no price: going back would charge it.
+    // The consultation's fee is waived, and the clinic now charges an item with no price.
     const fee = (await api("GET", `/encounters/${visit}/charges`, h.cashier)).charges.find((ch: { code: string }) => ch.code === "CONS");
     await api("POST", `/charges/${fee.id}/cancel`, h.admin, { reason: "Waived by the director" });
     const unpriced = (await api("POST", "/billable-items", h.admin, { code: "CONS-B", name: "Consultation, new rate", category: "consultation" })).id;
     await api("PATCH", `/service-points/${gopd}`, h.admin, { consultationItemId: unpriced });
 
     const { results } = await enter(order, { MRDT: "Negative" });
-    expect(await api("POST", `/lab-results/${results.MRDT}/verify`, supervisor, {})).toMatchObject({ status: "verified" });
+    await api("POST", `/lab-results/${results.MRDT}/verify`, supervisor, {});
 
-    expect(await queueOf(visit)).toBeNull();
-    // The queue entry the join had written went with it: no turn at the clinic, no audit of one, no charge.
-    expect(await db.select().from(auditLog).where(and(eq(auditLog.action, "queue.joined"), eq(auditLog.actorId, supervisor.id)))).toEqual([]);
+    // The return continues the consultation the clinic waived: it charges nothing, so no price stops it.
+    expect(await queueOf(visit)).toBe(gopd);
     const standing = (await api("GET", `/encounters/${visit}/charges`, h.cashier)).charges.filter((ch: { cancelledAt: string | null; category: string }) => ch.category === "consultation" && !ch.cancelledAt);
     expect(standing).toEqual([]);
+  });
+
+  it("waits, as a result is verified, for a correction of another being written, and stays out while it waits", async () => {
+    const { visit, entry } = await withTheDoctor();
+    // Two orders, so two specimens and two reports: nothing but the visit is shared.
+    const first = await api("POST", `/encounters/${visit}/orders`, doctor, { items: [{ labTestId: mrdt.testId }] }, 201);
+    const second = await api("POST", `/encounters/${visit}/orders`, doctor, { items: [{ labTestId: hb.testId }] }, 201);
+    await api("POST", `/queue-entries/${entry}/finish`, doctor, {});
+    const { specimenId, results: firstResults } = await enter(first, { MRDT: "Positive" });
+    const { results } = await enter(second, { HB: 13 });
+    await api("POST", `/lab-results/${firstResults.MRDT}/verify`, supervisor, {});
+    const mrdtItem = first.items[0];
+    let release!: () => void;
+    const mayCommit = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let ready!: () => void;
+    const started = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    let holderPid = 0;
+    const correcting = runAsFacility(h.facility.id, async (tx) => {
+      try {
+        await enterResult(tx, h.facility.id, specimenId, { orderItemId: mrdtItem.id, values: [{ analyteId: mrdt.analyteId, value: "Negative" }], correctionReason: "Read the wrong cassette" }, labTech.actor);
+        holderPid = await backendPid(tx);
+      }
+      finally {
+        ready();
+        await mayCommit;
+      }
+    });
+    await started;
+
+    const verifying = call("POST", `/lab-results/${results.HB}/verify`, h.facility.id, supervisor, {});
+    try {
+      expect(await waitForBlockedBackend(holderPid)).toBe(true);
+    }
+    finally {
+      release();
+      await Promise.allSettled([correcting, verifying]);
+    }
+
+    expect((await verifying).status).toBe(200);
+    // The malaria result is being corrected: she is not sent back until it is verified again.
+    expect(await queueOf(visit)).toBeNull();
   });
 
   it("waits for a test whose specimen was rejected, until it is taken again and resulted", async () => {

@@ -258,7 +258,8 @@ async function lockEncounterRow(tx: AppDb, id: string) {
  * Puts a visit the caller has already locked (or just created) in a queue.
  * The partial unique index is the backstop for "one queue at a time".
  * `returnedWithResults` marks the return to a clinic once the visit's last
- * lab result is ready (`results-return.ts`).
+ * lab result is ready (`results-return.ts`): it charges no fee, as the
+ * consultation it continues was charged, or deliberately not, already.
  */
 export async function joinLocked(
   tx: AppDb,
@@ -309,7 +310,7 @@ export async function joinLocked(
     detail: { encounterId: encounter.id, servicePointId, ...(options.returnedWithResults ? { returnedWithResults: true } : {}) },
   });
 
-  if (point.kind === "consultation" && point.consultationItemId) {
+  if (point.kind === "consultation" && point.consultationItemId && !options.returnedWithResults) {
     try {
       await captureConsultationFee(tx, facilityId, {
         encounterId: encounter.id,

@@ -220,6 +220,8 @@ export async function enterResult(
   actor: PatientActor,
   at = new Date(),
 ): Promise<ResultRow> {
+  // The visit first: a correction makes a test wait again, so a return for another result waits for it to settle.
+  await lockVisitOfSpecimen(tx, specimenId);
   const [specimen] = await tx.select().from(specimens).where(eq(specimens.id, specimenId)).for("update").limit(1);
   if (!specimen)
     throw new LabResultError("specimen_not_found");
@@ -276,6 +278,18 @@ export async function enterResult(
   if (current && current.status !== "entered")
     await refreshReport(tx, facilityId, specimen.orderId, actor, at);
   return result;
+}
+
+/** Locks a specimen's visit, before the specimen and its results (SCHEMA.md M8). */
+async function lockVisitOfSpecimen(tx: AppDb, specimenId: string): Promise<void> {
+  const [found] = await tx
+    .select({ encounterId: orders.encounterId })
+    .from(specimens)
+    .innerJoin(orders, eq(orders.id, specimens.orderId))
+    .where(eq(specimens.id, specimenId))
+    .limit(1);
+  if (found)
+    await tx.select({ id: encounters.id }).from(encounters).where(eq(encounters.id, found.encounterId)).for("update");
 }
 
 /**

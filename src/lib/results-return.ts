@@ -20,12 +20,13 @@ import { joinLocked, liveEntryOf, QueueError } from "./queues";
  * the visit locked. When no lab test on the visit still waits, the patient is
  * in no queue, and the last thing that happened in the queues was a clinic
  * finishing with them and asking them to come back, they rejoin that
- * clinic's queue. No second fee: a clinic charges once per visit. Whoever
- * released, verified or cancelled the last of them is recorded as sending
- * them back.
+ * clinic's queue. Whoever released, verified or cancelled the last of them
+ * is recorded as sending them back.
  *
- * A clinic that cannot take them now (out of use, or its fee unpriced)
- * leaves them where they are, in a savepoint so nothing half-done stays:
+ * No fee, whatever became of the first: the return is the rest of the
+ * consultation the clinic charged for, or waived, when it sent them for
+ * tests. So the fee's price today cannot hold the return up. A clinic out of
+ * use leaves them where they are (refused before anything is written), and
  * the result is on the clinician's results-to-review list either way.
  */
 export async function returnWithResults(tx: AppDb, facilityId: string, encounterId: string, actor: PatientActor, at: Date): Promise<void> {
@@ -44,7 +45,7 @@ export async function returnWithResults(tx: AppDb, facilityId: string, encounter
     return;
 
   try {
-    await tx.transaction(sp => joinLocked(sp, facilityId, visit, last.servicePointId, actor, at, { returnedWithResults: true }));
+    await joinLocked(tx, facilityId, visit, last.servicePointId, actor, at, { returnedWithResults: true });
   }
   catch (err) {
     if (err instanceof QueueError)
