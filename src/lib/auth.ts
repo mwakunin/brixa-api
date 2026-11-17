@@ -46,13 +46,12 @@ function failureKind(err: unknown): string {
 export const RESET_REQUEST_ANSWER_MS = 1_500;
 
 /**
- * How long the request waits for the email provider before leaving the send
- * to finish after the answer. Kept inside RESET_REQUEST_ANSWER_MS with room
- * for Better Auth's own work, so a slow provider cannot stretch a real
- * account's answer past an unknown address's. Resend usually accepts a
- * message well within it, so nearly every send finishes inside the request.
+ * How long a reset waits for the "password changed" notice before answering.
+ * The Resend SDK sets no timeout, so a stalled provider would otherwise hold
+ * the answer for minutes, and someone who gave up and pressed again would be
+ * told their link was used. A slower notice finishes after the answer.
  */
-const RESET_SEND_WAIT_MS = 1_000;
+const NOTICE_WAIT_MS = 1_000;
 
 /**
  * Email and password, for staff at a desk. Invite-only.
@@ -121,7 +120,13 @@ export const auth = betterAuth({
     async sendResetPassword({ user: recipient, token }) {
       const link = new URL("/reset-password", env.APP_URL);
       link.searchParams.set("token", token);
-      const sending = sendQuietly(recipient.id, "password reset link", {
+      /*
+       * Not awaited, so the provider's time never reaches the answer. The
+       * answer is held to RESET_REQUEST_ANSWER_MS anyway, which gives the
+       * send that long inside the request; a slower one finishes after it.
+       * sendQuietly never rejects, so a failure goes only into the log.
+       */
+      void sendQuietly(recipient.id, "password reset link", {
         to: recipient.email,
         subject: "Reset your Brixa HMIS password",
         body: `Hello ${recipient.name},\n\n`
@@ -129,21 +134,20 @@ export const auth = betterAuth({
           + `${link.toString()}\n\n`
           + "The link works once, for one hour. If you did not ask for this, you can ignore it: your password stays as it is.",
       });
-      // sendQuietly never rejects, so a send still running after the answer fails only into the log.
-      await Promise.race([sending, sleep(RESET_SEND_WAIT_MS)]);
     },
     // A reset often follows "someone else may know my password", and the computers at a desk are shared.
     revokeSessionsOnPasswordReset: true,
     // The person hears of every change, so one they did not make does not go unnoticed.
     async onPasswordReset({ user: changed }) {
       logger.info({ userId: changed.id }, "Password reset");
-      await sendQuietly(changed.id, "password changed notice", {
+      const notice = sendQuietly(changed.id, "password changed notice", {
         to: changed.email,
         subject: "Your Brixa HMIS password was changed",
         body: `Hello ${changed.name},\n\n`
           + "The password for your Brixa HMIS account was changed, and every device that was signed in has been signed out.\n\n"
           + "If you did not do this, tell your administrator straight away.",
       });
+      await Promise.race([notice, sleep(NOTICE_WAIT_MS)]);
     },
   },
 

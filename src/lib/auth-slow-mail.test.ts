@@ -44,4 +44,20 @@ describe("resetting a password while the email provider is slow", () => {
     }
     await vi.waitFor(() => expect(sentEmails.map(m => m.to)).toEqual([known]), { timeout: PROVIDER_MS + 2_000, interval: 100 });
   }, 20_000);
+
+  it("sets the new password without waiting for a slow notice, which still goes after the answer", async () => {
+    const email = nextEmail();
+    await createTestAccount(email);
+    await postJson("/api/auth/request-password-reset", { email });
+    await vi.waitFor(() => expect(sentEmails).toHaveLength(1), { timeout: PROVIDER_MS + 2_000, interval: 100 });
+    const token = new URL(sentEmails[0].body.match(/https?:\/\/\S+/)![0]).searchParams.get("token");
+
+    const asked = performance.now();
+    const res = await postJson("/api/auth/reset-password", { token, newPassword: "a-brand-new-password" });
+
+    expect(res.status).toBe(200);
+    // Hashing the new password and the transaction, plus at most a second for the notice: far short of the provider's 4 s.
+    expect(performance.now() - asked).toBeLessThan(2_500);
+    await vi.waitFor(() => expect(sentEmails.at(-1)?.subject).toBe("Your Brixa HMIS password was changed"), { timeout: PROVIDER_MS + 2_000, interval: 100 });
+  }, 30_000);
 });
