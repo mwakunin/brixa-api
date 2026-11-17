@@ -47,4 +47,4 @@ pnpm db:migrate
 pnpm db:seed
 ```
 
-That removes the dev database only. The test database is a separate container.
+That removes the dev database only; the test database is a separate container. It removes any drug catalogue you loaded too. The seed then loads the small sample catalogue; to have PPB's list again, reload it with `pnpm drugs:load` (`docs/drug-catalogue.md`) before seeding.
