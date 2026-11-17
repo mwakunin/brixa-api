@@ -1,4 +1,4 @@
-import { count } from "drizzle-orm";
+import { count, eq } from "drizzle-orm";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -17,12 +17,15 @@ import { invitationToken } from "@/lib/invitations";
  * A made-up hospital for development (`pnpm db:seed`): a facility, one
  * member of staff per desk, a priced catalogue, a stocked pharmacy, and
  * invented patients spread across the desks, so each screen of the staff
- * app has something to show (brixa-web `docs/outpatient-journey.md`).
+ * app has something to show (brixa-web `docs/outpatient-journey.md`). Two
+ * more facilities, one of them suspended, give its facility picker someone
+ * who works at three.
  *
  * The hospital is built through the API as the staff app would drive it, so
- * every rule, charge and audit entry is real. Three things are not, as no
- * route makes them: the superadmin account (`createAccount`) and the shared
- * drug and ICD-11 catalogues (their lib loaders). Synthetic data only, and
+ * every rule, charge and audit entry is real. Four things are not, as no
+ * route makes them: the superadmin account (`createAccount`), the shared
+ * drug and ICD-11 catalogues (their lib loaders), and the suspension of the
+ * third facility (one update on the owner connection). Synthetic data only, and
  * never a message sent: it refuses to run with email or SMS credentials set,
  * against a database that is not on this machine, or in production
  * (CLAUDE.md §8).
@@ -126,7 +129,10 @@ type Profession = "medical_practitioner" | "nurse" | "laboratory" | "pharmacy";
 
 interface Member { name: string; email: string; roles: Role[]; licence?: { profession: Profession; number: string } }
 
-/** One member of staff per desk, named as in the sketched journey. */
+/**
+ * One member of staff per desk, named as in the sketched journey, and a
+ * relief clerk who also works at the two facilities in OTHER_FACILITIES.
+ */
 export const SEED_STAFF = {
   admin: { name: "Ruth Odhiambo", email: "admin@sample-hospital.test", roles: ["facility_admin"] },
   clerk: { name: "Joyce Mwangi", email: "frontdesk@sample-hospital.test", roles: ["records_clerk"] },
@@ -138,7 +144,14 @@ export const SEED_STAFF = {
   storekeeper: { name: "Moses Kiprotich", email: "stores@sample-hospital.test", roles: ["storekeeper"] },
   cashier: { name: "Mercy Wairimu", email: "cashier@sample-hospital.test", roles: ["cashier"] },
   finance: { name: "Ann Wekesa", email: "finance@sample-hospital.test", roles: ["finance_manager"] },
+  relief: { name: "Esther Nyambura", email: "relief@sample-hospital.test", roles: ["records_clerk"] },
 } as const satisfies Record<string, Member>;
+
+/** Where the relief clerk also works, each with its own admin to invite her. East is suspended. */
+const OTHER_FACILITIES = [
+  { name: "Sample Hospital, Westside", kmhfrCode: "DEV-00002", admin: { name: "Samuel Mutua", email: "admin.westside@sample-hospital.test" }, roles: ["records_clerk", "cashier"], suspended: false },
+  { name: "Sample Hospital, East", kmhfrCode: "DEV-00003", admin: { name: "Agnes Chepkoech", email: "admin.east@sample-hospital.test" }, roles: ["records_clerk"], suspended: true },
+] as const satisfies { name: string; kmhfrCode: string; admin: { name: string; email: string }; roles: Role[]; suspended: boolean }[];
 
 type StaffKey = keyof typeof SEED_STAFF;
 type Staff = Record<StaffKey, Caller>;
@@ -171,7 +184,26 @@ async function facilityAndStaff(): Promise<{ facilityId: string; staff: Staff }>
     await accept(invited.id);
     staff[key] = { session: await signIn(member.email), facilityId: facility.id };
   }
+  await otherFacilities(superadmin);
   return { facilityId: facility.id, staff };
+}
+
+/**
+ * The relief clerk's other facilities, onboarded and staffed as the first
+ * was. Her account exists already, so accepting keeps her password. No route
+ * suspends a facility yet, so East is suspended on the owner connection.
+ */
+async function otherFacilities(superadmin: Caller): Promise<void> {
+  const { relief } = SEED_STAFF;
+  for (const other of OTHER_FACILITIES) {
+    const facility = await send("POST", "/superadmin/facilities", superadmin, { name: other.name, kmhfrCode: other.kmhfrCode, kephLevel: 4, county: "Nairobi", admin: other.admin });
+    await accept(facility.adminInvitationId);
+    const admin = { session: await signIn(other.admin.email), facilityId: facility.id };
+    const invited = await send("POST", "/staff/invitations", admin, { name: relief.name, email: relief.email, roles: other.roles });
+    await accept(invited.id);
+    if (other.suspended)
+      await db.update(facilities).set({ status: "suspended" }).where(eq(facilities.id, facility.id));
+  }
 }
 
 // ---------------------------------------------------------------------------

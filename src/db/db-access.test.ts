@@ -87,10 +87,10 @@ const OWNER_ALLOWLIST = new Map([
     "dev/seed.ts",
     "the development seed counts the facilities before it writes anything, "
     + "and refuses a database holding any: one read, so a real database "
-    + "tunnelled to localhost is never seeded. That count is its only use of "
-    + "this connection. It writes through the API, except the superadmin "
-    + "account (createAccount) and the shared drug and ICD-11 catalogues, "
-    + "which their lib loaders write",
+    + "tunnelled to localhost is never seeded. Its one other use is to suspend "
+    + "a made-up facility, as no route suspends one yet. It writes through "
+    + "the API, except the superadmin account (createAccount) and the shared "
+    + "drug and ICD-11 catalogues, which their lib loaders write",
   ],
   [
     "jobs/outbox-worker.ts",
