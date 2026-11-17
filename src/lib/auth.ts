@@ -1,5 +1,6 @@
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
+import { setTimeout as sleep } from "node:timers/promises";
 
 import { authDb } from "@/db";
 import * as authSchema from "@/db/auth-schema";
@@ -39,11 +40,19 @@ function failureKind(err: unknown): string {
 
 /**
  * How long a request for a reset link takes to answer, whatever happens
- * behind it (`middlewares/answer-time.ts`): well above the time Resend
- * usually takes to accept a message, so an address with an account is not
- * told apart by the wait.
+ * behind it (`middlewares/answer-time.ts`), so an address with an account is
+ * not told apart by the wait.
  */
 export const RESET_REQUEST_ANSWER_MS = 1_500;
+
+/**
+ * How long the request waits for the email provider before leaving the send
+ * to finish after the answer. Kept inside RESET_REQUEST_ANSWER_MS with room
+ * for Better Auth's own work, so a slow provider cannot stretch a real
+ * account's answer past an unknown address's. Resend usually accepts a
+ * message well within it, so nearly every send finishes inside the request.
+ */
+const RESET_SEND_WAIT_MS = 1_000;
 
 /**
  * Email and password, for staff at a desk. Invite-only.
@@ -112,7 +121,7 @@ export const auth = betterAuth({
     async sendResetPassword({ user: recipient, token }) {
       const link = new URL("/reset-password", env.APP_URL);
       link.searchParams.set("token", token);
-      await sendQuietly(recipient.id, "password reset link", {
+      const sending = sendQuietly(recipient.id, "password reset link", {
         to: recipient.email,
         subject: "Reset your Brixa HMIS password",
         body: `Hello ${recipient.name},\n\n`
@@ -120,6 +129,8 @@ export const auth = betterAuth({
           + `${link.toString()}\n\n`
           + "The link works once, for one hour. If you did not ask for this, you can ignore it: your password stays as it is.",
       });
+      // sendQuietly never rejects, so a send still running after the answer fails only into the log.
+      await Promise.race([sending, sleep(RESET_SEND_WAIT_MS)]);
     },
     // A reset often follows "someone else may know my password", and the computers at a desk are shared.
     revokeSessionsOnPasswordReset: true,

@@ -6,7 +6,8 @@ import type { MiddlewareHandler } from "hono";
  * password reset emails a link only when the address has an account; without
  * this, the wait for the email provider would tell a stranger which
  * addresses belong to staff. Work that runs longer than `ms` is not cut
- * short, so `ms` sits well above the provider's usual time.
+ * short, so the work behind the route must be bounded well inside it (the
+ * reset email's wait is, in lib/auth.ts).
  */
 export function answerNoSoonerThan(ms: number): MiddlewareHandler {
   return async (_c, next) => {
