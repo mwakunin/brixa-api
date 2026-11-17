@@ -50,6 +50,10 @@ export const QueueEntrySchema = z.object({
   endedAt: z.string().nullable(),
   /** Set by triage as it finishes with the patient. */
   priority: z.enum(["emergency", "urgent", "routine"]).nullable(),
+  /** A clinic finished with the patient while lab tests still waited: they come back here once every result is ready. */
+  comeBackWithResults: z.boolean(),
+  /** This turn is that return. */
+  returnedWithResults: z.boolean(),
 });
 
 const QueueViewSchema = z.object({
@@ -63,6 +67,10 @@ const QueueViewSchema = z.object({
     servedBy: z.object({ membershipId: z.uuid(), name: z.string() }).nullable(),
     /** From the visit's triage; null if not triaged. Orders the waiting patients. */
     priority: z.enum(["emergency", "urgent", "routine"]).nullable(),
+    /** Back at this clinic with results, sent as the last of them was ready. */
+    returnedWithResults: z.boolean(),
+    /** The appointment the visit was opened from, with its time (HH:MM) if it had one. */
+    appointment: z.object({ time: z.string().nullable() }).nullable(),
     patient: z.object({
       id: z.uuid(),
       name: z.string(),
@@ -91,6 +99,11 @@ const FinishBodySchema = z.object({
   nextServicePointId: z.uuid().optional(),
   /** Triage only: how soon the patient must be seen. Orders the clinic queues for the rest of the visit. */
   priority: z.enum(["emergency", "urgent", "routine"]).optional(),
+  /**
+   * A clinic only. With lab tests still waiting, the patient comes back here once every result is
+   * ready, unless this is false (the results are seen at a later visit). Ignored when none waits.
+   */
+  comeBackWithResults: z.boolean().optional(),
 });
 const RemoveBodySchema = z.object({
   /** `left`: the patient went without being seen. `cancelled`: they were sent here in error. */
@@ -156,7 +169,8 @@ export const viewQueue = createRoute({
   summary: "Who is waiting here",
   description:
     "The patients being seen, then those waiting, by arrival: each with name, "
-    + "OP number, sex and age. Audited, since it names patients and where they are.",
+    + "OP number, sex and age, whether they are back with results, and the time they "
+    + "were booked for. Audited, since it names patients and where they are.",
   middleware: [queueStaff] as const,
   request: { headers: facilityHeaders, params: IdParamsSchema },
   responses: {
@@ -207,7 +221,10 @@ export const finish = createRoute({
   method: "post",
   path: "/queue-entries/{id}/finish",
   summary: "Finish with a patient",
-  description: "Optionally sends them on to the next queue in the same step. Triage also sets how soon they must be seen.",
+  description:
+    "Optionally sends them on to the next queue in the same step. Triage also sets how soon they must be seen. "
+    + "A clinic finishing with a patient whose lab tests still wait has them come back once every result is "
+    + "released or verified, unless `comeBackWithResults` is false.",
   middleware: [servingStaff] as const,
   request: { headers: facilityHeaders, params: IdParamsSchema, body: jsonContentRequired(FinishBodySchema, "Where next, if anywhere") },
   responses: {

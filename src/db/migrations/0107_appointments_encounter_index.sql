@@ -1,0 +1,1 @@
+CREATE INDEX "appointments_encounter_index" ON "appointments" USING btree ("facility_id","encounter_id");

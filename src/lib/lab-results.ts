@@ -33,6 +33,7 @@ import { recordAudit } from "./audit";
 import { businessDate, printedAge, printedDateTime } from "./dates";
 import { FIELD_LENGTH, NOTE_LENGTH, packNotes } from "./document-content";
 import { issueDocument, voidDocument } from "./documents";
+import { returnWithResults } from "./results-return";
 import { alertRecorders, filterFor, orderGuards, readDetail, readerOf, sight } from "./sensitivity";
 import { patientColumns, patientOf } from "./worklist-patient";
 
@@ -219,6 +220,8 @@ export async function enterResult(
   actor: PatientActor,
   at = new Date(),
 ): Promise<ResultRow> {
+  // The visit first: a correction makes a test wait again, so a return for another result waits for it to settle.
+  await lockVisitOfSpecimen(tx, specimenId);
   const [specimen] = await tx.select().from(specimens).where(eq(specimens.id, specimenId)).for("update").limit(1);
   if (!specimen)
     throw new LabResultError("specimen_not_found");
@@ -277,6 +280,37 @@ export async function enterResult(
   return result;
 }
 
+/** Locks a specimen's visit, before the specimen and its results (SCHEMA.md M8). */
+async function lockVisitOfSpecimen(tx: AppDb, specimenId: string): Promise<void> {
+  const [found] = await tx
+    .select({ encounterId: orders.encounterId })
+    .from(specimens)
+    .innerJoin(orders, eq(orders.id, specimens.orderId))
+    .where(eq(specimens.id, specimenId))
+    .limit(1);
+  if (found)
+    await tx.select({ id: encounters.id }).from(encounters).where(eq(encounters.id, found.encounterId)).for("update");
+}
+
+/**
+ * Locks the visit a result is on, before the result (the one lock order,
+ * SCHEMA.md M8): releasing or verifying it may send the patient back to the
+ * clinic. Answers the visit, or null for a result that is not there.
+ */
+async function lockVisitOf(tx: AppDb, resultId: string): Promise<string | null> {
+  const [found] = await tx
+    .select({ encounterId: orders.encounterId })
+    .from(labResults)
+    .innerJoin(specimens, eq(specimens.id, labResults.specimenId))
+    .innerJoin(orders, eq(orders.id, specimens.orderId))
+    .where(eq(labResults.id, resultId))
+    .limit(1);
+  if (!found)
+    return null;
+  await tx.select({ id: encounters.id }).from(encounters).where(eq(encounters.id, found.encounterId)).for("update");
+  return found.encounterId;
+}
+
 async function lockPending(tx: AppDb, id: string): Promise<ResultRow> {
   const [result] = await tx.select().from(labResults).where(eq(labResults.id, id)).for("update").limit(1);
   if (!result)
@@ -304,8 +338,13 @@ async function orderOf(tx: AppDb, result: ResultRow): Promise<{ orderId: string;
   return specimen;
 }
 
-/** Releases a result unverified, for a stated reason (one lab member on duty), for the next to verify. */
+/**
+ * Releases a result unverified, for a stated reason (one lab member on
+ * duty), for the next to verify. The last result of the visit's tests sends
+ * the patient back to the clinic that asked (`results-return.ts`).
+ */
 export async function releaseResult(tx: AppDb, facilityId: string, id: string, input: { reason: string; told?: Told }, actor: PatientActor, at = new Date()): Promise<ResultRow> {
+  const encounterId = await lockVisitOf(tx, id);
   const current = await lockPending(tx, id);
   if (current.status !== "entered")
     throw new LabResultError("not_pending");
@@ -324,11 +363,17 @@ export async function releaseResult(tx: AppDb, facilityId: string, id: string, i
     detail: { resultId: id, reason: input.reason, told: released.toldName !== null },
   });
   await refreshReport(tx, facilityId, orderId, actor, at);
+  await returnWithResults(tx, facilityId, encounterId!, actor, at);
   return released;
 }
 
-/** Verifies a result, by a lab member other than the one who entered it. */
+/**
+ * Verifies a result, by a lab member other than the one who entered it. The
+ * last result of the visit's tests sends the patient back to the clinic that
+ * asked (`results-return.ts`).
+ */
 export async function verifyResult(tx: AppDb, facilityId: string, id: string, input: { told?: Told }, actor: PatientActor, at = new Date()): Promise<ResultRow> {
+  const encounterId = await lockVisitOf(tx, id);
   const current = await lockPending(tx, id);
   if (current.enteredBy === actor.membershipId)
     throw new LabResultError("same_person");
@@ -347,6 +392,7 @@ export async function verifyResult(tx: AppDb, facilityId: string, id: string, in
     detail: { resultId: id, told: verified.toldName !== null },
   });
   await refreshReport(tx, facilityId, orderId, actor, at);
+  await returnWithResults(tx, facilityId, encounterId!, actor, at);
   return verified;
 }
 

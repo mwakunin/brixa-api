@@ -434,6 +434,8 @@ export const auditLog = pgTable("audit_log", {
     | "lab_result.entered"
     | "lab_result.released"
     | "lab_result.verified"
+    | "lab_result.reviewed"
+    | "lab_result.review_list_viewed"
     | "lab_report.issued"
     | "appointment.booked"
     | "appointment.moved"
@@ -1260,6 +1262,14 @@ export const queueEntries = pgTable("queue_entries", {
    * clinic queues order by the visit's latest one (derived, not copied).
    */
   priority: text().$type<"emergency" | "urgent" | "routine">(),
+  /**
+   * Set as a clinic finishes with a patient whose lab tests are still
+   * waiting: they come back to this clinic once every result is ready
+   * (decided 2026-11-17). The clinician may say there is no need.
+   */
+  comeBackWithResults: boolean().default(false).notNull(),
+  /** This turn is that return, made as the last result was released or verified. */
+  returnedWithResults: boolean().default(false).notNull(),
 }, t => [
   unique("queue_entries_facility_id_id_key").on(t.facilityId, t.id),
   foreignKey({ name: "queue_entries_encounter_fk", columns: [t.facilityId, t.encounterId], foreignColumns: [encounters.facilityId, encounters.id] }),
@@ -1277,6 +1287,7 @@ export const queueEntries = pgTable("queue_entries", {
   oneOf("queue_entries_status_known", t.status, ["waiting", "serving", "done", "left", "cancelled"]),
   oneOf("queue_entries_priority_known", t.priority, ["emergency", "urgent", "routine"]),
   check("queue_entries_priority_when_done", sql`${t.priority} IS NULL OR ${t.status} = 'done'`),
+  check("queue_entries_come_back_when_done", sql`NOT ${t.comeBackWithResults} OR ${t.status} = 'done'`),
   check(
     "queue_entries_lifecycle",
     sql`(${t.status} = 'waiting' AND ${t.servingAt} IS NULL AND ${t.servedBy} IS NULL AND ${t.endedAt} IS NULL AND ${t.endedBy} IS NULL)
@@ -1347,6 +1358,8 @@ export const appointments = pgTable("appointments", {
     .on(t.patientId, t.servicePointId, t.scheduledOn)
     .where(sql`${t.status} = 'booked'`),
   index("appointments_day_index").on(t.facilityId, t.scheduledOn, t.servicePointId),
+  // A queue row shows the time its visit was booked for, found by the visit.
+  index("appointments_encounter_index").on(t.facilityId, t.encounterId),
   index("appointments_patient_index").on(t.facilityId, t.patientId, t.scheduledOn),
   // Retiring a clinic counts what is still booked there.
   index("appointments_booked_at_clinic_index").on(t.facilityId, t.servicePointId, t.scheduledOn).where(sql`${t.status} = 'booked'`),
@@ -2292,6 +2305,25 @@ export const labResultValues = pgTable("lab_result_values", {
           AND num_nonnulls(${t.valueNumeric}, ${t.unit}, ${t.rangeLow}, ${t.rangeHigh}, ${t.criticalLow}, ${t.criticalHigh}) = 0
           AND (${t.flag} IS NULL OR ${t.flag} = 'abnormal'))`,
   ),
+]);
+
+/**
+ * A result the ordering clinician, or another, has seen and acted on
+ * (decided 2026-11-17, ROADMAP.md P3): it leaves the results-to-review list.
+ * Once per result version, so a correction is reviewed again. Append-only
+ * for every role.
+ */
+export const labResultReviews = pgTable("lab_result_reviews", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  labResultId: uuid().notNull(),
+  reviewedBy: uuid().notNull(),
+  reviewedAt: timestamp({ withTimezone: true }).notNull(),
+}, t => [
+  unique("lab_result_reviews_facility_id_id_key").on(t.facilityId, t.id),
+  unique("lab_result_reviews_result_key").on(t.labResultId),
+  foreignKey({ name: "lab_result_reviews_result_fk", columns: [t.facilityId, t.labResultId], foreignColumns: [labResults.facilityId, labResults.id] }),
+  foreignKey({ name: "lab_result_reviews_reviewed_by_fk", columns: [t.facilityId, t.reviewedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
 ]);
 
 /**
@@ -3740,6 +3772,7 @@ export const TENANT_TABLES = [
   "specimen_tests",
   "lab_results",
   "lab_result_values",
+  "lab_result_reviews",
   "lab_reports",
   "billable_items",
   "price_lists",

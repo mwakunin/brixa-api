@@ -38,6 +38,8 @@ export function entryJson(e: typeof queueEntries.$inferSelect): z.infer<typeof Q
     servedBy: e.servedBy,
     endedAt: iso(e.endedAt),
     priority: e.priority,
+    comeBackWithResults: e.comeBackWithResults,
+    returnedWithResults: e.returnedWithResults,
   };
 }
 
