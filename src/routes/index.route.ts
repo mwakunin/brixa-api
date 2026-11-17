@@ -13,12 +13,12 @@ const router = createRouter()
       path: "/",
       responses: {
         [HttpStatusCodes.OK]: jsonContent(
-          createMessageObjectSchema("Hospital API"),
-          "Hospital API index",
+          createMessageObjectSchema("Brixa HMIS API"),
+          "Brixa HMIS API index",
         ),
       },
     }),
-    c => c.json({ message: "Hospital API" }, HttpStatusCodes.OK),
+    c => c.json({ message: "Brixa HMIS API" }, HttpStatusCodes.OK),
   );
 
 export default router;

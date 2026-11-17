@@ -9,7 +9,7 @@ export default function configureOpenAPI(app: AppOpenAPI): void {
     openapi: "3.0.0",
     info: {
       version: packageJSON.version,
-      title: "Hospital API",
+      title: "Brixa HMIS API",
       description:
         "Multi-tenant hospital management for Kenyan Level 4 hospitals. Each "
         + "facility is a tenant; a tenant request names its facility in the "

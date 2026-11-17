@@ -8,7 +8,7 @@ Project context for AI assistants working in this repository. Read this before w
 
 ## 1. What this is
 
-A multi-tenant hospital management SaaS for Kenya, designed first for **Level 4 private and mission hospitals** (roughly 20–150 beds). Sold to many hospitals. **Each facility is a tenant**: one KMHFR facility code, one SHA contract.
+**Brixa HMIS**: a multi-tenant hospital management SaaS for Kenya, designed first for **Level 4 private and mission hospitals** (roughly 20–150 beds). Sold to many hospitals. **Each facility is a tenant**: one KMHFR facility code, one SHA contract.
 
 **In scope for v1** (phases P1–P8 in `ROADMAP.md`; the pilot goes live as a cash hospital in P6, before payers in P7):
 
