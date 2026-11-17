@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { InsecureDatabaseUrlError, isLocalDatabase, sslConfigFor } from "./connection";
+import { effectiveHost, InsecureDatabaseUrlError, isLocalDatabase, sslConfigFor } from "./connection";
 
 /**
  * This logic was duplicated once and the copy kept an older, broken version
@@ -22,6 +22,9 @@ describe("isLocalDatabase", () => {
     ["localhost in a query parameter", "postgresql://u:p@prod.example.com/db?opts=localhost"],
     ["a hostname merely starting with localhost", "postgresql://u:p@localhost.evil.com/db"],
     ["127.0.0.1 inside the database name", "postgresql://u:p@prod.example.com/db127.0.0.1"],
+    // pg connects to a ?host= over the URL's own host: judged by the URL alone, this would skip TLS to a remote server.
+    ["a ?host= naming a remote server over a local authority", "postgresql://u:p@localhost:5432/db?host=prod.example.com"],
+    ["a host-less DSN, which pg sends to PGHOST or localhost", "postgresql:///db"],
   ])("does NOT treat %s as local", (_label, url) => {
     expect(isLocalDatabase(url)).toBe(false);
   });
@@ -78,5 +81,19 @@ describe("sslConfigFor", () => {
 
   it("leaves a local DSN's parameters alone", () => {
     expect(sslConfigFor("postgresql://u:p@localhost:5432/db?sslmode=disable")).toBe(false);
+  });
+});
+
+describe("effectiveHost", () => {
+  it("is the host pg itself connects to, a ?host= taking precedence over the URL's", () => {
+    expect(effectiveHost("postgresql://owner:pw@localhost:5438/hospital_dev")).toBe("localhost");
+    expect(effectiveHost("postgresql://owner:pw@localhost/hospital?host=remote.example")).toBe("remote.example");
+    expect(effectiveHost("postgresql://owner@/hospital?host=/var/run/postgresql")).toBe("/var/run/postgresql");
+  });
+
+  it("is null when the DSN names none, and never a local host for a string that is no DSN", () => {
+    expect(effectiveHost("postgresql:///hospital")).toBeNull();
+    // pg reads such a string against a placeholder base: whatever it answers, it is not this machine.
+    expect(isLocalDatabase("")).toBe(false);
   });
 });

@@ -2,11 +2,11 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import app from "@/app";
-import { ownerDatabaseHost } from "@/db";
+import { connectionHosts } from "@/db";
 import env from "@/env";
 import { AccountExistsError, createAccount } from "@/lib/accounts";
 import { addDays, businessDate } from "@/lib/dates";
-import { loadDrugCatalogue } from "@/lib/drug-catalogue-load";
+import { drugCatalogueSize, drugCodeOf, loadDrugCatalogue } from "@/lib/drug-catalogue-load";
 import { loadIcd11 } from "@/lib/icd11-load";
 import { invitationToken } from "@/lib/invitations";
 
@@ -35,12 +35,26 @@ export class SeedError extends Error {
   }
 }
 
-/** Refuses anything but a development database on this machine, with no way to send a real message. */
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+
+/**
+ * The connections that reach a database not on this machine, by name and
+ * host. A socket directory is this machine's; a connection naming no host
+ * could reach PGHOST anywhere, so it counts as remote.
+ */
+export function remoteConnections(hosts: Record<string, string | null>): string[] {
+  return Object.entries(hosts)
+    .filter(([, host]) => !(host && (LOCAL_HOSTS.has(host) || host.startsWith("/"))))
+    .map(([name, host]) => `${name} (${host ?? "no host named"})`);
+}
+
+/** Refuses anything but development databases on this machine, through every connection, with no way to send a real message. */
 export function assertSafeToSeed(): void {
   if (env.NODE_ENV === "production")
     throw new SeedError("Not in production.");
-  if (!["localhost", "127.0.0.1", "::1", "[::1]"].includes(ownerDatabaseHost))
-    throw new SeedError(`The database is on ${ownerDatabaseHost}, not this machine: the seed writes only to a local one.`);
+  const remote = remoteConnections(connectionHosts);
+  if (remote.length > 0)
+    throw new SeedError(`Not on this machine: ${remote.join(", ")}. The seed writes only to local databases.`);
   const senders = (["RESEND_API_KEY", "AT_API_KEY", "TASKS_QUEUE"] as const).filter(k => env[k]);
   if (senders.length > 0)
     throw new SeedError(`${senders.join(", ")} set: the seed would send real email or SMS. Unset them first.`);
@@ -151,22 +165,41 @@ async function facilityAndStaff(): Promise<{ facilityId: string; staff: Staff }>
 // What the facility sells, tests and stocks
 // ---------------------------------------------------------------------------
 
+/** The two medicines the pharmacy stocks, by their catalogue codes, whichever catalogue is loaded: the sample's or PPB's. */
+interface Medicines { coartem: string; paracetamol: string }
+
 interface Setup {
   triage: string;
   generalClinic: string;
   pharmacy: string;
   tests: { mrdt: { id: string; analyte: string }; fbc: { id: string; analytes: Record<"HB" | "WBC" | "PLT", string> } };
   stock: { coartem: string; paracetamol: string };
-  /** Their catalogue codes, whichever catalogue is loaded: the sample's or PPB's. */
-  drugs: { coartem: string; paracetamol: string };
+  drugs: Medicines;
 }
 
-/** The shared catalogues, from the test fixtures, unless a fuller one is loaded already. */
+/**
+ * The two medicines, found before anything is written, so a catalogue
+ * without them stops the seed with nothing half done. An empty catalogue
+ * gets the test fixtures' sample; any other is used as it is.
+ */
+async function medicines(): Promise<Medicines> {
+  if (await drugCatalogueSize() === 0)
+    await loadDrugCatalogue(await readFile(path.join(FIXTURES, "drug-catalogue-sample.csv"), "utf8"));
+  const wanted = [["coartem", "Artemether/Lumefantrine", "20 mg/120 mg"], ["paracetamol", "Paracetamol", "500 mg"]] as const;
+  const found: Partial<Medicines> = {};
+  for (const [key, name, strength] of wanted) {
+    const code = await drugCodeOf(name, strength, "Tablet");
+    if (!code)
+      throw new SeedError(`The drug catalogue has no ${name} ${strength} Tablet: load one that does (docs/drug-catalogue.md).`);
+    found[key] = code;
+  }
+  return found as Medicines;
+}
+
+/** The diagnoses' codes, from the test fixtures, unless some are loaded already. */
 async function catalogues(staff: Staff): Promise<void> {
   if ((await send("GET", "/icd-codes?q=malaria", staff.doctor)).codes.length === 0)
     await loadIcd11(await readFile(path.join(FIXTURES, "icd11-mms-sample.txt"), "utf8"));
-  if ((await send("GET", "/drugs?q=artemether", staff.doctor)).drugs.length === 0)
-    await loadDrugCatalogue(await readFile(path.join(FIXTURES, "drug-catalogue-sample.csv"), "utf8"));
 }
 
 /** Items at their cash prices: asked for by the admin, approved by the finance manager (rule 24). */
@@ -215,21 +248,8 @@ async function labTests(staff: Staff, ids: Record<string, string>): Promise<Setu
   return { mrdt: { id: mrdt.id, analyte: mrdt.analytes[0].id }, fbc: { id: fbc.id, analytes: { HB: analyte("HB"), WBC: analyte("WBC"), PLT: analyte("PLT") } } };
 }
 
-/** A catalogue drug's code, found as a prescriber would find it: by name, then strength and form. */
-async function drugCode(staff: Staff, name: string, strength: string, form: string): Promise<string> {
-  const { drugs } = await send("GET", `/drugs?q=${encodeURIComponent(name)}`, staff.doctor);
-  const found = (drugs as { code: string; strength: string; form: string }[]).find(d => d.strength === strength && d.form === form);
-  if (!found)
-    throw new SeedError(`The drug catalogue has no ${name} ${strength} ${form}: load one that does (docs/drug-catalogue.md).`);
-  return found.code;
-}
-
 /** The pharmacy, with two medicines received straight into it. */
-async function pharmacy(staff: Staff, ids: Record<string, string>): Promise<{ pharmacy: string; stock: Setup["stock"]; drugs: Setup["drugs"] }> {
-  const drugs = {
-    coartem: await drugCode(staff, "artemether", "20 mg/120 mg", "Tablet"),
-    paracetamol: await drugCode(staff, "paracetamol", "500 mg", "Tablet"),
-  };
+async function pharmacy(staff: Staff, ids: Record<string, string>, drugs: Medicines): Promise<{ pharmacy: string; stock: Setup["stock"]; drugs: Medicines }> {
   const store = (await send("POST", "/stores", staff.admin, { name: "Pharmacy", kind: "pharmacy" })).id;
   const coartem = (await send("POST", "/stock-items", staff.admin, { billableItemId: ids["AL-24"], drugCode: drugs.coartem, baseUnit: "tablet", packSize: 24 })).id;
   const paracetamol = (await send("POST", "/stock-items", staff.admin, { billableItemId: ids["PCM-500"], drugCode: drugs.paracetamol, baseUnit: "tablet", packSize: 100 })).id;
@@ -245,12 +265,12 @@ async function pharmacy(staff: Staff, ids: Record<string, string>): Promise<{ ph
   return { pharmacy: store, stock: { coartem, paracetamol }, drugs };
 }
 
-async function setUp(staff: Staff): Promise<Setup> {
+async function setUp(staff: Staff, drugs: Medicines): Promise<Setup> {
   await catalogues(staff);
   const ids = await pricedItems(staff);
   const points = await clinics(staff, ids);
   const tests = await labTests(staff, ids);
-  const stores = await pharmacy(staff, ids);
+  const stores = await pharmacy(staff, ids, drugs);
   await send("POST", "/cashier-shifts", staff.cashier, { openingFloatCents: 200_000 });
   return { ...points, tests, ...stores };
 }
@@ -369,8 +389,9 @@ export interface Seeded {
 /** Seeds a development database with a made-up hospital at work. Refuses a database seeded already. */
 export async function seedDevelopment(): Promise<Seeded> {
   assertSafeToSeed();
+  const drugs = await medicines();
   const { facilityId, staff } = await facilityAndStaff();
-  const setup = await setUp(staff);
+  const setup = await setUp(staff, drugs);
   await earlyInTheVisit(staff, setup);
   await atTheLab(staff, setup);
   await atThePharmacy(staff, setup);

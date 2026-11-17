@@ -1,8 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
+import db from "@/db";
+import { facilities, user } from "@/db/schema";
+import { loadDrugCatalogue } from "@/lib/drug-catalogue-load";
 import { resetDb } from "@/test/helpers";
 
-import { SEED_PASSWORD, SEED_STAFF, seedDevelopment } from "./seed";
+import { remoteConnections, SEED_PASSWORD, SEED_STAFF, seedDevelopment } from "./seed";
 
 /** `pnpm db:seed` (`src/dev/seed.ts`): a made-up hospital, every desk with someone at it. */
 
@@ -51,5 +54,19 @@ describe("the development seed", () => {
     expect(booked.appointments).toEqual([expect.objectContaining({ patient: expect.objectContaining({ name: "Peter Otieno" }), status: "booked" })]);
 
     await expect(seedDevelopment()).rejects.toThrow(/seeded already/);
+  });
+
+  it("finds the medicines it stocks before writing anything, and stops there if the catalogue lacks one", async () => {
+    await loadDrugCatalogue("code,generic_name,strength,form,dose_unit,route,controlled_schedule\nAMX-500-CAP,Amoxicillin,500 mg,Capsule,capsule,oral,\n");
+
+    await expect(seedDevelopment()).rejects.toThrow(/The drug catalogue has no Artemether\/Lumefantrine 20 mg\/120 mg Tablet/);
+
+    expect(await db.select().from(user)).toEqual([]);
+    expect(await db.select().from(facilities)).toEqual([]);
+  });
+
+  it("writes only to databases on this machine, through every connection it uses", () => {
+    expect(remoteConnections({ owner: "localhost", app: "127.0.0.1", auth: "/var/run/postgresql" })).toEqual([]);
+    expect(remoteConnections({ owner: "localhost", app: "::1", auth: "db.example.com" })).toEqual(["auth (db.example.com)"]);
   });
 });

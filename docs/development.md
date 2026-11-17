@@ -33,18 +33,17 @@ This fills the dev database with **Sample Hospital**, a made-up facility, throug
 
 It refuses to run:
 - in production;
-- against a database that is not on this machine;
+- if any of its three database connections (owner, app, auth) reaches a database that is not on this machine, read as `pg` reads it;
 - with `RESEND_API_KEY`, `AT_API_KEY` or `TASKS_QUEUE` set, since it must never send an email or SMS;
 - on a database seeded already.
 
 ### Starting again
 
 ```sh
-docker compose rm -sf postgres
-docker volume rm api_postgres_dev_data
-docker compose up -d postgres
+docker exec hospital-postgres-dev dropdb -U hospital --maintenance-db=postgres --force hospital_dev
+docker exec hospital-postgres-dev createdb -U hospital hospital_dev
 pnpm db:migrate
 pnpm db:seed
 ```
 
-That removes the dev database only; the test database is a separate container. It removes any drug catalogue you loaded too. The seed then loads the small sample catalogue; to have PPB's list again, reload it with `pnpm drugs:load` (`docs/drug-catalogue.md`) before seeding.
+That empties the dev database only. Its container, its volume and the database roles stay as they are, so no volume name is needed, and the test database is untouched. It empties any drug catalogue you loaded too. The seed then loads the small sample catalogue; to have PPB's list again, reload it with `pnpm drugs:load` (`docs/drug-catalogue.md`) before seeding.

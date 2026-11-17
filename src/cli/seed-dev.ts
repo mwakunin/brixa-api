@@ -12,9 +12,10 @@ import { errorLine } from "@/lib/error-summary";
  *
  * It drives the API in this process, signing in a dozen made-up staff one
  * after another. Each request it writes names its own forwarded address, and
- * the script runs with `TRUST_PROXY_HOPS=1` (package.json), so this process
- * alone trusts that header and the per-address sign-in limits see many
- * callers rather than one.
+ * the script runs with `TRUST_PROXY_HOPS=1` and no `TRUSTED_PROXY_IPS`
+ * (package.json): this process alone trusts that header, from any peer, as
+ * in-process requests have no socket address. The per-address sign-in limits
+ * then see many callers rather than one.
  */
 async function main() {
   const seeded = await seedDevelopment();

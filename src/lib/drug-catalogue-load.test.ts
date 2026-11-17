@@ -7,7 +7,7 @@ import db, { appDb, pool } from "@/db";
 import { pgErrorCode } from "@/lib/db-errors";
 import { resetDb, waitForBlockedBackend } from "@/test/helpers";
 
-import { DrugFileError, loadDrugCatalogue, parseCsv, parseDrugFile, seeingEveryFacility } from "./drug-catalogue-load";
+import { drugCodeOf, DrugFileError, loadDrugCatalogue, parseCsv, parseDrugFile, seeingEveryFacility } from "./drug-catalogue-load";
 
 /** P3 slice 4b: the drug catalogue's file, in this system's own format. */
 
@@ -87,6 +87,16 @@ describe("the drug catalogue file", () => {
 
     const { rows } = await pool.query("SELECT left(code, 1) AS file FROM drug_catalogue WHERE retired_at IS NULL GROUP BY 1");
     expect(rows).toEqual([{ file: "B" }]);
+  });
+
+  it("finds a current drug's code by its exact name, strength and form, whatever its place in a search", async () => {
+    await loadDrugCatalogue(await readFile(SAMPLE, "utf8"));
+
+    expect(await drugCodeOf("paracetamol", "500 mg", "Tablet")).toBe("PCM-500-TAB");
+    expect(await drugCodeOf("Artemether/Lumefantrine", "20 mg/120 mg", "Tablet")).toBe("AL-20/120-TAB");
+    expect(await drugCodeOf("paracetamol", "500 mg", "Syrup")).toBeNull();
+    await db.execute(sql`UPDATE drug_catalogue SET retired_at = now() WHERE code = 'PCM-500-TAB'`);
+    expect(await drugCodeOf("paracetamol", "500 mg", "Tablet")).toBeNull();
   });
 
   it("fails, rather than seeing fewer facilities' stock, on a connection row security would filter", async () => {

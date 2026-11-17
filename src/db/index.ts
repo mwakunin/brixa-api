@@ -9,7 +9,7 @@ import env from "@/env";
 import { summarizeError } from "@/lib/error-summary";
 
 import * as authSchema from "./auth-schema";
-import { CONNECTION_TIMEOUT_MS, sslConfigFor } from "./connection";
+import { CONNECTION_TIMEOUT_MS, effectiveHost, sslConfigFor } from "./connection";
 // schema.ts re-exports the Better-Auth-owned tables, so this is the whole model.
 import * as schema from "./schema";
 
@@ -54,8 +54,15 @@ function poolFor(connectionString: string, name: string) {
 
 export const pool = poolFor(env.DATABASE_URL, "owner");
 
-/** The host the owner connection reaches, for the development seed to refuse any database not on this machine. */
-export const ownerDatabaseHost = new URL(env.DATABASE_URL).hostname;
+/**
+ * The host each connection reaches, as pg reads its string: for the
+ * development seed, which refuses to write anywhere but this machine.
+ */
+export const connectionHosts = {
+  owner: effectiveHost(env.DATABASE_URL),
+  app: effectiveHost(env.APP_DATABASE_URL),
+  auth: effectiveHost(env.AUTH_DATABASE_URL),
+};
 
 const db = drizzle({
   client: pool,
