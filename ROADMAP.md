@@ -121,7 +121,7 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
 
 **Proposed, to confirm:**
 - **From the ecc healthcare guidance:**
-  - The ordering clinician gets a results-to-review list and acknowledges each result.
+  - ~~The ordering clinician gets a results-to-review list and acknowledges each result.~~ Decided 2026-11-17, below.
   - Abnormal vital signs are flagged for adults; children's thresholds depend on age and need care.
   - Sensitive billable items, where sensitivity comes from, and the break-glass alerts were decided for slice 7 (2026-11-15, below).
 
@@ -156,7 +156,7 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
 - **A critical value** is not released or verified until who was told, how (in person or by phone) and when is recorded.
 - **The lab report** is one per order, from a yearly `LR-` series, issued once every test on it is resulted or cancelled; a change to a result voids it and a new one is issued.
 - **A visit closes itself** through a check every 15 minutes, once its patient is in no queue, every test is resulted or cancelled and every service done, nothing is owed, and the patient was seen or tested. Medicines are not waited for until dispensing exists (P4).
-- **Flags** come from the range for the patient's sex and age in days at collection; a patient who is intersex, or whose sex is not recorded, is judged against `any` ranges only. The results-to-review list stays proposed.
+- **Flags** come from the range for the patient's sex and age in days at collection; a patient who is intersex, or whose sex is not recorded, is judged against `any` ranges only. The results-to-review list was decided on 2026-11-17 (below).
 
 **Decided 2026-11-13** (product owner, for 6; recommendations accepted):
 - **An appointment** is booked at a clinic (a consultation point) for a date, with a time and a clinician if wanted, from today to a year ahead. No slots, daily caps or clinic days in v1: the day's list shows how many are booked, and a second booking at the same time is allowed. Its lifecycle is booked, then checked in or cancelled (with a reason); one still booked after its day is shown as missed, derived and never stored.
@@ -181,10 +181,19 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
 - **A clinician:** the age below which a weight is needed to prescribe (`CHILD_UNDER_YEARS = 12`); the injected-route rule; the list of sensitive ICD-11 codes, and the GBV codes to add to it.
 - **A pharmacist:** a review of the drug list before it is loaded, and the controlled schedules PPB's list does not carry.
 - **The pilot:** whether a review visit within a few days is charged a second consultation fee.
-- **Proposed, not decided:** the ordering clinician's results-to-review list; abnormal vital-sign flags.
+- **Proposed, not decided:** abnormal vital-sign flags. (The results-to-review list was decided on 2026-11-17, below.)
 - ~~**The outbox's next change:** a claim token, so an attempt that outlived its lease cannot finish a job another attempt holds (found in review of PR #17).~~ Done in the chore PR after #17: `outbox.claim_token`, new on each claim and required by every outcome write (`src/jobs/outbox-worker.ts`).
 
 **Also still open:** whether the MOH 705 report's grouping of ICD-11 codes into MOH's condition list needs WHO's written agreement, since WHO's licence puts mappings between classifications outside it (`SCHEMA.md` §8, slice 3a); the pilot's MOH 705 and 717 forms, so P3 captures what P6 reports need (§9, question 10); whether SMS reminders legally need the patient's consent (they are asked for it anyway, decided 2026-11-13); drug-interaction and dose data (none in v1 without a licensed source).
+
+**Decided 2026-11-17: results back to the clinician** (as recommended; found while sketching the outpatient screens, `brixa-web` `docs/outpatient-journey.md`). Nobody in the lab may put a patient in a clinic's queue, nothing told the doctor a result was ready, and a visit with nothing pending closes itself: a patient who had paid could have their visit closed before the doctor saw the result.
+
+1. **Back automatically.** When the last lab test still waiting on a visit has its result released or verified, the patient rejoins the queue of the clinic that sent them, with no second fee.
+2. **The clinician decides, defaulting to yes.** Finishing with a patient whose tests still wait asks them to come back; "no need to come back" (`comeBackWithResults: false`) leaves the results for a later visit.
+3. **Every result, not the first.** A test rejected and to be taken again still waits; a cancelled one does not. The clinician may still send for the patient early, by hand.
+4. **Only when free:** the visit still open and the patient in no other queue. Otherwise the result waits on the list (5).
+5. **A results-to-review list** for each doctor, clinical officer and nurse who orders: results of their tests not yet marked reviewed, critical first, then abnormal, then the longest waiting, with "mark reviewed". A corrected result is reviewed again. Anyone who orders may also read every clinician's, so none waits on someone off duty. A walk-in's results go to the outside requester and are not listed.
+6. **A queue row says why the patient is there:** back with results, and the time a checked-in appointment was booked for. Returning patients take their turn by arrival; the clinician may call any waiting patient in.
 
 ### P4 · Pharmacy and stores
 

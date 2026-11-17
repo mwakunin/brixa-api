@@ -10,6 +10,7 @@ import { recordAudit } from "./audit";
 import { cancelEntryFee, captureConsultationFee, ChargeError } from "./charges";
 import { ageInYears, businessDate } from "./dates";
 import { isUniqueViolation, pgConstraintName } from "./db-errors";
+import { labTestsWaiting } from "./lab-pending";
 
 /**
  * Service points and their queues (SCHEMA.md §8): where an outpatient waits
@@ -55,6 +56,7 @@ export type QueueErrorCode
     | "not_serving"
     | "being_seen"
     | "priority_at_triage_only"
+    | "come_back_at_clinic_only"
     | "fee_unpriced"
     | "not_a_clinic"
     | "not_a_consultation_item";
@@ -78,6 +80,7 @@ export class QueueError extends Error {
       not_serving: "The patient is not being seen in this queue",
       being_seen: "The patient is being seen; the clinician finishes with them first",
       priority_at_triage_only: "Only triage sets how soon the patient must be seen",
+      come_back_at_clinic_only: "Only a clinic asks a patient to come back with their results",
       fee_unpriced: "This clinic's consultation fee has no price today; the facility admin or finance manager sets it",
       not_a_clinic: "Only a clinic charges a consultation fee; triage has none",
       not_a_consultation_item: "That item is not an active consultation item",
@@ -254,6 +257,8 @@ async function lockEncounterRow(tx: AppDb, id: string) {
 /**
  * Puts a visit the caller has already locked (or just created) in a queue.
  * The partial unique index is the backstop for "one queue at a time".
+ * `returnedWithResults` marks the return to a clinic once the visit's last
+ * lab result is ready (`results-return.ts`).
  */
 export async function joinLocked(
   tx: AppDb,
@@ -262,6 +267,7 @@ export async function joinLocked(
   servicePointId: string,
   actor: PatientActor,
   at = new Date(),
+  options: { returnedWithResults?: boolean } = {},
 ): Promise<EntryRow> {
   if (encounter.kind === "ipd")
     throw new QueueError("not_a_visit");
@@ -284,6 +290,7 @@ export async function joinLocked(
       servicePointId,
       joinedAt: at,
       joinedBy: actor.membershipId,
+      returnedWithResults: options.returnedWithResults ?? false,
     }).returning();
   }
   catch (err) {
@@ -298,8 +305,8 @@ export async function joinLocked(
     action: "queue.joined",
     entityType: "queue_entry",
     entityId: entry.id,
-    summary: `Joined the queue at ${point.name}`,
-    detail: { encounterId: encounter.id, servicePointId },
+    summary: options.returnedWithResults ? `Back at ${point.name} with results` : `Joined the queue at ${point.name}`,
+    detail: { encounterId: encounter.id, servicePointId, ...(options.returnedWithResults ? { returnedWithResults: true } : {}) },
   });
 
   if (point.kind === "consultation" && point.consultationItemId) {
@@ -364,27 +371,31 @@ export async function serve(tx: AppDb, facilityId: string, entryId: string, acto
  * Finishes with a patient, and sends them on to `nextServicePointId` if
  * given, in one step. Triage also says how soon they must be seen
  * (`priority`), which orders the clinic queues for the rest of the visit.
+ * A clinic finishing with a patient whose lab tests still wait asks them to
+ * come back once every result is ready, unless `comeBackWithResults` is
+ * false (decided 2026-11-17).
  */
 export async function finish(
   tx: AppDb,
   facilityId: string,
   entryId: string,
-  input: { nextServicePointId?: string; priority?: Priority },
+  input: { nextServicePointId?: string; priority?: Priority; comeBackWithResults?: boolean },
   actor: PatientActor,
   at = new Date(),
 ): Promise<{ finished: EntryRow; next: EntryRow | null }> {
   const entry = await lockEntry(tx, entryId);
   if (entry.status !== "serving")
     throw new QueueError("not_serving");
-  if (input.priority) {
-    const [point] = await tx.select({ kind: servicePoints.kind }).from(servicePoints).where(eq(servicePoints.id, entry.servicePointId));
-    if (point.kind !== "triage")
-      throw new QueueError("priority_at_triage_only");
-  }
+  const [point] = await tx.select({ kind: servicePoints.kind }).from(servicePoints).where(eq(servicePoints.id, entry.servicePointId));
+  if (input.priority && point.kind !== "triage")
+    throw new QueueError("priority_at_triage_only");
+  if (input.comeBackWithResults !== undefined && point.kind !== "consultation")
+    throw new QueueError("come_back_at_clinic_only");
   const nextServicePointId = input.nextServicePointId;
+  const comeBack = point.kind === "consultation" && input.comeBackWithResults !== false && await labTestsWaiting(tx, entry.encounterId);
 
   const [finished] = await tx.update(queueEntries)
-    .set({ status: "done", endedAt: at, endedBy: actor.membershipId, priority: input.priority ?? null })
+    .set({ status: "done", endedAt: at, endedBy: actor.membershipId, priority: input.priority ?? null, comeBackWithResults: comeBack })
     .where(eq(queueEntries.id, entryId))
     .returning();
 
@@ -395,7 +406,7 @@ export async function finish(
     entityType: "queue_entry",
     entityId: entryId,
     summary: "Finished with the patient",
-    detail: { encounterId: entry.encounterId, servicePointId: entry.servicePointId, nextServicePointId: nextServicePointId ?? null, priority: input.priority ?? null },
+    detail: { encounterId: entry.encounterId, servicePointId: entry.servicePointId, nextServicePointId: nextServicePointId ?? null, priority: input.priority ?? null, comeBackWithResults: comeBack },
   });
 
   if (!nextServicePointId)
@@ -475,9 +486,23 @@ const triagePriority = sql<Priority | null>`(
 )`;
 
 /**
+ * The visit's appointment, if it was opened by checking one in: its time as
+ * HH:MM, or '' when it was booked for the day with no time. The one at this
+ * service point first, should the visit hold more than one.
+ */
+const bookedFor = sql<string | null>`(
+  SELECT coalesce(to_char(a.scheduled_time, 'HH24:MI'), '') FROM appointments a
+  WHERE a.encounter_id = ${queueEntries.encounterId}
+  ORDER BY (a.service_point_id = ${queueEntries.servicePointId}) DESC, a.checked_in_at ASC
+  LIMIT 1
+)`;
+
+/**
  * A service point's queue: those being seen, then those waiting, the most
  * urgent first (emergency, urgent, then routine or not triaged), each by
- * arrival. Audited, since it names patients and where they are (rule 9).
+ * arrival. Each row says whether the patient is back with results, and the
+ * time they were booked for. Audited, since it names patients and where they
+ * are (rule 9).
  */
 export async function viewQueue(tx: AppDb, facilityId: string, servicePointId: string, actor: PatientActor, today?: string): Promise<QueueView> {
   const [point] = await tx.select().from(servicePoints).where(eq(servicePoints.id, servicePointId)).limit(1);
@@ -494,6 +519,8 @@ export async function viewQueue(tx: AppDb, facilityId: string, servicePointId: s
       servedBy: queueEntries.servedBy,
       servedByName: user.name,
       priority: triagePriority,
+      returnedWithResults: queueEntries.returnedWithResults,
+      bookedFor,
       patientId: patients.id,
       givenName: patients.givenName,
       middleNames: patients.middleNames,
@@ -536,6 +563,8 @@ export async function viewQueue(tx: AppDb, facilityId: string, servicePointId: s
       servingAt: r.servingAt,
       servedBy: r.servedBy && r.servedByName ? { membershipId: r.servedBy, name: r.servedByName } : null,
       priority: r.priority,
+      returnedWithResults: r.returnedWithResults,
+      appointment: r.bookedFor === null ? null : { time: r.bookedFor === "" ? null : r.bookedFor },
       patient: {
         id: r.patientId,
         name: [r.givenName, r.middleNames, r.familyName].filter(Boolean).join(" "),
@@ -556,6 +585,10 @@ export interface QueuedPatient {
   servingAt: Date | null;
   servedBy: { membershipId: string; name: string } | null;
   priority: Priority | null;
+  /** Back at this clinic with results, sent as the last of them was ready. */
+  returnedWithResults: boolean;
+  /** The appointment the visit was opened from, with its time if it had one. */
+  appointment: { time: string | null } | null;
   patient: {
     id: string;
     name: string;

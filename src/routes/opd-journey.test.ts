@@ -24,8 +24,8 @@ import { call, hospital, TODAY } from "@/test/hospital";
  * drive it, with no charge posted by hand and the money reconciling at the end.
  *
  * - Amina pays as she goes, in cash: registration, triage, the clinic, a
- *   lab test, the clinic again with her result, a printed prescription, and
- *   her medicine from the pharmacy.
+ *   lab test, the clinic again with her result (sent back as it is
+ *   verified), a printed prescription, and her medicine from the pharmacy.
  * - Baraka comes on an appointment and pays the final bill by M-Pesa paybill.
  * - Chebet is a walk-in for the lab, sent by an outside doctor.
  */
@@ -170,8 +170,9 @@ describe("a day's outpatients (the P3 exit, through the pharmacy for P4's)", () 
     expect(JSON.stringify(worklist)).toContain(order.id);
     await resulted(order.id, order.items[0].id, "Positive");
 
-    // Back to the clinic with her result: no second fee for the same clinic.
-    await api("POST", `/encounters/${aminaVisit}/queue`, h.nurse, { servicePointId: gopd }, 201);
+    // Back to the clinic as her result is verified, by nobody's hand: no second fee for the same clinic.
+    const back = await api("GET", `/service-points/${gopd}/queue`, doctor);
+    expect(back.entries).toEqual([expect.objectContaining({ encounterId: aminaVisit, returnedWithResults: true })]);
     entry = await entryOf(aminaVisit);
     await api("POST", `/queue-entries/${entry}/serve`, doctor);
     const results = await api("GET", `/encounters/${aminaVisit}/lab-results`, doctor);
