@@ -35,7 +35,7 @@ It refuses to run:
 - in production;
 - if any of its three database connections (owner, app, auth) reaches a database that is not on this machine, read as `pg` reads it;
 - with `RESEND_API_KEY`, `AT_API_KEY` or `TASKS_QUEUE` set, since it must never send an email or SMS;
-- on a database seeded already.
+- on a database that holds any facility: one seeded already, or a real one tunnelled to `localhost` (an SSH tunnel, the Cloud SQL proxy), which every host check would pass.
 
 ### Starting again
 

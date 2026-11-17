@@ -1,8 +1,12 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { count } from "drizzle-orm";
+
 import app from "@/app";
-import { connectionHosts } from "@/db";
+import db, { connectionHosts } from "@/db";
+import { isLocalHostName } from "@/db/connection";
+import { facilities } from "@/db/schema";
 import env from "@/env";
 import { AccountExistsError, createAccount } from "@/lib/accounts";
 import { addDays, businessDate } from "@/lib/dates";
@@ -35,8 +39,6 @@ export class SeedError extends Error {
   }
 }
 
-const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
-
 /**
  * The connections that reach a database not on this machine, by name and
  * host. A socket directory is this machine's; a connection naming no host
@@ -44,12 +46,18 @@ const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
  */
 export function remoteConnections(hosts: Record<string, string | null>): string[] {
   return Object.entries(hosts)
-    .filter(([, host]) => !(host && (LOCAL_HOSTS.has(host) || host.startsWith("/"))))
+    .filter(([, host]) => !(host && (isLocalHostName(host) || host.startsWith("/"))))
     .map(([name, host]) => `${name} (${host ?? "no host named"})`);
 }
 
-/** Refuses anything but development databases on this machine, through every connection, with no way to send a real message. */
-export function assertSafeToSeed(): void {
+/**
+ * Refuses anything but an empty development database on this machine,
+ * through every connection, with no way to send a real message. Empty
+ * matters as much as local: a staging or production database tunnelled to
+ * localhost (an SSH tunnel, the Cloud SQL proxy) passes every host check,
+ * and would get a superadmin with the seed's public password.
+ */
+export async function assertSafeToSeed(): Promise<void> {
   if (env.NODE_ENV === "production")
     throw new SeedError("Not in production.");
   const remote = remoteConnections(connectionHosts);
@@ -58,6 +66,9 @@ export function assertSafeToSeed(): void {
   const senders = (["RESEND_API_KEY", "AT_API_KEY", "TASKS_QUEUE"] as const).filter(k => env[k]);
   if (senders.length > 0)
     throw new SeedError(`${senders.join(", ")} set: the seed would send real email or SMS. Unset them first.`);
+  const [{ n }] = await db.select({ n: count() }).from(facilities);
+  if (n > 0)
+    throw new SeedError("This database holds a facility already: it is seeded already, or it is not a development database. The seed writes only to one with none (docs/development.md).");
 }
 
 // ---------------------------------------------------------------------------
@@ -388,7 +399,7 @@ export interface Seeded {
 
 /** Seeds a development database with a made-up hospital at work. Refuses a database seeded already. */
 export async function seedDevelopment(): Promise<Seeded> {
-  assertSafeToSeed();
+  await assertSafeToSeed();
   const drugs = await medicines();
   const { facilityId, staff } = await facilityAndStaff();
   const setup = await setUp(staff, drugs);

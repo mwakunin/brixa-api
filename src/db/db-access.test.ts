@@ -84,6 +84,13 @@ const OWNER_ALLOWLIST = new Map([
     + "facility whose run failed, and closes each facility's visits as that tenant",
   ],
   [
+    "dev/seed.ts",
+    "the development seed counts the facilities before it writes anything, "
+    + "and refuses a database holding any: one read, so a real database "
+    + "tunnelled to localhost is never seeded; everything it writes goes "
+    + "through the API",
+  ],
+  [
     "jobs/outbox-worker.ts",
     "the worker drains every facility's queue; it claims and records jobs by "
     + "id and reads no facility data on this connection",

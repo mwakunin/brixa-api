@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import db from "@/db";
+import { effectiveHost } from "@/db/connection";
 import { facilities, user } from "@/db/schema";
 import { loadDrugCatalogue } from "@/lib/drug-catalogue-load";
-import { resetDb } from "@/test/helpers";
+import { makeFacility, resetDb } from "@/test/helpers";
 
 import { remoteConnections, SEED_PASSWORD, SEED_STAFF, seedDevelopment } from "./seed";
 
@@ -68,5 +69,16 @@ describe("the development seed", () => {
   it("writes only to databases on this machine, through every connection it uses", () => {
     expect(remoteConnections({ owner: "localhost", app: "127.0.0.1", auth: "/var/run/postgresql" })).toEqual([]);
     expect(remoteConnections({ owner: "localhost", app: "::1", auth: "db.example.com" })).toEqual(["auth (db.example.com)"]);
+    // PGHOST could be anywhere.
+    expect(remoteConnections({ owner: "localhost", app: null, auth: "localhost" })).toEqual(["app (no host named)"]);
+    expect(remoteConnections({ owner: effectiveHost("postgresql://u:p@localhost/db?host=remote.example"), app: "localhost", auth: "localhost" })).toEqual(["owner (remote.example)"]);
+  });
+
+  it("refuses a database holding any facility, as one tunnelled to localhost from elsewhere would, before writing anything", async () => {
+    await makeFacility({ name: "A real hospital" });
+
+    await expect(seedDevelopment()).rejects.toThrow(/holds a facility already/);
+
+    expect(await db.select().from(user)).toEqual([]);
   });
 });

@@ -11,6 +11,11 @@ import { parse } from "pg-connection-string";
 
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
+/** Whether a host name is this machine's loopback: the one list the TLS decision and the development seed share. */
+export function isLocalHostName(host: string): boolean {
+  return LOCAL_HOSTS.has(host);
+}
+
 /**
  * The host `pg` will connect to, read with pg's own parser: a `?host=`
  * parameter wins over the URL's host, so reading the URL alone would judge
@@ -41,7 +46,7 @@ export function effectiveHost(connectionString: string): string | null {
  */
 export function isLocalDatabase(connectionString: string): boolean {
   const host = effectiveHost(connectionString);
-  return host !== null && LOCAL_HOSTS.has(host);
+  return host !== null && isLocalHostName(host);
 }
 
 /**
