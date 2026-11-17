@@ -1,5 +1,9 @@
+import type { MiddlewareHandler } from "hono";
+
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
+import { and, eq } from "drizzle-orm";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { authDb } from "@/db";
@@ -44,6 +48,16 @@ function failureKind(err: unknown): string {
  * not told apart by the wait.
  */
 export const RESET_REQUEST_ANSWER_MS = 1_500;
+
+/** When the password sign-in being handled began; see `markSignInStart`. */
+const signInBegan = new AsyncLocalStorage<Date>();
+
+/**
+ * Runs a password sign-in inside a record of when it began, for the session
+ * hook below to compare with the last password change. Mounted on POST
+ * /api/auth/sign-in/email (create-app.ts).
+ */
+export const markSignInStart: MiddlewareHandler = (_c, next) => signInBegan.run(new Date(), next);
 
 /**
  * How long a reset waits for the "password changed" notice before answering.
@@ -148,6 +162,34 @@ export const auth = betterAuth({
           + "If you did not do this, tell your administrator straight away.",
       });
       await Promise.race([notice, sleep(NOTICE_WAIT_MS)]);
+    },
+  },
+
+  databaseHooks: {
+    session: {
+      create: {
+        /*
+         * Better Auth checks a password, slowly by design, and then creates
+         * the session without looking at the password again. A sign-in that
+         * checked the old password while a reset was committing would get a
+         * session after the reset had signed everyone out. So a session for
+         * a password sign-in is refused when the password changed after that
+         * sign-in began, and the sign-in answers as for a wrong password. One
+         * begun after the change goes through. What remains is the instant
+         * between the reset's write and its commit.
+         */
+        async before(session) {
+          const began = signInBegan.getStore();
+          if (!began)
+            return;
+          const [credential] = await authDb
+            .select({ changedAt: authSchema.account.updatedAt })
+            .from(authSchema.account)
+            .where(and(eq(authSchema.account.userId, session.userId), eq(authSchema.account.providerId, "credential")));
+          if (credential && credential.changedAt > began)
+            return false;
+        },
+      },
     },
   },
 

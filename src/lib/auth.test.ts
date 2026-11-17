@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import app from "@/app";
 import db from "@/db";
@@ -70,6 +70,10 @@ describe("accounts", () => {
 describe("resetting a forgotten password", () => {
   beforeEach(async () => {
     await resetDb();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   const NEW_PASSWORD = "a-brand-new-password";
@@ -175,5 +179,29 @@ describe("resetting a forgotten password", () => {
     const [won, lost] = answers[0].status === 200 ? passwords : [...passwords].reverse();
     expect((await postJson("/api/auth/sign-in/email", { email, password: won })).status).toBe(200);
     expect((await postJson("/api/auth/sign-in/email", { email, password: lost })).status).toBe(401);
+  });
+
+  /*
+   * A sign-in reads the stored password, checks it (slowly, by design), then
+   * creates a session. One that read the old password just before a reset
+   * committed would create its session after the reset had signed everyone
+   * out. The race cannot be timed reliably here, so the sign-in's clock is
+   * set back instead: to the API, it began before the password changed.
+   */
+  it("refuses a session to a sign-in that began before the password changed", async () => {
+    const email = nextEmail();
+    await createTestAccount(email);
+    await requestReset(email);
+    await postJson("/api/auth/reset-password", { token: lastLink().searchParams.get("token"), newPassword: NEW_PASSWORD });
+
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() - 5_000);
+    const begunBefore = await postJson("/api/auth/sign-in/email", { email, password: NEW_PASSWORD });
+    vi.useRealTimers();
+
+    expect(begunBefore.status).toBe(401);
+    expect(begunBefore.headers.get("set-cookie") ?? "").not.toContain("session_token");
+    // One begun now, after the change, signs in.
+    expect((await postJson("/api/auth/sign-in/email", { email, password: NEW_PASSWORD })).status).toBe(200);
   });
 });
