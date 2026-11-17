@@ -1358,6 +1358,8 @@ export const appointments = pgTable("appointments", {
     .on(t.patientId, t.servicePointId, t.scheduledOn)
     .where(sql`${t.status} = 'booked'`),
   index("appointments_day_index").on(t.facilityId, t.scheduledOn, t.servicePointId),
+  // A queue row shows the time its visit was booked for, found by the visit.
+  index("appointments_encounter_index").on(t.facilityId, t.encounterId),
   index("appointments_patient_index").on(t.facilityId, t.patientId, t.scheduledOn),
   // Retiring a clinic counts what is still booked there.
   index("appointments_booked_at_clinic_index").on(t.facilityId, t.servicePointId, t.scheduledOn).where(sql`${t.status} = 'booked'`),

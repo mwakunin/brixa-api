@@ -182,6 +182,75 @@ describe("a patient sent for tests", () => {
     expect((await api("GET", `/service-points/${gopd}/queue`, doctor)).entries).toEqual([expect.objectContaining({ encounterId: visit, returnedWithResults: true })]);
   });
 
+  it("stays where she is, her result still verified, when the clinic is out of use", async () => {
+    const { visit, entry } = await withTheDoctor();
+    const order = await api("POST", `/encounters/${visit}/orders`, doctor, { items: [{ labTestId: mrdt.testId }] }, 201);
+    await api("POST", `/queue-entries/${entry}/finish`, doctor, {});
+    await api("PATCH", `/service-points/${gopd}`, h.admin, { isActive: false });
+
+    const { results } = await enter(order, { MRDT: "Negative" });
+    expect(await api("POST", `/lab-results/${results.MRDT}/verify`, supervisor, {})).toMatchObject({ status: "verified" });
+
+    expect(await queueOf(visit)).toBeNull();
+    expect(await db.select().from(auditLog).where(and(eq(auditLog.action, "queue.joined"), eq(auditLog.actorId, supervisor.id)))).toEqual([]);
+  });
+
+  it("stays where she is, with nothing half-done kept, when the clinic's fee has no price", async () => {
+    const { visit, entry } = await withTheDoctor();
+    const order = await api("POST", `/encounters/${visit}/orders`, doctor, { items: [{ labTestId: mrdt.testId }] }, 201);
+    await api("POST", `/queue-entries/${entry}/finish`, doctor, {});
+    // Her fee was cancelled, and the clinic now charges an item with no price: going back would charge it.
+    const fee = (await api("GET", `/encounters/${visit}/charges`, h.cashier)).charges.find((ch: { code: string }) => ch.code === "CONS");
+    await api("POST", `/charges/${fee.id}/cancel`, h.admin, { reason: "Waived by the director" });
+    const unpriced = (await api("POST", "/billable-items", h.admin, { code: "CONS-B", name: "Consultation, new rate", category: "consultation" })).id;
+    await api("PATCH", `/service-points/${gopd}`, h.admin, { consultationItemId: unpriced });
+
+    const { results } = await enter(order, { MRDT: "Negative" });
+    expect(await api("POST", `/lab-results/${results.MRDT}/verify`, supervisor, {})).toMatchObject({ status: "verified" });
+
+    expect(await queueOf(visit)).toBeNull();
+    // The queue entry the join had written went with it: no turn at the clinic, no audit of one, no charge.
+    expect(await db.select().from(auditLog).where(and(eq(auditLog.action, "queue.joined"), eq(auditLog.actorId, supervisor.id)))).toEqual([]);
+    const standing = (await api("GET", `/encounters/${visit}/charges`, h.cashier)).charges.filter((ch: { cancelledAt: string | null; category: string }) => ch.category === "consultation" && !ch.cancelledAt);
+    expect(standing).toEqual([]);
+  });
+
+  it("waits for a test whose specimen was rejected, until it is taken again and resulted", async () => {
+    const { visit, entry } = await withTheDoctor();
+    const order = await api("POST", `/encounters/${visit}/orders`, doctor, { items: [{ labTestId: mrdt.testId }, { labTestId: urine.testId }] }, 201);
+    await api("POST", `/queue-entries/${entry}/finish`, doctor, {});
+    const blood = order.items.filter((i: { labTestId: string }) => i.labTestId === mrdt.testId);
+    const { results } = await enter({ ...order, items: blood }, { MRDT: "Negative" });
+    const urineItem = order.items.find((i: { labTestId: string }) => i.labTestId === urine.testId);
+    const sample = await api("POST", `/orders/${order.id}/specimens`, labTech, { specimenType: "urine" }, 201);
+    await api("POST", `/specimens/${sample.id}/reject`, labTech, { reason: "leaked" });
+
+    await api("POST", `/lab-results/${results.MRDT}/verify`, supervisor, {});
+    expect(await queueOf(visit)).toBeNull();
+
+    const again = await api("POST", `/specimens/${sample.id}/recollect`, labTech, undefined, 201);
+    const urineResult = await api("POST", `/specimens/${again.id}/results`, labTech, { orderItemId: urineItem.id, values: [{ analyteId: urine.analyteId, value: "Nil" }] }, 201);
+    await api("POST", `/lab-results/${urineResult.id}/verify`, supervisor, {});
+    expect(await queueOf(visit)).toBe(gopd);
+  });
+
+  it("waits again for a result being corrected", async () => {
+    const { visit, entry } = await withTheDoctor();
+    const order = await api("POST", `/encounters/${visit}/orders`, doctor, { items: [{ labTestId: mrdt.testId }, { labTestId: hb.testId }] }, 201);
+    await api("POST", `/queue-entries/${entry}/finish`, doctor, {});
+    const { specimenId, results } = await enter(order, { MRDT: "Positive", HB: 13 });
+    await api("POST", `/lab-results/${results.MRDT}/verify`, supervisor, {});
+    const mrdtItem = order.items.find((i: { labTestId: string }) => i.labTestId === mrdt.testId);
+    const corrected = await api("POST", `/specimens/${specimenId}/results`, labTech, { orderItemId: mrdtItem.id, values: [{ analyteId: mrdt.analyteId, value: "Negative" }], correctionReason: "Read the wrong cassette" }, 201);
+
+    await api("POST", `/lab-results/${results.HB}/verify`, supervisor, {});
+    // The malaria test's result is being corrected: she waits for it.
+    expect(await queueOf(visit)).toBeNull();
+
+    await api("POST", `/lab-results/${corrected.id}/verify`, supervisor, {});
+    expect(await queueOf(visit)).toBe(gopd);
+  });
+
   it("is told to come back only from a clinic", async () => {
     const patientId = await h.patient();
     const visit = (await api("POST", "/encounters", h.nurse, { patientId, kind: "opd" }, 201)).id;

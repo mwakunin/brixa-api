@@ -750,6 +750,13 @@
       "when": 1794899515907,
       "tag": "0106_results_back_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 107,
+      "version": "7",
+      "when": 1794908350930,
+      "tag": "0107_appointments_encounter_index",
+      "breakpoints": true
     }
   ]
 }

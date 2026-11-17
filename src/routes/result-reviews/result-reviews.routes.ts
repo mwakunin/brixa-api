@@ -51,7 +51,9 @@ export const listToReview = createRoute({
   summary: "Results to review",
   description:
     "Lab results released or verified and not yet marked reviewed: critical first, then abnormal, then "
-    + "the longest waiting, 100 at a time (`?offset=` for the next). A walk-in's results, which go to the "
+    + "the longest waiting, 100 at a time (`?offset=` for the next). A result marked reviewed leaves the "
+    + "list, by you or another clinician, so the ones after it move up: after marking one, read again from "
+    + "`?offset=0`. A walk-in's results, which go to the "
     + "outside requester, are not listed. A sensitive result you may not see is left off and counted in "
     + "`restricted`. Audited, since it names patients.",
   middleware: [reviewers] as const,
