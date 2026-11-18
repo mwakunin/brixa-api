@@ -145,6 +145,12 @@ export const EnvSchema = z.object({
    */
   STORAGE_BUCKET: unsetIfBlank(z.string().optional()),
   STORAGE_LOCAL_DIR: unsetIfBlank(z.string().default(".storage")),
+  /**
+   * Development only, with no mail provider: where each email that would have
+   * been sent is kept as a file (lib/email.ts), for a person or brixa-web's
+   * `pnpm flows` to follow its link.
+   */
+  DEV_MAIL_DIR: unsetIfBlank(z.string().default(".dev-mail")),
 
   // --- Background jobs (Cloud Tasks and Cloud Scheduler, CLAUDE.md §7) ---
   /**
