@@ -215,6 +215,8 @@ describe("before an authenticator is set up", () => {
     expect(totpURI).toMatch(/^otpauth:\/\/totp\/Brixa%20HMIS:/);
     expect(new URL(totpURI).searchParams.get("issuer")).toBe("Brixa HMIS");
     expect(backupCodes).toHaveLength(10);
+    // Digits only, to be copied from paper without mistaking a letter.
+    expect(backupCodes.every(code => /^\d{5}-\d{5}$/.test(code))).toBe(true);
     // Shown, not yet confirmed: still nothing but setting up.
     expect((await get("/me/facilities", { cookie })).status).toBe(403);
 

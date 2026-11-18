@@ -7,6 +7,7 @@ import { APIError, createAuthMiddleware } from "better-auth/api";
 import { twoFactor } from "better-auth/plugins/two-factor";
 import { and, eq, like } from "drizzle-orm";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { randomInt } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { authDb } from "@/db";
@@ -96,6 +97,18 @@ async function notify(changed: { id: string; email: string; name: string }, what
     body: `Hello ${changed.name},\n\n${news}\n\nIf you did not do this, tell your administrator straight away.`,
   });
   await Promise.race([notice, sleep(NOTICE_WAIT_MS)]);
+}
+
+/**
+ * One backup code: ten digits, five and five, as `12345-67890`. They are
+ * printed or written down, and typed back at a desk, so they have no letter
+ * to mistake for a digit and no case to get wrong. Ten digits are plenty
+ * here: each try needs the password first, a challenge takes five tries, and
+ * five wrong codes in a row lock the account.
+ */
+function backupCode(): string {
+  const five = () => String(randomInt(100_000)).padStart(5, "0");
+  return `${five()}-${five()}`;
 }
 
 /**
@@ -325,6 +338,7 @@ export const auth = betterAuth({
       // Five wrong codes in a row lock the account for fifteen minutes,
       // wherever they come from: reaching the code takes the password already.
       accountLockout: { maxFailedAttempts: 5, durationSeconds: 15 * 60 },
+      backupCodeOptions: { customBackupCodesGenerate: () => Array.from({ length: 10 }, backupCode) },
     }),
     twoFactorRules(),
   ],
