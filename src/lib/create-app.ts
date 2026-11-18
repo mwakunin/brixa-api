@@ -12,12 +12,14 @@ import { answerNoSoonerThan } from "@/middlewares/answer-time";
 import { endPasswordOnlySessions, withSession } from "@/middlewares/auth";
 import { pinoLogger } from "@/middlewares/pino-logger";
 import { rateLimits } from "@/middlewares/rate-limit";
+import { signInLock } from "@/middlewares/sign-in-lock";
 
 import type { AppBindings, AppOpenAPI, TenantBindings, TenantOpenAPI } from "./types";
 
 import { appOrigin, auth, markCodeCheck, markSignInStart, oneTwoFactorChangeAtATime, RESET_REQUEST_ANSWER_MS } from "./auth";
 import { FACILITY_HEADER } from "./constants";
 import { onError } from "./on-error";
+import { rememberCaller } from "./sign-in-log";
 
 export function createRouter(): AppOpenAPI {
   return new OpenAPIHono<AppBindings>({
@@ -85,7 +87,9 @@ export default function createApp(): AppOpenAPI {
     .use(staffAppCors())
     .use(requestId())
     .use(serveEmojiFavicon("🏥"))
-    .use(pinoLogger());
+    .use(pinoLogger())
+    // Where each request came from, for the sign-in log (lib/sign-in-log.ts).
+    .use(rememberCaller);
 
   // Better Auth owns everything under /api/auth. Mounted before withSession so
   // the handler manages its own cookies. The POSTs (sign-in, password flows)
@@ -94,9 +98,11 @@ export default function createApp(): AppOpenAPI {
   // address, so an attacker's guesses cannot lock the owner out, and loosely
   // from anywhere, so a guess spread across many addresses is still capped.
   // The per-address limit runs first, so a refused attempt never counts
-  // against the account's shared budget. A sign-in then notes when it began,
-  // so it is refused a session if the password changed while it ran, short
-  // of a remaining instant (lib/auth.ts). A request for a reset link takes a
+  // against the account's shared budget. Five wrong passwords in a row then
+  // lock the account from that address for 15 minutes
+  // (middlewares/sign-in-lock.ts). A sign-in then notes when it began, so it
+  // is refused a session if the password changed while it ran, short of a
+  // remaining instant (lib/auth.ts). A request for a reset link takes a
   // fixed time to answer, so the wait does not tell an address with an
   // account from one without; the limit runs first, because a refusal says
   // nothing about the address and is answered at once. Two-step sign-in has
@@ -111,7 +117,7 @@ export default function createApp(): AppOpenAPI {
   // authenticator, ended, so no auth route acts on it (middlewares/auth.ts);
   // a request the limiter refuses never has its session looked up. Changes
   // to one person's two-step sign-in run one at a time (lib/auth.ts).
-  app.post("/api/auth/sign-in/email", rateLimits.signInAccountFromAddress(), rateLimits.signInAccount(), markSignInStart);
+  app.post("/api/auth/sign-in/email", rateLimits.signInAccountFromAddress(), rateLimits.signInAccount(), signInLock(), markSignInStart);
   app.post("/api/auth/request-password-reset", rateLimits.auth(), endPasswordOnlySessions, answerNoSoonerThan(RESET_REQUEST_ANSWER_MS), c => auth.handler(c.req.raw));
   app.on("POST", ["/api/auth/two-factor/verify-totp", "/api/auth/two-factor/verify-backup-code"], markCodeCheck);
   app.post("/api/auth/two-factor/*", rateLimits.twoFactor(), endPasswordOnlySessions, oneTwoFactorChangeAtATime, c => auth.handler(c.req.raw));

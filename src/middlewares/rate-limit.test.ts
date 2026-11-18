@@ -106,16 +106,18 @@ describe("rate limiting", () => {
       });
     }
 
-    it("limits one address's attempts on one account for fifteen minutes", async () => {
+    // Right passwords, since five wrong ones in a row lock the account from that address first (middlewares/sign-in-lock.ts).
+    it("limits one address's attempts on one account for fifteen minutes, right ones included", async () => {
       const ip = nextIp();
       const email = nextEmail();
+      await createTestAccount(email);
       const statuses: number[] = [];
       for (let i = 0; i < 10; i += 1)
-        statuses.push((await signInFrom(ip, email)).status);
+        statuses.push((await signInFrom(ip, email, TEST_PASSWORD)).status);
 
-      const refused = await signInFrom(ip, email);
+      const refused = await signInFrom(ip, email, TEST_PASSWORD);
 
-      expect(statuses.every(s => s === 401)).toBe(true);
+      expect(statuses.every(s => s === 200)).toBe(true);
       expect(refused.status).toBe(429);
       // The account-and-address window, not the per-address minute.
       expect(Number(refused.headers.get("retry-after"))).toBeGreaterThan(60);

@@ -1,8 +1,8 @@
 # Signing in
 
-Status as of F3 (2026-11-18). Regulation 12 of the Digital Health (Health Information Management Procedures) Regulations 2025 (Legal Notice 76) says user accounts "shall adopt multi-factor authentication". It also asks for a limit on failed logins and a log of login attempts and password changes. DHA's certification framework asks for accounts to be locked after repeated wrong passwords. The exact wording to meet waits on DHA's certification guide (`SPEC.md` §4, question 11).
+Status as of F3 (2026-11-19). Regulation 12 of the Digital Health (Health Information Management Procedures) Regulations 2025 (Legal Notice 76) says user accounts "shall adopt multi-factor authentication". It also asks for a limit on failed logins and a log of login attempts and password changes. DHA's certification framework asks for accounts to be locked after repeated wrong passwords. The exact wording to meet waits on DHA's certification guide (`SPEC.md` §4, question 11).
 
-The decision behind these controls is in `SPEC.md` §2 ("Two-step sign-in for everyone").
+The decisions behind these controls are in `SPEC.md` §2 ("Two-step sign-in for everyone"; "The sign-in log, the password lock and support resets").
 
 ## Two-step sign-in
 
@@ -24,6 +24,7 @@ The decision behind these controls is in `SPEC.md` §2 ("Two-step sign-in for ev
 | Control | Where | Proven by |
 |---|---|---|
 | Five wrong codes in a row at sign-in lock the account for 15 minutes, from wherever they come. Wrong codes while setting an authenticator up are not counted: setup already needs a session and the password, and its code checks fall under the address limit below | `accountLockout` in `src/lib/auth.ts` | "locks the account for fifteen minutes…" |
+| Five wrong passwords in a row lock the account from that address for 15 minutes, refusing even the right password, and the lock is logged. Counted per account and address, so a stranger who knows an email cannot lock its owner out at their desk | `src/middlewares/sign-in-lock.ts` | `src/lib/sign-in-log.test.ts` ("the lock on wrong passwords") |
 | Each challenge for a code takes at most five tries | The two-factor plugin | Better Auth's own tests |
 | Password guesses are limited per account from one address (10 in 15 minutes), per account from anywhere (100 in 15 minutes) and per address (10 a minute) | `src/lib/create-app.ts`, `src/middlewares/rate-limit.ts` | `src/middlewares/rate-limit.test.ts` |
 | Code checks are limited per address (30 a minute), apart from the sign-in budget | The same | "checks codes under their own address limit…" |
@@ -33,7 +34,25 @@ The decision behind these controls is in `SPEC.md` §2 ("Two-step sign-in for ev
 | Control | Where | Proven by |
 |---|---|---|
 | A password reset ends every session, and every sign-in still waiting for its code. A code whose password changed after its sign-in began gets no session: the challenge carries when the sign-in began, and the password is checked again before the challenge is spent and before the session is made. **One window is open:** a reset that commits after that last check and before Better Auth inserts the session still leaves one old-password session. Closing it needs a change inside Better Auth (`SPEC.md` §2) | `onPasswordReset`, `twoFactorRules` and the session and challenge hooks in `src/lib/auth.ts` | `src/lib/auth.test.ts` ("sets the new password, ends every session…"), "ends a sign-in still waiting for its code…", "refuses a code whose password changed after its challenge was made…", "…while its challenge was being made", "makes no session for a code whose password changed as its challenge was spent" |
-| Every change to how someone signs in is emailed to them: a password reset, an authenticator set up, two-step sign-in turned off. Sending is best effort: a notice that fails is logged, and the change it reports still stands | `notify` in `src/lib/auth.ts` | The same tests |
+| Every change to how someone signs in is emailed to them: a password reset, an authenticator set up, two-step sign-in turned off, a reset by Brixa support. Sending is best effort: a notice that fails is logged, and the change it reports still stands | `notify` in `src/lib/auth.ts`, `src/routes/superadmin/superadmin.handlers.ts` | The same tests, and "removes their authenticator, ends every session…" |
+
+## The sign-in log
+
+| Control | Where | Proven by |
+|---|---|---|
+| Every sign-in is logged, by the factor that finished it, with each wrong password and wrong code, each lock and each try while locked, and each sign-out | `src/lib/sign-in-log.ts`, `src/middlewares/sign-in-lock.ts` | `src/lib/sign-in-log.test.ts` ("the sign-in log") |
+| Every change to how someone signs in is logged: a password reset or change, an authenticator set up or turned off, backup codes renewed, a reset by support | The same, and `src/lib/auth.ts` | The same |
+| Each event records the address (as the trusted proxies report it) and the browser it came from. A password tried on an address with no account is recorded under no one, without what was typed | The same | "records a wrong password under its account…" |
+| The log is append-only for every role, the owner included, and nothing deletes from it: kept at least 20 years | `src/db/migrations/0112_sign_in_events_append_only.sql` | "is append-only for every role…" |
+| Only Better Auth's role writes it, and it cannot read it back; the app role cannot touch it | The same migration | The same test |
+| Brixa support exports it between two dates as CSV for the quarterly review, at most a year at a time. Each export is itself logged. Cells a spreadsheet would read as a formula are neutralised | `GET /superadmin/sign-in-events`, `src/routes/superadmin/` | "the export of the log, for Brixa support" |
+
+## Lost phones
+
+| Control | Where | Proven by |
+|---|---|---|
+| Someone who has lost both their phone and their backup codes is reset by Brixa support, after checking who they are, never by a facility admin. The reason is required and logged; nobody resets their own | `POST /superadmin/two-factor-resets` | "resetting someone's two-step sign-in, by Brixa support" |
+| A reset removes the authenticator and backup codes, ends every session and every sign-in waiting for a code, and emails the person. Their next sign-in sets up a new authenticator | The same | The same |
 
 ## Not yet done
 
@@ -41,10 +60,9 @@ The decision behind these controls is in `SPEC.md` §2 ("Two-step sign-in for ev
   - if the lock's connection drops while a confirmation runs, and the same person starts a second setup in that instant, the second authenticator could be confirmed without its code being checked;
   - if Better Auth fails after turning two-step sign-in on but before finishing, the person cannot finish setting it up.
 
-  The person is emailed about any setup, and Brixa support's reset (brixa-api #32) clears either. Closing them needs Better Auth's setup to commit in one step, to be raised with Better Auth with the sign-in race.
-- **A log of sign-ins**, failed attempts, lockouts and password changes, append-only and kept 20 years, with an export for the quarterly review. Next, in brixa-api. An auditor's screen comes with the administration screens.
-- **An explicit lock after repeated wrong passwords**, logged. The limits above already stop guessing; the lock makes it the control the certification framework names. Next, with the log.
-- **Help for someone who has lost both their phone and their backup codes**: Brixa support resets their two-step sign-in after checking who they are. Next, with the log.
+  The person is emailed about any setup, and Brixa support's reset (`POST /superadmin/two-factor-resets`, above) clears either. Closing them needs Better Auth's setup to commit in one step, to be raised with Better Auth with the sign-in race.
+- **An auditor's screen** for the quarterly review, with the administration screens. Until then, Brixa support exports the log.
+- **A copy of the log that the database's owner cannot alter.** The trigger stops every role, but the owner could drop it. A write-once copy, such as a locked storage bucket, depends on where the system is hosted.
 - **A code can be used again within its window.** NIST SP 800-63B asks that each time-based code be accepted once. Better Auth accepts a code for about 90 seconds and does not record the last one used. Someone who saw a code would still need the password.
 - **Staff without a smartphone.** Text-message codes, if the staff walkthrough shows the need.
 - **Before someone has set an authenticator up, their password alone stands for them**, as it did before two-step sign-in: whoever knows it could set one up first. The emailed notice of a setup is the safeguard. Tying the first setup to the invitation's emailed link would close it.

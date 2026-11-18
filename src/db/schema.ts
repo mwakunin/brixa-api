@@ -500,6 +500,61 @@ export const auditLog = pgTable("audit_log", {
 ]);
 
 // ---------------------------------------------------------------------------
+// Signing in (SPEC.md §2, docs/certification/sign-in.md)
+// ---------------------------------------------------------------------------
+
+/**
+ * Every sign-in, failed attempt, lock and change to how someone signs in,
+ * kept as the Digital Health regulations ask (regulation 12): append-only for
+ * every role, and kept for 20 years, so nothing ever deletes from it.
+ *
+ * Global, not a tenant table: a person signs in once, whichever of their
+ * facilities they then work in, so there is no facility to file it under.
+ * Better Auth's role writes it (lib/sign-in-log.ts) and cannot read it back;
+ * the app role cannot touch it at all; Brixa support exports it on the owner
+ * connection, for the quarterly review.
+ */
+export const signInEvents = pgTable("sign_in_events", {
+  id: uuid().primaryKey().defaultRandom(),
+  at: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  event: text().$type<
+    | "password_failed"
+    | "password_accepted"
+    | "signed_in"
+    | "code_failed"
+    | "locked"
+    | "refused_locked"
+    | "signed_out"
+    | "password_reset"
+    | "password_changed"
+    | "two_factor_enabled"
+    | "two_factor_disabled"
+    | "backup_codes_renewed"
+    | "two_factor_reset"
+    | "log_exported"
+  >().notNull(),
+  /** Whose sign-in. Null for a password tried on an address with no account, which is never stored. */
+  userId: userRef("user_id").references(() => user.id),
+  /** Who did it, when not the person: Brixa support resetting their authenticator, or exporting this log. */
+  actorId: userRef("actor_id").references(() => user.id),
+  /** What was tried, for a sign-in, a failure or a lock. */
+  factor: text().$type<"password" | "totp" | "backup_code">(),
+  /** Support's stated reason for a reset; the dates an export covered. */
+  note: text(),
+  /** As the API's trusted proxies report it (middlewares/rate-limit.ts). */
+  ipAddress: text(),
+  userAgent: text(),
+}, t => [
+  index().on(t.at),
+  index().on(t.userId, t.at),
+  oneOf("sign_in_events_event_known", t.event, ["password_failed", "password_accepted", "signed_in", "code_failed", "locked", "refused_locked", "signed_out", "password_reset", "password_changed", "two_factor_enabled", "two_factor_disabled", "backup_codes_renewed", "two_factor_reset", "log_exported"]),
+  oneOf("sign_in_events_factor_known", t.factor, ["password", "totp", "backup_code"]),
+  // A reset is support's act on someone else, with a reason; an export is support's, of the whole log.
+  check("sign_in_events_reset_by_someone_else", sql`${t.event} <> 'two_factor_reset' OR (${t.actorId} IS NOT NULL AND ${t.actorId} <> ${t.userId} AND ${t.note} IS NOT NULL)`),
+  check("sign_in_events_export_has_actor", sql`${t.event} <> 'log_exported' OR ${t.actorId} IS NOT NULL`),
+]);
+
+// ---------------------------------------------------------------------------
 // Number series (SCHEMA.md §6)
 // ---------------------------------------------------------------------------
 

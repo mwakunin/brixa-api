@@ -17,6 +17,7 @@ import env from "@/env";
 import { emailEnabled, EmailError, sendEmail } from "./email";
 import { errorLine, summarizeError } from "./error-summary";
 import { logger } from "./logger";
+import { markEnrolled, recordSignInEvent, signInLog } from "./sign-in-log";
 
 /** The staff app's origin: scheme, host and port, whatever path APP_URL carries. */
 export const appOrigin = new URL(env.APP_URL).origin;
@@ -109,11 +110,17 @@ const NOTICE_WAIT_MS = 1_000;
  * make does not go unnoticed. Waits for the email no longer than
  * NOTICE_WAIT_MS, and never fails the change it reports.
  */
-async function notify(changed: { id: string; email: string; name: string }, what: string, subject: string, news: string): Promise<void> {
+export async function notify(
+  changed: { id: string; email: string; name: string },
+  what: string,
+  subject: string,
+  news: string,
+  closing = "If you did not do this, tell your administrator straight away.",
+): Promise<void> {
   const notice = sendQuietly(changed.id, what, {
     to: changed.email,
     subject,
-    body: `Hello ${changed.name},\n\n${news}\n\nIf you did not do this, tell your administrator straight away.`,
+    body: `Hello ${changed.name},\n\n${news}\n\n${closing}`,
   });
   await Promise.race([notice, sleep(NOTICE_WAIT_MS)]);
 }
@@ -307,6 +314,7 @@ export const auth = betterAuth({
     revokeSessionsOnPasswordReset: true,
     async onPasswordReset({ user: changed }) {
       logger.info({ userId: changed.id }, "Password reset");
+      await recordSignInEvent({ event: "password_reset", userId: changed.id });
       /*
        * A sign-in waiting for its code began with the old password, so it
        * ends too, as a session would. Its challenge is a verification row
@@ -338,6 +346,9 @@ export const auth = betterAuth({
         async after(updated, ctx) {
           const enabled = (updated as { twoFactorEnabled?: boolean | null }).twoFactorEnabled === true;
           if (ctx?.path === "/two-factor/verify-totp" && enabled) {
+            // For the sign-in log: the session this request now issues is the same person carrying on, not a sign-in.
+            markEnrolled();
+            await recordSignInEvent({ event: "two_factor_enabled", userId: updated.id });
             await notify(
               updated,
               "authenticator set up notice",
@@ -346,6 +357,7 @@ export const auth = betterAuth({
             );
           }
           else if (ctx?.path === "/two-factor/disable" && !enabled) {
+            await recordSignInEvent({ event: "two_factor_disabled", userId: updated.id });
             await notify(
               updated,
               "two-step sign-in off notice",
@@ -357,6 +369,13 @@ export const auth = betterAuth({
       },
     },
     session: {
+      delete: {
+        // Signing out, for the sign-in log. Sessions also end by a reset or by expiring, which is not someone leaving.
+        async after(ended, ctx) {
+          if (ctx?.path === "/sign-out")
+            await recordSignInEvent({ event: "signed_out", userId: ended.userId });
+        },
+      },
       create: {
         /*
          * Better Auth checks a password, slowly by design, and then creates
@@ -436,6 +455,8 @@ export const auth = betterAuth({
       backupCodeOptions: { customBackupCodesGenerate: () => Array.from({ length: 10 }, backupCode) },
     }),
     twoFactorRules(),
+    // After the two-factor plugin, so it sees a password sign-in as the challenge the plugin made of it.
+    signInLog(),
   ],
 
   session: {

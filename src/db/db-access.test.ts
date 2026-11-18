@@ -118,6 +118,7 @@ const APP_DB_ALLOWLIST = new Map([
  */
 const AUTH_DB_ALLOWLIST = new Map([
   ["lib/auth.ts", "Better Auth's adapter, the only reason the connection exists"],
+  ["lib/sign-in-log.ts", "appends to the sign-in log, which Better Auth's role alone may write (and cannot read)"],
 ]);
 
 /** `db/index.ts` defines the connections and is never judged by the lists. */
