@@ -1,8 +1,9 @@
-import { boolean, index, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
+import { boolean, index, integer, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 
 // ---------------------------------------------------------------------------
 // Owned by Better Auth. Ported from school-saas-api without the phone-number
-// plugin's columns: staff sign in with email+password for now. Regenerate with:
+// plugin's columns: staff sign in with email and password, then a code from
+// an authenticator app (the two-factor plugin). Regenerate with:
 //
 //   npx @better-auth/cli@latest generate --config src/lib/auth.ts \
 //     --output src/db/auth-schema.ts --yes
@@ -11,7 +12,7 @@ import { boolean, index, pgTable, text, timestamp, uniqueIndex } from "drizzle-o
 // 1.7.15 here; school-saas-api's 1.7.1 needed an `account.issuer` column that
 // 1.7.3+ dropped, and this file follows the newer runtime.
 //
-// Four deliberate deviations — reapply every one after regenerating:
+// Five deliberate deviations — reapply every one after regenerating:
 //
 //  1. `user.role` has `.notNull()` added. The CLI emits a nullable column,
 //     which would force a null-check at every authorization site. The DB
@@ -27,6 +28,10 @@ import { boolean, index, pgTable, text, timestamp, uniqueIndex } from "drizzle-o
 //     that identifies an account at its provider. The CLI emits no such
 //     constraint, so concurrent sign-ins could insert duplicates and make
 //     account lookup ambiguous.
+//  5. `two_factor.user_id` is a unique index, not a plain one: one
+//     authenticator per person. The plugin looks the row up by user and
+//     updates it if found, so two enrolments racing could otherwise leave
+//     two secrets and make the lookup pick either.
 //
 // Note: these timestamps are `timestamp` (no time zone), unlike the domain
 // tables which use timestamptz. That is Better Auth's choice; it stays
@@ -47,6 +52,10 @@ export const user = pgTable("user", {
     .notNull(),
   // Deviation 1: .notNull() added on top of the CLI output.
   role: text("role").default("user").notNull(),
+  // From the two-factor plugin: set once the person's authenticator is
+  // confirmed. Until then the API answers nothing but setting it up
+  // (middlewares/auth.ts).
+  twoFactorEnabled: boolean("two_factor_enabled").default(false),
 });
 
 export const session = pgTable(
@@ -117,4 +126,30 @@ export const verification = pgTable(
       .notNull(),
   },
   table => [index("verification_identifier_idx").on(table.identifier)],
+);
+
+/**
+ * The two-factor plugin's: a person's authenticator secret and backup codes,
+ * both encrypted with BETTER_AUTH_SECRET, and the count of wrong codes in a
+ * row that locks the account for a while (lib/auth.ts).
+ */
+export const twoFactor = pgTable(
+  "two_factor",
+  {
+    id: text("id").primaryKey(),
+    secret: text("secret").notNull(),
+    backupCodes: text("backup_codes").notNull(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    verified: boolean("verified").default(true),
+    failedVerificationCount: integer("failed_verification_count").default(0),
+    lockedUntil: timestamp("locked_until"),
+  },
+  table => [
+    index("two_factor_secret_idx").on(table.secret),
+    // Deviation 5: unique, one authenticator per person. Reapply after
+    // regenerating.
+    uniqueIndex("two_factor_user_id_idx").on(table.userId),
+  ],
 );

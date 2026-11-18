@@ -28,7 +28,7 @@ pnpm db:seed
 
 This fills the dev database with **Sample Hospital**, a made-up facility, through the API, so every rule, charge and audit entry is real:
 
-- **Staff:** one member of staff per desk (front desk, triage, doctor, lab, lab supervisor, pharmacy, stores, cashier, finance, admin), each `<desk>@sample-hospital.test`. They all share the password the command prints.
+- **Staff:** one member of staff per desk (front desk, triage, doctor, lab, lab supervisor, pharmacy, stores, cashier, finance, admin), each `<desk>@sample-hospital.test`. They all share the password the command prints, and one authenticator (below).
 - **Two more facilities,** Sample Hospital, Westside and Sample Hospital, East (suspended), each with its own admin. A relief clerk, `relief@sample-hospital.test`, works at all three, so the staff app's facility picker has something to show.
 - **Set-up:** triage, General OPD and the Dental clinic with their fees, a malaria test and a blood count, and a pharmacy stocked with two medicines.
 - **Patients**, invented, at every outpatient desk:
@@ -44,6 +44,18 @@ It refuses to run:
 - if any of its three database connections (owner, app, auth) reaches a database that is not on this machine, read as `pg` reads it;
 - with `RESEND_API_KEY`, `AT_API_KEY` or `TASKS_QUEUE` set, since it must never send an email or SMS;
 - on a database that holds any facility: one seeded already, or a real one tunnelled to `localhost` (an SSH tunnel, the Cloud SQL proxy), which every host check would pass.
+
+### Signing in by hand
+
+Every sign-in asks for a code after the password (`SPEC.md` §2). Every seeded account, and every account the tests make, shares one authenticator secret (`src/dev/two-factor.ts`), so one code works for all of them:
+
+```sh
+pnpm dev:code
+```
+
+prints the code, which changes every 30 seconds, and the backup codes. brixa-web's `pnpm flows` and `pnpm screens` work the same code out from the same secret.
+
+The secret is in the code, in the open, so it never reaches production: `enrolForDevelopment` refuses there, and the seed refuses to run at all. An account you invite by hand in development has no authenticator: the staff app asks it to set one up, with a real authenticator app.
 
 ### Starting again
 

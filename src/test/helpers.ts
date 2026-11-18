@@ -10,7 +10,9 @@ import type { MembershipRole, UserRole } from "@/lib/types";
 import app from "@/app";
 import db, { pool } from "@/db";
 import { facilities, memberships, numberSeries, numberSeriesCounters, priceLists } from "@/db/schema";
+import { developmentCode, enrolForDevelopment } from "@/dev/two-factor";
 import { createAccount } from "@/lib/accounts";
+import { appOrigin } from "@/lib/auth";
 import { FACILITY_HEADER } from "@/lib/constants";
 import { addDays, businessDate } from "@/lib/dates";
 import { sentEmails } from "@/lib/email";
@@ -100,11 +102,15 @@ export interface TestUser {
   headers: { cookie: string };
 }
 
-/** Keeps only the name=value pairs; a request Cookie header has no attributes. */
-function cookieFrom(setCookie: string) {
+/**
+ * Keeps only the name=value pairs, since a request Cookie header has no
+ * attributes, and drops the cookies a response clears (an empty value).
+ */
+export function cookieFrom(setCookie: string): string {
   return setCookie
     .split(/,(?=\s*[^;=\s]+=)/)
     .map(c => c.split(";")[0].trim())
+    .filter(pair => !pair.endsWith("="))
     .join("; ");
 }
 
@@ -118,12 +124,29 @@ export function nextEmail(): string {
 
 export const TEST_PASSWORD = "correct-horse-battery";
 
-/** An account made on the server, as an invitation makes one (lib/accounts.ts). */
-export async function createTestAccount(email: string, name = "Test User", role: UserRole = "user"): Promise<User> {
-  return createAccount({ email, name, password: TEST_PASSWORD, role });
+/**
+ * An account made on the server, as an invitation makes one (lib/accounts.ts),
+ * with the development authenticator set up (dev/two-factor.ts) unless
+ * `twoFactor` is false: an account just made has none until its owner sets
+ * one up, and the API refuses it everything until then.
+ */
+export async function createTestAccount(
+  email: string,
+  name = "Test User",
+  role: UserRole = "user",
+  { twoFactor = true }: { twoFactor?: boolean } = {},
+): Promise<User> {
+  const created = await createAccount({ email, name, password: TEST_PASSWORD, role });
+  if (twoFactor)
+    await enrolForDevelopment(created.id);
+  return created;
 }
 
-/** Signs in through the real endpoint and returns the session cookie headers. */
+/**
+ * Signs in through the real endpoints, as staff do: the password, then the
+ * development authenticator's code when the account has one. Returns the
+ * session cookie headers.
+ */
 export async function signIn(email: string, password = TEST_PASSWORD): Promise<{ cookie: string }> {
   const res = await postJson("/api/auth/sign-in/email", { email, password });
   if (!res.ok)
@@ -131,9 +154,17 @@ export async function signIn(email: string, password = TEST_PASSWORD): Promise<{
 
   const setCookie = res.headers.get("set-cookie");
   if (!setCookie)
-    throw new Error("sign-in returned no session cookie");
+    throw new Error("sign-in returned no cookie");
+  const { twoFactorRedirect } = await res.json() as { twoFactorRedirect?: boolean };
+  if (!twoFactorRedirect)
+    return { cookie: cookieFrom(setCookie) };
 
-  return { cookie: cookieFrom(setCookie) };
+  // A request carrying a cookie must name the staff app as its origin, as a browser does (Better Auth's CSRF check).
+  const verified = await postJson("/api/auth/two-factor/verify-totp", { code: await developmentCode() }, { cookie: cookieFrom(setCookie), origin: appOrigin });
+  const session = verified.headers.get("set-cookie");
+  if (!verified.ok || !session)
+    throw new Error(`the sign-in code was refused: ${verified.status} ${await verified.text()}`);
+  return { cookie: cookieFrom(session) };
 }
 
 /**

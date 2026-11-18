@@ -397,6 +397,8 @@ describe("row-level security", () => {
       ["SELECT password FROM account"],
       ["SELECT value FROM verification"],
       ["SELECT role FROM \"user\""],
+      ["SELECT secret FROM two_factor"],
+      ["SELECT two_factor_enabled FROM \"user\""],
     ])("refuses the app role: %s", async (statement) => {
       await signedInUser();
 
@@ -417,7 +419,7 @@ describe("row-level security", () => {
     });
 
     it("gives the app role no write on identity at all", async () => {
-      for (const table of ["user", "session", "account", "verification"]) {
+      for (const table of ["user", "session", "account", "verification", "two_factor"]) {
         for (const privilege of ["INSERT", "UPDATE", "DELETE"]) {
           const { rows } = await appPool.query<{ has: boolean }>(
             "SELECT has_table_privilege(current_user, $1, $2) AS has",

@@ -26,11 +26,11 @@ import type { DocumentContent } from "@/lib/document-content";
 import { CLINICAL_ROLES, LICENCE_NUMBER_PATTERN, PROFESSIONS } from "@/lib/professions";
 import { VITAL_SIGNS } from "@/lib/vital-signs";
 
-import { account, session, user, verification } from "./auth-schema";
+import { account, session, twoFactor, user, verification } from "./auth-schema";
 
 // Re-exported so the rest of the app imports every table from one module,
 // without caring that identity tables live in a Better-Auth-generated file.
-export { account, session, user, verification };
+export { account, session, twoFactor, user, verification };
 
 // One file past the 800-line guideline, deliberately: nearly every table
 // reaches others through composite (facility_id, id) foreign keys, the CHECKs

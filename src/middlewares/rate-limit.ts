@@ -181,6 +181,13 @@ export const rateLimits = {
    */
   signInAccount: () => rateLimit({ points: 100, duration: 900, keyPrefix: "signin-account", key: bySignInEmail }),
 
+  /**
+   * Two-step sign-in's POSTs (a code checked, an authenticator set up), per
+   * address. Only a flood stops here: each challenge allows five codes and
+   * costs a right password, and five wrong codes lock the account.
+   */
+  twoFactor: () => rateLimit({ points: 30, duration: 60, keyPrefix: "two-factor", key: byAddress }),
+
   /** Better Auth's GETs: a staff app checks its session constantly, so this only stops a flood. */
   authRead: () => rateLimit({ points: 300, duration: 60, keyPrefix: "auth-read", key: byAddress }),
 

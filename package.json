@@ -16,6 +16,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:seed": "cross-env TRUST_PROXY_HOPS=1 TRUSTED_PROXY_IPS= LOG_LEVEL=warn tsx src/cli/seed-dev.ts",
+    "dev:code": "cross-env LOG_LEVEL=warn tsx src/cli/dev-code.ts",
     "db:studio": "drizzle-kit studio",
     "db:migrate:test": "cross-env NODE_ENV=test drizzle-kit migrate",
     "db:migrate:deploy": "node ./dist/src/db/migrate.js",

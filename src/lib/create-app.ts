@@ -99,10 +99,15 @@ export default function createApp(): AppOpenAPI {
   // of a remaining instant (lib/auth.ts). A request for a reset link takes a
   // fixed time to answer, so the wait does not tell an address with an
   // account from one without; the limit runs first, because a refusal says
-  // nothing about the address and is answered at once. The GETs only stop a
-  // flood: a staff app checks its session constantly.
+  // nothing about the address and is answered at once. Two-step sign-in has
+  // its own, looser limit: guessing a code is capped by the plugin (five
+  // tries a challenge, then the account locks), and each challenge costs a
+  // right password, so the address limit only stops a flood, and lets a
+  // hospital's shift change through one shared connection. The GETs only
+  // stop a flood: a staff app checks its session constantly.
   app.post("/api/auth/sign-in/email", rateLimits.signInAccountFromAddress(), rateLimits.signInAccount(), markSignInStart);
   app.post("/api/auth/request-password-reset", rateLimits.auth(), answerNoSoonerThan(RESET_REQUEST_ANSWER_MS), c => auth.handler(c.req.raw));
+  app.post("/api/auth/two-factor/*", rateLimits.twoFactor(), c => auth.handler(c.req.raw));
   app.post("/api/auth/*", rateLimits.auth(), c => auth.handler(c.req.raw));
   app.get("/api/auth/*", rateLimits.authRead(), c => auth.handler(c.req.raw));
 

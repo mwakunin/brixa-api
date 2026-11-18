@@ -1,4 +1,4 @@
-import type { MiddlewareHandler } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
 
 import { createMiddleware } from "hono/factory";
 import * as HttpStatusCodes from "stoker/http-status-codes";
@@ -13,24 +13,44 @@ import { businessDate, printedDate } from "@/lib/dates";
 /**
  * Resolves the Better Auth session (if any) onto the context. Always runs and
  * never rejects: routes decide whether a session is required.
+ *
+ * Every member of staff signs in with a code from an authenticator app
+ * (SPEC.md §2). Someone who has signed in with a password but not yet set one
+ * up has a session, and it is good for Better Auth's own routes alone, which
+ * are mounted ahead of this: setting the authenticator up, signing out. Here
+ * they count as not signed in, so no route can act as them by forgetting to
+ * check, and the refusal says what to do (`notSignedIn`).
  */
 export const withSession = createMiddleware<AppBindings>(async (c, next) => {
   const session = await auth.api.getSession({ headers: c.req.raw.headers });
+  const ready = session?.user.twoFactorEnabled === true;
 
-  c.set("user", session?.user ?? null);
-  c.set("session", session?.session ?? null);
+  c.set("user", ready ? session.user : null);
+  c.set("session", ready ? session.session : null);
+  c.set("twoFactorSetupPending", session !== null && !ready);
 
   await next();
 });
 
-/** Rejects anyone without a valid session. */
-export const requireAuth = createMiddleware<AppBindings>(async (c, next) => {
-  if (!c.var.user) {
+/**
+ * The answer to a request that needs someone signed in and has nobody: 401,
+ * or for a person still to set up their authenticator, 403 with
+ * `two_factor_setup_required`, which sends the staff app to its setup screen.
+ */
+export function notSignedIn<E extends AppBindings>(c: Context<E>): Response {
+  if (c.var.twoFactorSetupPending) {
     return c.json(
-      { message: HttpStatusPhrases.UNAUTHORIZED },
-      HttpStatusCodes.UNAUTHORIZED,
+      { message: "Set up two-step sign-in before you start work.", code: "two_factor_setup_required" },
+      HttpStatusCodes.FORBIDDEN,
     );
   }
+  return c.json({ message: HttpStatusPhrases.UNAUTHORIZED }, HttpStatusCodes.UNAUTHORIZED);
+}
+
+/** Rejects anyone without a valid session. */
+export const requireAuth = createMiddleware<AppBindings>(async (c, next) => {
+  if (!c.var.user)
+    return notSignedIn(c);
 
   await next();
 });
@@ -45,12 +65,8 @@ export function requireRole(...allowed: UserRole[]): MiddlewareHandler<AppBindin
   return createMiddleware<AppBindings>(async (c, next) => {
     const user = c.var.user;
 
-    if (!user) {
-      return c.json(
-        { message: HttpStatusPhrases.UNAUTHORIZED },
-        HttpStatusCodes.UNAUTHORIZED,
-      );
-    }
+    if (!user)
+      return notSignedIn(c);
 
     if (!allowed.includes(user.role as UserRole)) {
       return c.json(

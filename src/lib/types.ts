@@ -42,8 +42,11 @@ export interface Membership {
 export interface AppBindings {
   Variables: {
     logger: PinoLogger;
+    /** The person signed in, once they have finished two-step sign-in's setup; null until then. */
     user: AuthUser | null;
     session: Session["session"] | null;
+    /** Signed in with a password, but no authenticator set up yet: refused everything here until it is. */
+    twoFactorSetupPending: boolean;
   };
 };
 

@@ -1,8 +1,11 @@
+import type { BetterAuthPlugin } from "better-auth";
 import type { MiddlewareHandler } from "hono";
 
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { and, eq } from "drizzle-orm";
+import { APIError, createAuthMiddleware } from "better-auth/api";
+import { twoFactor } from "better-auth/plugins/two-factor";
+import { and, eq, like } from "drizzle-orm";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -73,12 +76,52 @@ const signInBegan = new AsyncLocalStorage<Date>();
 export const markSignInStart: MiddlewareHandler = (_c, next) => signInBegan.run(new Date(), next);
 
 /**
- * How long a reset waits for the "password changed" notice before answering.
- * The Resend SDK sets no timeout, so a stalled provider would otherwise hold
- * the answer for minutes, and someone who gave up and pressed again would be
- * told their link was used. A slower notice finishes after the answer.
+ * How long a change to how someone signs in waits for its notice before
+ * answering. The Resend SDK sets no timeout, so a stalled provider would
+ * otherwise hold the answer for minutes, and someone who gave up and pressed
+ * again would be told their reset link was used. A slower notice finishes
+ * after the answer.
  */
 const NOTICE_WAIT_MS = 1_000;
+
+/**
+ * Tells a person that how they sign in has changed, so a change they did not
+ * make does not go unnoticed. Waits for the email no longer than
+ * NOTICE_WAIT_MS, and never fails the change it reports.
+ */
+async function notify(changed: { id: string; email: string; name: string }, what: string, subject: string, news: string): Promise<void> {
+  const notice = sendQuietly(changed.id, what, {
+    to: changed.email,
+    subject,
+    body: `Hello ${changed.name},\n\n${news}\n\nIf you did not do this, tell your administrator straight away.`,
+  });
+  await Promise.race([notice, sleep(NOTICE_WAIT_MS)]);
+}
+
+/**
+ * Brixa's rules on top of the two-factor plugin's own. No computer is ever
+ * remembered: the computers at a desk are shared, so a code is asked at every
+ * sign-in, and a request to skip it next time is refused rather than ignored.
+ */
+function twoFactorRules(): BetterAuthPlugin {
+  return {
+    id: "brixa-two-factor-rules",
+    hooks: {
+      before: [{
+        matcher: context => context.path?.startsWith("/two-factor/verify-") === true,
+        handler: createAuthMiddleware(async (ctx) => {
+          const body = ctx.body as { trustDevice?: unknown } | undefined;
+          if (body?.trustDevice === true) {
+            throw new APIError("BAD_REQUEST", {
+              message: "This computer cannot be remembered: a code is asked at every sign-in.",
+              code: "TRUST_DEVICE_NOT_ALLOWED",
+            });
+          }
+        }),
+      }],
+    },
+  };
+}
 
 /**
  * Email and password, for staff at a desk. Invite-only.
@@ -91,6 +134,11 @@ const NOTICE_WAIT_MS = 1_000;
  *
  * Phone OTP (the school SaaS keeps it dormant) is not ported: v1 has no
  * patient portal, and staff accounts all have an email address.
+ *
+ * Two-step sign-in (SPEC.md §2): after the password, a code from an
+ * authenticator app, or one of ten printed backup codes, at every sign-in.
+ * Nobody may skip it: until a person has set their authenticator up, their
+ * session is good for setting it up and nothing else (middlewares/auth.ts).
  *
  * The adapter uses its own connection (`authDb`, role `hospital_auth`): the
  * only role that can read sessions and password hashes. The auth tables carry
@@ -108,6 +156,15 @@ export const auth = betterAuth({
    */
   trustedOrigins: [appOrigin],
   logger: { log: logForBetterAuth },
+  /*
+   * Better Auth's own rate limiter is off. create-app.ts limits every auth
+   * route in Redis, shared by every instance, by the address the trusted
+   * proxies report (middlewares/rate-limit.ts). Better Auth's counts in each
+   * instance's memory, and allows three sign-ins or code checks in ten
+   * seconds from one address: a hospital's staff share one, and a shift
+   * change would trip it.
+   */
+  rateLimit: { enabled: false },
   advanced: {
     // Better Auth turns the origin check off by default under NODE_ENV=test.
     // Stated here so the suite tests the CSRF defence production runs.
@@ -165,31 +222,69 @@ export const auth = betterAuth({
     },
     // A reset often follows "someone else may know my password", and the computers at a desk are shared.
     revokeSessionsOnPasswordReset: true,
-    // The person hears of every change, so one they did not make does not go unnoticed.
     async onPasswordReset({ user: changed }) {
       logger.info({ userId: changed.id }, "Password reset");
-      const notice = sendQuietly(changed.id, "password changed notice", {
-        to: changed.email,
-        subject: "Your Brixa HMIS password was changed",
-        body: `Hello ${changed.name},\n\n`
-          + "The password for your Brixa HMIS account was changed, and every device that was signed in has been signed out.\n\n"
-          + "If you did not do this, tell your administrator straight away.",
-      });
-      await Promise.race([notice, sleep(NOTICE_WAIT_MS)]);
+      /*
+       * A sign-in waiting for its code began with the old password, so it
+       * ends too, as a session would. Its challenge is a verification row
+       * named `2fa-…` holding the person's id (the two-factor plugin's).
+       */
+      await authDb
+        .delete(authSchema.verification)
+        .where(and(eq(authSchema.verification.value, changed.id), like(authSchema.verification.identifier, "2fa-%")));
+      await notify(
+        changed,
+        "password changed notice",
+        "Your Brixa HMIS password was changed",
+        "The password for your Brixa HMIS account was changed, and every device that was signed in has been signed out.",
+      );
     },
   },
 
   databaseHooks: {
+    user: {
+      update: {
+        /*
+         * Setting an authenticator up, or turning two-step sign-in off, is
+         * told to the person as a password change is. The plugin sets the
+         * flag on only once the first code from a new authenticator is
+         * right, and off only through /two-factor/disable, which asks for
+         * the password; turned off, the next thing the API asks of them is a
+         * new authenticator.
+         */
+        async after(updated, ctx) {
+          const enabled = (updated as { twoFactorEnabled?: boolean | null }).twoFactorEnabled === true;
+          if (ctx?.path === "/two-factor/verify-totp" && enabled) {
+            await notify(
+              updated,
+              "authenticator set up notice",
+              "Two-step sign-in is set up on your Brixa HMIS account",
+              "An authenticator app was set up for your Brixa HMIS account. From now on, signing in asks for a code from it.",
+            );
+          }
+          else if (ctx?.path === "/two-factor/disable" && !enabled) {
+            await notify(
+              updated,
+              "two-step sign-in off notice",
+              "Two-step sign-in was turned off on your Brixa HMIS account",
+              "Two-step sign-in was turned off for your Brixa HMIS account. You will be asked to set up an authenticator app again before you can work.",
+            );
+          }
+        },
+      },
+    },
     session: {
       create: {
         /*
          * Better Auth checks a password, slowly by design, and then creates
          * the session without looking at the password again. A sign-in that
          * checked the old password while a reset was committing would get a
-         * session after the reset had signed everyone out. So a session for
-         * a password sign-in is refused when the password changed after that
-         * sign-in began, and the sign-in answers as for a wrong password. One
-         * begun after the change goes through.
+         * session after the reset had signed everyone out (with two-step
+         * sign-in, the session becomes the challenge for a code, and
+         * onPasswordReset ends the challenges that already exist). So a
+         * session for a password sign-in is refused when the password
+         * changed after that sign-in began, and the sign-in answers as for a
+         * wrong password. One begun after the change goes through.
          *
          * This narrows the race; it does not close it. The read below and
          * Better Auth's session insert are separate statements, so a reset
@@ -223,6 +318,16 @@ export const auth = betterAuth({
       });
     },
   },
+
+  plugins: [
+    twoFactor({
+      issuer: "Brixa HMIS",
+      // Five wrong codes in a row lock the account for fifteen minutes,
+      // wherever they come from: reaching the code takes the password already.
+      accountLockout: { maxFailedAttempts: 5, durationSeconds: 15 * 60 },
+    }),
+    twoFactorRules(),
+  ],
 
   user: {
     additionalFields: {

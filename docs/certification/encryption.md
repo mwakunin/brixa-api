@@ -35,6 +35,7 @@ At-rest encryption comes from the hosting platform. **The production host is not
 These hold regardless of the host:
 
 - **Passwords** are stored only as scrypt hashes (Better Auth), in tables only the auth role can read (`db/roles.sql`).
+- **Authenticator secrets and backup codes** are stored only encrypted (XChaCha20-Poly1305, with a key derived from `BETTER_AUTH_SECRET`), in a table only the auth role can read (`two_factor`, `src/db/migrations/0109_two_factor_grants.sql`). See `sign-in.md`.
 - **Invitation tokens** are stored only as SHA-256 hashes; the token itself exists only in the emailed link (`src/lib/invitations.ts`).
 - **Document verification codes** are 160 random bits; the public verify endpoint discloses no patient data (`SCHEMA.md` §6.2).
 - **Rate-limit keys** are HMACs of the address or email, never the value itself (`src/middlewares/rate-limit.ts`).

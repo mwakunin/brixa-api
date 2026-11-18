@@ -32,12 +32,13 @@ describe("accounts", () => {
 
   it("signs in an account created on the server", async () => {
     const email = nextEmail();
-    await createTestAccount(email);
+    const created = await createTestAccount(email);
 
-    const res = await postJson("/api/auth/sign-in/email", { email, password: TEST_PASSWORD });
+    // The password, then the code (lib/two-factor.test.ts).
+    const { cookie } = await signIn(email);
 
-    expect(res.status).toBe(200);
-    expect(res.headers.get("set-cookie")).toContain("session_token");
+    const session = await app.request("/api/auth/get-session", { headers: { cookie, "x-forwarded-for": nextIp() } });
+    expect((await session.json()).user.id).toBe(created.id);
   });
 
   it("finishes an account a failed run left without a password, instead of colliding with it", async () => {
