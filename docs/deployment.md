@@ -17,7 +17,7 @@ What the API needs from Google Cloud before it can run in production. The code r
 |---|---|
 | `NODE_ENV` | `production` (set by the image) |
 | `BETTER_AUTH_URL` | The API's HTTPS URL. Cloud Tasks and Cloud Scheduler call it, and identity tokens are minted for its origin |
-| `APP_URL` | The staff app's HTTPS origin |
+| `APP_URL` | The staff app's HTTPS origin, on the same site as the API (`app.<domain>` beside `api.<domain>`). On another site, sign-in answers 200 but the browser drops the session cookie, and the person stays on the sign-in page with no message (brixa-web `docs/deployment.md`) |
 | `TRUST_PROXY_HOPS` | `1` behind Cloud Run alone |
 | `DATABASE_URL`, `APP_DATABASE_URL`, `AUTH_DATABASE_URL` | Three different roles (`db/roles.sql`); TLS is enforced (`src/db/connection.ts`) |
 | `REDIS_URL` | Upstash, `rediss://` (TLS required) |
