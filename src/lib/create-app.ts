@@ -8,13 +8,14 @@ import { secureHeaders } from "hono/secure-headers";
 import { notFound, serveEmojiFavicon } from "stoker/middlewares";
 import { defaultHook } from "stoker/openapi";
 
+import { answerNoSoonerThan } from "@/middlewares/answer-time";
 import { withSession } from "@/middlewares/auth";
 import { pinoLogger } from "@/middlewares/pino-logger";
 import { rateLimits } from "@/middlewares/rate-limit";
 
 import type { AppBindings, AppOpenAPI, TenantBindings, TenantOpenAPI } from "./types";
 
-import { appOrigin, auth } from "./auth";
+import { appOrigin, auth, markSignInStart, RESET_REQUEST_ANSWER_MS } from "./auth";
 import { FACILITY_HEADER } from "./constants";
 import { onError } from "./on-error";
 
@@ -93,9 +94,15 @@ export default function createApp(): AppOpenAPI {
   // address, so an attacker's guesses cannot lock the owner out, and loosely
   // from anywhere, so a guess spread across many addresses is still capped.
   // The per-address limit runs first, so a refused attempt never counts
-  // against the account's shared budget. The GETs only stop a flood: a staff
-  // app checks its session constantly.
-  app.post("/api/auth/sign-in/email", rateLimits.signInAccountFromAddress(), rateLimits.signInAccount());
+  // against the account's shared budget. A sign-in then notes when it began,
+  // so it is refused a session if the password changed while it ran, short
+  // of a remaining instant (lib/auth.ts). A request for a reset link takes a
+  // fixed time to answer, so the wait does not tell an address with an
+  // account from one without; the limit runs first, because a refusal says
+  // nothing about the address and is answered at once. The GETs only stop a
+  // flood: a staff app checks its session constantly.
+  app.post("/api/auth/sign-in/email", rateLimits.signInAccountFromAddress(), rateLimits.signInAccount(), markSignInStart);
+  app.post("/api/auth/request-password-reset", rateLimits.auth(), answerNoSoonerThan(RESET_REQUEST_ANSWER_MS), c => auth.handler(c.req.raw));
   app.post("/api/auth/*", rateLimits.auth(), c => auth.handler(c.req.raw));
   app.get("/api/auth/*", rateLimits.authRead(), c => auth.handler(c.req.raw));
 
