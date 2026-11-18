@@ -136,6 +136,17 @@ describe("resetting a forgotten password", () => {
     }
   });
 
+  it("refuses a request over the rate limit at once, since a refusal says nothing about the address", async () => {
+    const oneAddress = { "x-forwarded-for": "10.77.0.1" };
+    await Promise.all(Array.from({ length: 10 }, () => postJson("/api/auth/request-password-reset", { email: nextEmail() }, oneAddress)));
+
+    const asked = performance.now();
+    const refused = await postJson("/api/auth/request-password-reset", { email: nextEmail() }, oneAddress);
+
+    expect(refused.status).toBe(429);
+    expect(performance.now() - asked).toBeLessThan(RESET_REQUEST_ANSWER_MS / 2);
+  });
+
   it("sets the new password, ends every session the person had, and tells them", async () => {
     const email = nextEmail();
     await createTestAccount(email);

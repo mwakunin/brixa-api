@@ -95,12 +95,14 @@ export default function createApp(): AppOpenAPI {
   // from anywhere, so a guess spread across many addresses is still capped.
   // The per-address limit runs first, so a refused attempt never counts
   // against the account's shared budget. A sign-in then notes when it began,
-  // so it gets no session if the password changed while it ran (lib/auth.ts).
-  // A request for a reset link takes a fixed time to answer, so the wait does
-  // not tell an address with an account from one without. The GETs only stop
-  // a flood: a staff app checks its session constantly.
+  // so it is refused a session if the password changed while it ran, short
+  // of a remaining instant (lib/auth.ts). A request for a reset link takes a
+  // fixed time to answer, so the wait does not tell an address with an
+  // account from one without; the limit runs first, because a refusal says
+  // nothing about the address and is answered at once. The GETs only stop a
+  // flood: a staff app checks its session constantly.
   app.post("/api/auth/sign-in/email", rateLimits.signInAccountFromAddress(), rateLimits.signInAccount(), markSignInStart);
-  app.post("/api/auth/request-password-reset", answerNoSoonerThan(RESET_REQUEST_ANSWER_MS));
+  app.post("/api/auth/request-password-reset", rateLimits.auth(), answerNoSoonerThan(RESET_REQUEST_ANSWER_MS), c => auth.handler(c.req.raw));
   app.post("/api/auth/*", rateLimits.auth(), c => auth.handler(c.req.raw));
   app.get("/api/auth/*", rateLimits.authRead(), c => auth.handler(c.req.raw));
 

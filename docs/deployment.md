@@ -11,7 +11,7 @@ What the API needs from Google Cloud before it can run in production. The code r
   - the password reset link, which is not awaited, though the request answers only after a fixed 1.5 s;
   - the "password changed" notice, waited for at most 1 s.
 
-  Such a send can arrive late, or be lost if the instance stops. The person can ask again, and a failure that is caught is logged. "CPU always allocated" (instance-based billing) removes the risk, at a higher cost.
+  Such a send can arrive late, or be lost if the instance stops. The person can ask again, and a failure that is caught is logged. "CPU always allocated" (instance-based billing) keeps the CPU while the instance runs, so a send is no longer slowed, at a higher cost. It does not make a send certain: Cloud Run can still shut an idle instance down, even with minimum instances set.
 
 | Variable | Production value |
 |---|---|

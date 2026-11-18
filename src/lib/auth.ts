@@ -189,8 +189,13 @@ export const auth = betterAuth({
          * session after the reset had signed everyone out. So a session for
          * a password sign-in is refused when the password changed after that
          * sign-in began, and the sign-in answers as for a wrong password. One
-         * begun after the change goes through. What remains is the instant
-         * between the reset's write and its commit.
+         * begun after the change goes through.
+         *
+         * This narrows the race; it does not close it. The read below and
+         * Better Auth's session insert are separate statements, so a reset
+         * that commits between them still leaves an old-password session.
+         * Closing it needs a lock or a credential version inside Better Auth,
+         * where sign-in and reset could be ordered against each other.
          */
         async before(session) {
           const began = signInBegan.getStore();
