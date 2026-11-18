@@ -19,3 +19,6 @@ coverage/
 
 # local storage driver (STORAGE_DRIVER=local)
 .storage/
+
+# development emails, kept as files (DEV_MAIL_DIR)
+.dev-mail/

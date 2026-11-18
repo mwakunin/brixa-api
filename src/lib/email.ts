@@ -1,6 +1,22 @@
+import { randomUUID } from "node:crypto";
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
 import { Resend } from "resend";
 
 import env from "@/env";
+
+/**
+ * Keeps an email a development API would have sent, as one JSON file in
+ * `dir`: `{ to, subject, body, at }`. Files are named by the instant they
+ * were written, so the newest sorts last. The address stays inside the file,
+ * never in its name. Development data is synthetic (CLAUDE.md §8).
+ */
+export async function keepDevMail(dir: string, mail: { to: string; subject: string; body: string }, at: Date = new Date()): Promise<string> {
+  await mkdir(dir, { recursive: true });
+  const file = path.join(dir, `${at.toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}.json`);
+  await writeFile(file, `${JSON.stringify({ ...mail, at: at.toISOString() }, null, 2)}\n`);
+  return file;
+}
 
 /**
  * Transactional email, behind one interface so the provider can change in one
@@ -57,6 +73,9 @@ export async function sendEmail(input: {
      */
     if (env.NODE_ENV === "development") {
       console.warn(`[dev email] to ${input.to}: ${input.subject}\n${input.body}`);
+      await keepDevMail(env.DEV_MAIL_DIR, input).catch((err: unknown) => {
+        console.warn(`[dev email] could not keep a copy in ${env.DEV_MAIL_DIR}: ${err instanceof Error ? err.message : String(err)}`);
+      });
       return;
     }
     throw new EmailError("Email is not configured (RESEND_API_KEY / RESEND_FROM_EMAIL)");
