@@ -13,7 +13,12 @@ pnpm dev                 # http://localhost:9999; every endpoint at /reference
 
 The staff app (`brixa-web`) runs beside it on http://localhost:3000. That is the API's default `APP_URL`, so sign-in works without changing anything.
 
-With no mail provider configured, which is the default here, the API does not send email. Instead, it prints each message to its log, starting `[dev email]`. It also keeps a copy as a JSON file in `.dev-mail/` (`DEV_MAIL_DIR`, gitignored), newest last. Either way, the link in an invitation or a password reset can still be followed: by hand, or by brixa-web's `pnpm flows`, which reads the folder. Leave `RESEND_API_KEY` and `RESEND_FROM_EMAIL` unset to keep it that way: with both set, development sends real email through Resend. Empty the folder whenever you like.
+With no mail provider configured, which is the default here, the API does not send email. Instead, it prints each message to its log, starting `[dev email]`. It also keeps a copy as a JSON file in `.dev-mail/` (`DEV_MAIL_DIR`, gitignored), newest last. Either way, the link in an invitation or a password reset can still be followed: by hand, or by brixa-web's `pnpm flows`, which reads the folder. Leave `RESEND_API_KEY` and `RESEND_FROM_EMAIL` unset to keep it that way: with both set, development sends real email through Resend.
+
+The links in those files work, so treat the folder with care:
+- **Who can read it.** The folder and its files are made readable by you alone. A `.dev-mail/` made before that may not be: run `chmod -R go-rwx .dev-mail`, or delete it.
+- **Git.** Only the default `.dev-mail/` is ignored by git. If you set `DEV_MAIL_DIR` elsewhere, put it outside the checkout, or add your own ignore rule before any email is "sent".
+- **Clearing it.** Empty the folder whenever you like.
 
 ## Seeding
 
