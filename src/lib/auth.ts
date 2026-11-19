@@ -10,7 +10,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomInt } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { authDb, authPool } from "@/db";
+import { authDb, withAdvisoryLock } from "@/db";
 import * as authSchema from "@/db/auth-schema";
 import env from "@/env";
 
@@ -462,23 +462,22 @@ export const auth = betterAuth({
  * two-factor routes). The plugin confirms an authenticator by reading it,
  * checking the code against its secret, then marking it confirmed by its id;
  * a second setup in between would put a secret nobody checked in its place,
- * and the mark would confirm that one. Under a per-person advisory lock, the
- * second setup waits, then finds the authenticator confirmed. A request with
- * no session (a sign-in's code) takes no lock.
+ * and the mark would confirm that one. Under a per-person advisory lock
+ * (`withAdvisoryLock`), a second change while one runs is refused at once,
+ * to be tried again, rather than queued: nothing waits, so no burst of
+ * requests can tie up connections. A request with no session (a sign-in's
+ * code) takes no lock.
  */
 export const oneTwoFactorChangeAtATime: MiddlewareHandler = async (c, next) => {
   const current = await auth.api.getSession({ headers: c.req.raw.headers, query: { disableRefresh: true } });
   if (!current)
     return next();
-  const key = `two-factor:${current.user.id}`;
-  const client = await authPool.connect();
-  try {
-    await client.query("SELECT pg_advisory_lock(hashtext($1))", [key]);
-    await next();
-  }
-  finally {
-    await client.query("SELECT pg_advisory_unlock(hashtext($1))", [key]).catch(() => {});
-    client.release();
+  const locked = await withAdvisoryLock(`two-factor:${current.user.id}`, () => next());
+  if (!locked.held) {
+    return c.json(
+      { message: "Another change to your two-step sign-in is under way. Try again in a moment.", code: "TWO_FACTOR_CHANGE_UNDER_WAY" },
+      409,
+    );
   }
 };
 

@@ -7,6 +7,7 @@ import type { ErrorSummary } from "@/lib/error-summary";
 
 import env from "@/env";
 import { summarizeError } from "@/lib/error-summary";
+import { logger } from "@/lib/logger";
 
 import * as authSchema from "./auth-schema";
 import { CONNECTION_TIMEOUT_MS, effectiveHost, sslConfigFor } from "./connection";
@@ -44,11 +45,12 @@ function surviveIdleFailures(pool: Pool, name: string) {
   return pool;
 }
 
-function poolFor(connectionString: string, name: string) {
+function poolFor(connectionString: string, name: string, max?: number) {
   return surviveIdleFailures(new Pool({
     connectionString,
     ssl: sslConfigFor(connectionString),
     connectionTimeoutMillis: CONNECTION_TIMEOUT_MS,
+    ...(max === undefined ? {} : { max }),
   }), name);
 }
 
@@ -85,6 +87,65 @@ export const authDb = drizzle({
   casing: "snake_case",
   schema: authSchema,
 });
+
+/**
+ * A few connections as `hospital_auth`, for advisory locks alone
+ * (`withAdvisoryLock`). Apart from `authPool`: a request holding a lock keeps
+ * its connection for as long as it runs, and must never be what leaves Better
+ * Auth's own queries without one. Not exported, and it hands no connection
+ * out, so nothing reaches the auth tables through it.
+ */
+const lockPool = poolFor(env.AUTH_DATABASE_URL, "auth-locks", 10);
+
+const asError = (err: unknown) => (err instanceof Error ? err : new Error(String(err)));
+
+/**
+ * Runs `run` holding the advisory lock named `key`, or answers
+ * `{ held: false }` at once when another request holds it. Nobody waits, so
+ * nothing queues behind a lock, and a burst of requests for one lock holds
+ * no connection for longer than it takes to be told no.
+ *
+ * The lock belongs to its connection's session. A connection that fails, or
+ * cannot be unlocked, is closed rather than pooled, which ends the session
+ * and frees the lock; the failure is logged. The pool does not watch a
+ * client it has handed out, so this one listens for its `error` event
+ * itself: unheard, it would be an unhandled exception, and end the process.
+ */
+export async function withAdvisoryLock<T>(key: string, run: () => Promise<T>): Promise<{ held: true; value: T } | { held: false }> {
+  const client = await lockPool.connect();
+  let failure: Error | undefined;
+  const onError = (err: Error) => {
+    failure ??= err;
+    logger.error({ error: summarizeError(err) }, "An advisory lock's connection failed");
+  };
+  const query = async (sql: string) => {
+    try {
+      return await client.query<{ held: boolean }>(sql, [key]);
+    }
+    catch (err) {
+      failure ??= asError(err);
+      throw err;
+    }
+  };
+  client.on("error", onError);
+  try {
+    const { rows } = await query("SELECT pg_try_advisory_lock(hashtext($1)) AS held");
+    if (!rows[0].held)
+      return { held: false };
+    try {
+      return { held: true, value: await run() };
+    }
+    finally {
+      await query("SELECT pg_advisory_unlock(hashtext($1))").catch((err: unknown) => {
+        logger.error({ error: summarizeError(err) }, "Could not release an advisory lock: its connection is closed instead");
+      });
+    }
+  }
+  finally {
+    client.removeListener("error", onError);
+    client.release(failure);
+  }
+}
 
 /** A tenant-scoped handle: the transaction `withFacility` opened, never the pool. */
 export type AppDb = Parameters<Parameters<typeof appDb.transaction>[0]>[0];
