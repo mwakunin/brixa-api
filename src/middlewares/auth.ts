@@ -20,14 +20,23 @@ import { businessDate, printedDate } from "@/lib/dates";
  * are mounted ahead of this: setting the authenticator up, signing out. Here
  * they count as not signed in, so no route can act as them by forgetting to
  * check, and the refusal says what to do (`notSignedIn`).
+ *
+ * Once a person has an authenticator, only a session a code was given for
+ * counts (`twoFactorVerified`, lib/auth.ts). Any other of theirs was made by
+ * the password alone, before setup or while it finished: it is ended here,
+ * and the request is answered as from someone signed out, who signs in again
+ * with a code.
  */
 export const withSession = createMiddleware<AppBindings>(async (c, next) => {
   const session = await auth.api.getSession({ headers: c.req.raw.headers });
-  const ready = session?.user.twoFactorEnabled === true;
+  const enrolled = session?.user.twoFactorEnabled === true;
+  const ready = enrolled && session.session.twoFactorVerified === true;
+  if (session && enrolled && !ready)
+    await (await auth.$context).internalAdapter.deleteSession(session.session.token);
 
   c.set("user", ready ? session.user : null);
   c.set("session", ready ? session.session : null);
-  c.set("twoFactorSetupPending", session !== null && !ready);
+  c.set("twoFactorSetupPending", session !== null && !enrolled);
 
   await next();
 });

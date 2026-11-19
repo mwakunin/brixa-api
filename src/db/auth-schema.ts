@@ -77,6 +77,8 @@ export const session = pgTable(
     userId: text("user_id")
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
+    // From lib/auth.ts's session.additionalFields: whether a code was given for this session.
+    twoFactorVerified: boolean("two_factor_verified").default(false),
   },
   table => [index("session_user_id_idx").on(table.userId)],
 );

@@ -3,9 +3,9 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import app from "@/app";
-import db from "@/db";
+import db, { pool } from "@/db";
 import { account, session } from "@/db/schema";
-import { DEV_BACKUP_CODES, developmentCode } from "@/dev/two-factor";
+import { DEV_BACKUP_CODES, developmentCode, enrolForDevelopment } from "@/dev/two-factor";
 import { appOrigin, auth } from "@/lib/auth";
 import { sentEmails } from "@/lib/email";
 import {
@@ -20,6 +20,7 @@ import {
   resetDb,
   signIn,
   TEST_PASSWORD,
+  waitForBlockedBackend,
 } from "@/test/helpers";
 
 /**
@@ -159,14 +160,33 @@ describe("signing in with a code", () => {
     expect((await res.json()).code).toBe("INVALID_TWO_FACTOR_COOKIE");
   });
 
+  // Both read the codes, then queue to write them back behind a row lock held here, so neither sees the other's write first.
   it("lets exactly one of two sign-ins spend the same backup code at once", async () => {
     const email = nextEmail();
-    await createTestAccount(email);
+    const person = await createTestAccount(email);
     const challenges = [await passwordStep(email), await passwordStep(email)];
 
-    const answers = await Promise.all(challenges.map(cookie => codeStep(cookie, { code: DEV_BACKUP_CODES[0] }, "verify-backup-code")));
+    const holder = await pool.connect();
+    let both: Promise<Response[]> | undefined;
+    try {
+      await holder.query("BEGIN");
+      await holder.query("SELECT 1 FROM two_factor WHERE user_id = $1 FOR UPDATE", [person.id]);
+      const holderPid = Number((await holder.query("SELECT pg_backend_pid() AS pid")).rows[0].pid);
 
-    expect(answers.map(a => a.status).sort()).toEqual([200, 401]);
+      both = Promise.all(challenges.map(cookie => codeStep(cookie, { code: DEV_BACKUP_CODES[0] }, "verify-backup-code")));
+      expect(await waitForBlockedBackend(holderPid, 5000, 2)).toBe(true);
+      await holder.query("COMMIT");
+
+      // The one that loses finds the codes changed under it: Better Auth answers 409, try again.
+      expect((await both).map(a => a.status).sort()).toEqual([200, 409]);
+      expect(await db.select().from(session).where(eq(session.userId, person.id))).toHaveLength(1);
+    }
+    finally {
+      await holder.query("ROLLBACK").catch(() => {});
+      holder.release();
+      // On a failure above, let the requests finish before the next test resets the database.
+      await both?.catch(() => {});
+    }
   });
 
   it("refuses a code whose password changed after its challenge was made, even with the challenge still standing", async () => {
@@ -191,6 +211,37 @@ describe("signing in with a code", () => {
    * be timed here, so the password's change is written as the challenge is
    * spent.
    */
+  /*
+   * The password step checks the password, then the plugin writes the
+   * challenge: a reset that commits between the two finds no challenge to
+   * end. The challenge carries when its sign-in began, so its code is
+   * refused all the same. Timed here by writing the password's change as the
+   * challenge is made.
+   */
+  it("refuses a code whose password changed while its challenge was being made", async () => {
+    const email = nextEmail();
+    const person = await createTestAccount(email);
+    const { internalAdapter } = await auth.$context;
+    const write = internalAdapter.createVerificationValue.bind(internalAdapter);
+    const spy = vi.spyOn(internalAdapter, "createVerificationValue").mockImplementation(async (data) => {
+      if (data.identifier.startsWith("2fa-") && !data.identifier.startsWith("2fa-attempts-")) {
+        await sleep(5);
+        await db.update(account).set({ updatedAt: new Date() }).where(eq(account.userId, person.id));
+      }
+      return write(data);
+    });
+    const challenge = await passwordStep(email);
+    spy.mockRestore();
+
+    const res = await codeStep(challenge, { code: await developmentCode() });
+
+    expect(res.status).toBe(401);
+    expect((await res.json()).code).toBe("INVALID_TWO_FACTOR_COOKIE");
+    expect(await db.select().from(session).where(eq(session.userId, person.id))).toEqual([]);
+    // A sign-in begun after the change goes through.
+    expect((await codeStep(await passwordStep(email), { code: await developmentCode() })).status).toBe(200);
+  });
+
   it("makes no session for a code whose password changed as its challenge was spent", async () => {
     const email = nextEmail();
     const person = await createTestAccount(email);
@@ -288,7 +339,13 @@ describe("before an authenticator is set up", () => {
     expect((await (await postJson("/api/auth/sign-in/email", { email, password: TEST_PASSWORD })).json()).twoFactorRedirect).toBe(true);
   });
 
-  it("ends the person's other sessions, made by the password alone, once it is set up", async () => {
+  /*
+   * The person's flag says they have an authenticator, not that a session
+   * was given a code. A session made by the password alone before setup
+   * counts for nothing once setup is done, at any instant after the flag is
+   * set, and is ended when it is next used.
+   */
+  it("does not let the person's other sessions, made by the password alone, work once it is set up", async () => {
     const email = nextEmail();
     await createTestAccount(email, "New Starter", "user", { twoFactor: false });
     const here = await signIn(email);
@@ -300,9 +357,26 @@ describe("before an authenticator is set up", () => {
     const confirmed = await postJson("/api/auth/two-factor/verify-totp", { code }, headers);
 
     expect(confirmed.status).toBe(200);
-    expect(await sessionOf(elsewhere.cookie)).toBeNull();
     expect((await get("/me/facilities", { cookie: elsewhere.cookie })).status).toBe(401);
+    expect(await sessionOf(elsewhere.cookie)).toBeNull();
     expect((await get("/me/facilities", { cookie: cookieFrom(confirmed.headers.get("set-cookie")!) })).status).toBe(200);
+  });
+
+  // A password sign-in that read the person before setup finished makes its session after: still the password alone.
+  it("does not let a password sign-in that finished as setup completed work", async () => {
+    const email = nextEmail();
+    const person = await createTestAccount(email, "New Starter", "user", { twoFactor: false });
+    const { internalAdapter } = await auth.$context;
+    const create = internalAdapter.createSession.bind(internalAdapter);
+    const spy = vi.spyOn(internalAdapter, "createSession").mockImplementationOnce(async (...args) => {
+      await enrolForDevelopment(person.id);
+      return create(...args);
+    });
+    const { cookie } = await signIn(email);
+    spy.mockRestore();
+
+    expect((await get("/me/facilities", { cookie })).status).toBe(401);
+    expect(await sessionOf(cookie)).toBeNull();
   });
 
   it("is where turning it off sends the person back to, with a notice", async () => {

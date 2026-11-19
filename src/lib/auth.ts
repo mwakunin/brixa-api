@@ -3,9 +3,9 @@ import type { MiddlewareHandler } from "hono";
 
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { APIError, createAuthMiddleware, isAPIError } from "better-auth/api";
+import { APIError, createAuthMiddleware } from "better-auth/api";
 import { twoFactor } from "better-auth/plugins/two-factor";
-import { and, eq, like, ne } from "drizzle-orm";
+import { and, eq, like } from "drizzle-orm";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomInt } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -66,29 +66,31 @@ function failureKind(err: unknown): string {
  */
 export const RESET_REQUEST_ANSWER_MS = 1_500;
 
-/** What the sign-in being handled rests on, for the session hook and `twoFactorRules` below. */
+/** What the sign-in being handled rests on, for the session and challenge hooks and `twoFactorRules` below. */
 interface SignInBasis {
-  /** When its password was checked; null when no password is behind it (setting an authenticator up). */
+  /** When its sign-in began, before its password was checked; null when no password is behind it (setting an authenticator up). */
   checkedAt: Date | null;
-  /** Set when this request confirmed a new authenticator. */
-  enrolled: boolean;
 }
 
 const signInBasis = new AsyncLocalStorage<SignInBasis>();
 
 /**
- * Runs a password sign-in inside a record of when it began, for the session
- * hook below to compare with the last password change. Mounted on POST
+ * Runs a password sign-in inside a record of when it began, for the hooks
+ * below to compare with the last password change. Mounted on POST
  * /api/auth/sign-in/email (create-app.ts).
  */
-export const markSignInStart: MiddlewareHandler = (_c, next) => signInBasis.run({ checkedAt: new Date(), enrolled: false }, next);
+export const markSignInStart: MiddlewareHandler = (_c, next) => signInBasis.run({ checkedAt: new Date() }, next);
 
 /**
  * The same for a code (create-app.ts, on the two verify routes). When its
- * password was checked is read from its challenge by `twoFactorRules`,
- * before the plugin spends the challenge.
+ * sign-in began is read from its challenge, which carries it
+ * (`databaseHooks.verification`), by `twoFactorRules` before the plugin
+ * spends the challenge.
  */
-export const markCodeCheck: MiddlewareHandler = (_c, next) => signInBasis.run({ checkedAt: null, enrolled: false }, next);
+export const markCodeCheck: MiddlewareHandler = (_c, next) => signInBasis.run({ checkedAt: null }, next);
+
+/** The two routes that take a code. A session they make is one a code was given for. */
+const isCodeCheck = (path: string | undefined) => path?.startsWith("/two-factor/verify-") === true;
 
 /**
  * How long a change to how someone signs in waits for its notice before
@@ -141,19 +143,15 @@ async function passwordChangedSince(userId: string, since: Date): Promise<boolea
  * code is asked at every sign-in, and a request to skip it next time is
  * refused rather than ignored.
  *
- * A code's sign-in rests on the password checked when its challenge was
- * made. A code whose password has changed since is refused before the
- * plugin spends the challenge, as a sign-in to start again. The challenge's
- * time is also kept for the session hook below, which refuses the session
- * when a reset commits after the challenge is spent; that rare race answers
- * 500 (Better Auth's "failed to create session"), with no session made.
- *
- * Confirming a new authenticator ends every other session the person has:
- * each was made by the password alone, and would otherwise carry on as if it
- * had been given a code.
+ * A code's sign-in rests on the password checked at its password step, and
+ * its challenge carries when that sign-in began. A code whose password has
+ * changed since is refused before the plugin spends the challenge, as a
+ * sign-in to start again. The time is also kept for the session hook below,
+ * which refuses the session when a reset commits after the challenge is
+ * spent; that rare race answers 500 (Better Auth's "failed to create
+ * session"), with no session made.
  */
 function twoFactorRules(): BetterAuthPlugin {
-  const isCodeCheck = (path: string | undefined) => path?.startsWith("/two-factor/verify-") === true;
   return {
     id: "brixa-two-factor-rules",
     hooks: {
@@ -173,26 +171,13 @@ function twoFactorRules(): BetterAuthPlugin {
           const found = challenge ? await ctx.context.internalAdapter.findVerificationValue(challenge) : null;
           if (!basis || !found)
             return;
-          // Made just after the password was checked.
+          // Stamped with when its sign-in began (databaseHooks.verification).
           basis.checkedAt = found.createdAt;
           if (await passwordChangedSince(found.value, found.createdAt)) {
             throw new APIError("UNAUTHORIZED", {
               message: "The password changed after this sign-in began. Sign in again.",
               code: "INVALID_TWO_FACTOR_COOKIE",
             });
-          }
-        }),
-      }],
-      after: [{
-        matcher: context => isCodeCheck(context.path),
-        handler: createAuthMiddleware(async (ctx) => {
-          if (isAPIError(ctx.context.returned))
-            return;
-          const created = ctx.context.newSession;
-          if (created && signInBasis.getStore()?.enrolled) {
-            await authDb
-              .delete(authSchema.session)
-              .where(and(eq(authSchema.session.userId, created.user.id), ne(authSchema.session.id, created.session.id)));
           }
         }),
       }],
@@ -332,10 +317,6 @@ export const auth = betterAuth({
         async after(updated, ctx) {
           const enabled = (updated as { twoFactorEnabled?: boolean | null }).twoFactorEnabled === true;
           if (ctx?.path === "/two-factor/verify-totp" && enabled) {
-            // For twoFactorRules: the person's other sessions, made by the password alone, now end.
-            const basis = signInBasis.getStore();
-            if (basis)
-              basis.enrolled = true;
             await notify(
               updated,
               "authenticator set up notice",
@@ -376,10 +357,38 @@ export const auth = betterAuth({
          * Closing it needs a lock or a credential version inside Better Auth,
          * where sign-in and reset could be ordered against each other.
          */
-        async before(session) {
+        async before(session, ctx) {
           const began = signInBasis.getStore()?.checkedAt;
           if (began && await passwordChangedSince(session.userId, began))
             return false;
+          /*
+           * Whether a code was given for this session. The person's flag
+           * (`user.twoFactorEnabled`) says they have an authenticator, not
+           * that this session was given a code: a session made by the
+           * password alone before setup, or by a password sign-in still
+           * running as setup finished, would otherwise count as signed in
+           * with one (middlewares/auth.ts). A session the code routes make
+           * was given one; one made from a session (a password change, two-
+           * step sign-in turned off) keeps what that session had; any other
+           * was not.
+           */
+          const verified = isCodeCheck(ctx?.path) || ctx?.context.session?.session.twoFactorVerified === true;
+          return { data: { ...session, twoFactorVerified: verified } };
+        },
+      },
+    },
+    verification: {
+      create: {
+        /*
+         * A challenge for a code is stamped with when its sign-in began,
+         * not when the plugin wrote it, so a reset that commits between the
+         * password check and the challenge still ends that sign-in at its
+         * code (twoFactorRules).
+         */
+        async before(verification, ctx) {
+          const began = signInBasis.getStore()?.checkedAt;
+          if (ctx?.path === "/sign-in/email" && began && verification.identifier.startsWith("2fa-"))
+            return { data: { ...verification, createdAt: began } };
         },
       },
     },
@@ -407,6 +416,13 @@ export const auth = betterAuth({
     }),
     twoFactorRules(),
   ],
+
+  session: {
+    additionalFields: {
+      // Set by databaseHooks.session: whether a code was given for this session.
+      twoFactorVerified: { type: "boolean", required: false, defaultValue: false, input: false },
+    },
+  },
 
   user: {
     additionalFields: {
