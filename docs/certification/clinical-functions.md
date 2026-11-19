@@ -45,7 +45,7 @@ The data model follows the names of HL7 FHIR resources, which DHA's implementati
 ## Controls that apply to every function
 
 - **Who sees clinical data:** only clinical roles read notes, diagnoses, orders and results. A records clerk or cashier sees the queues and the bill, not the clinical record.
-- **Every read is audited, not only every change:** each opening of a clinical record, list or document writes an audit entry naming the person, inside the same database transaction as the read. The audit log is append-only: the application's database role can only insert and read it, and a trigger refuses changes from every role. A refused attempt to break the glass, and a refused restricted document, are recorded too.
+- **Every read is audited, not only every change:** each opening of a clinical record, list or document writes an audit entry naming the person, inside the same database transaction as the read. The audit log is append-only: the application's database role can only insert and read it, and triggers refuse changing, deleting or emptying it from every role. A refused attempt to break the glass, and a refused restricted document, are recorded too.
 - **Nothing clinical is deleted:** readings, diagnoses, notes, orders, specimens and results are ended, marked entered in error or superseded, never removed. Database triggers enforce this for every role, and tests prove it.
 - **Separation between facilities:** each facility's records are isolated in the database by row-level security, proven in `src/db/rls.test.ts`.
 - **No patient data outside the database:** logs, queue messages and file names carry identifiers only (`CLAUDE.md` rule 10).

@@ -45,12 +45,25 @@ function surviveIdleFailures(pool: Pool, name: string) {
   return pool;
 }
 
-function poolFor(connectionString: string, name: string, max?: number) {
+/**
+ * How long one query may run, by the role it runs as. Sent to Postgres when
+ * each connection opens (`statement_timeout`), so the server cancels a query
+ * that passes it, waits for a lock included, and the request answers 500
+ * rather than holding its connection without end. Better Auth's queries are
+ * all small lookups and writes. A tenant request's may wait for another's
+ * lock, such as two stock movements in one store. The owner has none: it runs
+ * the reference-data loads and the nightly jobs, which may run long, and
+ * migrations, which have a pool of their own (db/migrate.ts).
+ */
+export const STATEMENT_TIMEOUT_MS = { auth: 10_000, app: 30_000 } as const;
+
+function poolFor(connectionString: string, name: string, options: { max?: number; statementTimeoutMs?: number } = {}) {
   return surviveIdleFailures(new Pool({
     connectionString,
     ssl: sslConfigFor(connectionString),
     connectionTimeoutMillis: CONNECTION_TIMEOUT_MS,
-    ...(max === undefined ? {} : { max }),
+    ...(options.max === undefined ? {} : { max: options.max }),
+    ...(options.statementTimeoutMs === undefined ? {} : { statement_timeout: options.statementTimeoutMs }),
   }), name);
 }
 
@@ -72,7 +85,7 @@ const db = drizzle({
   schema,
 });
 
-export const appPool = poolFor(env.APP_DATABASE_URL, "app");
+export const appPool = poolFor(env.APP_DATABASE_URL, "app", { statementTimeoutMs: STATEMENT_TIMEOUT_MS.app });
 
 export const appDb = drizzle({
   client: appPool,
@@ -80,7 +93,7 @@ export const appDb = drizzle({
   schema,
 });
 
-export const authPool = poolFor(env.AUTH_DATABASE_URL, "auth");
+export const authPool = poolFor(env.AUTH_DATABASE_URL, "auth", { statementTimeoutMs: STATEMENT_TIMEOUT_MS.auth });
 
 export const authDb = drizzle({
   client: authPool,
@@ -95,7 +108,7 @@ export const authDb = drizzle({
  * Auth's own queries without one. Not exported, and it hands no connection
  * out, so nothing reaches the auth tables through it.
  */
-const lockPool = poolFor(env.AUTH_DATABASE_URL, "auth-locks", 10);
+const lockPool = poolFor(env.AUTH_DATABASE_URL, "auth-locks", { max: 10, statementTimeoutMs: STATEMENT_TIMEOUT_MS.auth });
 
 const asError = (err: unknown) => (err instanceof Error ? err : new Error(String(err)));
 
