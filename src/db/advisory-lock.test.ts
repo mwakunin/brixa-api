@@ -34,7 +34,13 @@ describe("an advisory lock", () => {
     const logged = vi.spyOn(logger, "error").mockImplementation(() => {});
 
     const outcome = await withAdvisoryLock("test:connection-lost", async () => {
-      const { rows } = await pool.query<{ pid: number }>("SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND granted");
+      // This lock and no other: in this database, under this key (a bigint lock's two halves, put back together).
+      const { rows } = await pool.query<{ pid: number }>(`
+        SELECT pid FROM pg_locks
+        WHERE locktype = 'advisory' AND granted AND objsubid = 1
+          AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+          AND ((classid::bigint << 32) | objid::bigint) = hashtext($1)::bigint
+      `, ["test:connection-lost"]);
       expect(rows).toHaveLength(1);
       await pool.query("SELECT pg_terminate_backend($1)", [rows[0].pid]);
       // Until the client hears of it.

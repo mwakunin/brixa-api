@@ -37,6 +37,11 @@ The decision behind these controls is in `SPEC.md` §2 ("Two-step sign-in for ev
 
 ## Not yet done
 
+- **A database fault in the middle of setting an authenticator up.** Better Auth's setup is neither one transaction nor conditional on the secret whose code it checked, and two cases follow, each needing a database fault mid-request:
+  - if the lock's connection drops while a confirmation runs, and the same person starts a second setup in that instant, the second authenticator could be confirmed without its code being checked;
+  - if Better Auth fails after turning two-step sign-in on but before finishing, the person cannot finish setting it up.
+
+  The person is emailed about any setup, and Brixa support's reset (brixa-api #32) clears either. Closing them needs Better Auth's setup to commit in one step, to be raised with Better Auth with the sign-in race.
 - **A log of sign-ins**, failed attempts, lockouts and password changes, append-only and kept 20 years, with an export for the quarterly review. Next, in brixa-api. An auditor's screen comes with the administration screens.
 - **An explicit lock after repeated wrong passwords**, logged. The limits above already stop guessing; the lock makes it the control the certification framework names. Next, with the log.
 - **Help for someone who has lost both their phone and their backup codes**: Brixa support resets their two-step sign-in after checking who they are. Next, with the log.
