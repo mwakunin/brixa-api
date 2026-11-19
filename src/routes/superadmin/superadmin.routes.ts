@@ -6,6 +6,7 @@ import { createErrorSchema, createMessageObjectSchema } from "stoker/openapi/sch
 import { forbiddenSchema, unauthorizedSchema } from "@/lib/constants";
 import { facilityNameSchema, personNameSchema } from "@/lib/validation";
 import { requireAuth, requireRole } from "@/middlewares/auth";
+import { rateLimits } from "@/middlewares/rate-limit";
 
 /**
  * The superadmin plane: onboarding facilities, across tenants by design
@@ -144,8 +145,9 @@ export const exportSignInEvents = createRoute({
   description:
     "Every sign-in, failed attempt, lock and change to how someone signs in, "
     + "between two Nairobi dates, as CSV, for the quarterly review "
-    + "(regulation 12). The export is itself recorded in the log.",
-  middleware: superadminOnly,
+    + "(regulation 12). The export is itself recorded in the log, and "
+    + "limited to ten an hour per member of Brixa support.",
+  middleware: [...superadminOnly, rateLimits.signInLogExport()],
   request: { query: SignInEventsQuerySchema },
   responses: {
     [HttpStatusCodes.OK]: {
@@ -155,6 +157,10 @@ export const exportSignInEvents = createRoute({
     [HttpStatusCodes.UNAUTHORIZED]: jsonContent(unauthorizedSchema, "Not signed in"),
     [HttpStatusCodes.FORBIDDEN]: jsonContent(forbiddenSchema, "Not platform staff"),
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(SignInEventsQuerySchema), "Not a range of dates"),
+    [HttpStatusCodes.TOO_MANY_REQUESTS]: jsonContent(
+      z.object({ message: z.string(), retryAfterSeconds: z.number().int().positive() }),
+      "Too many exports",
+    ),
   },
 });
 

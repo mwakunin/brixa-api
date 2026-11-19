@@ -8,6 +8,8 @@ import * as HttpStatusCodes from "stoker/http-status-codes";
 import type { AppBindings } from "@/lib/types";
 
 import { auth } from "@/lib/auth";
+import { summarizeError } from "@/lib/error-summary";
+import { logger } from "@/lib/logger";
 import { redis } from "@/lib/redis";
 import { noteSignInEvent } from "@/lib/sign-in-log";
 
@@ -18,12 +20,22 @@ export const LOCK_AFTER = 5;
 /** How long that lasts, from the wrong password that set it. */
 export const LOCK_SECONDS = 15 * 60;
 
-/** The account a sign-in names, if there is one: the event is filed under it. */
+/**
+ * The account a sign-in names, if there is one: the event is filed under
+ * it. Looked up for the log alone, so a failure here files the event under
+ * no one rather than failing the sign-in.
+ */
 async function accountNamed(email: string | null): Promise<string | null> {
   if (!email)
     return null;
-  const found = await (await auth.$context).internalAdapter.findUserByEmail(email);
-  return found?.user.id ?? null;
+  try {
+    const found = await (await auth.$context).internalAdapter.findUserByEmail(email);
+    return found?.user.id ?? null;
+  }
+  catch (err) {
+    logger.error({ error: summarizeError(err) }, "Could not find the account a locked sign-in names");
+    return null;
+  }
 }
 
 async function emailOf(c: Context<AppBindings>): Promise<string | null> {

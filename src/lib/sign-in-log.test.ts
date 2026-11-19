@@ -204,6 +204,28 @@ describe("the sign-in log", () => {
     expect(logged).toHaveBeenCalledWith(expect.objectContaining({ event: "two_factor_enabled" }), "Could not record a sign-in event");
   });
 
+  // The log looks the account up after Better Auth has answered; that lookup failing must not change the answer.
+  it("answers a sign-in as it would have when a lookup made for the log fails", async () => {
+    const email = nextEmail();
+    await createTestAccount(email);
+    const logged = vi.spyOn(logger, "error").mockImplementation(() => {});
+    const { internalAdapter } = await auth.$context;
+    const find = internalAdapter.findUserByEmail.bind(internalAdapter);
+    let calls = 0;
+    vi.spyOn(internalAdapter, "findUserByEmail").mockImplementation(async (...args: Parameters<typeof find>) => {
+      calls += 1;
+      // Better Auth's own lookup comes first; the log's is the second.
+      if (calls === 2)
+        throw new Error("the lookup cannot be made");
+      return find(...args);
+    });
+
+    const res = await password(email, "not-the-password");
+
+    expect(res.status).toBe(401);
+    expect(logged).toHaveBeenCalledWith(expect.objectContaining({ error: expect.any(Object) }), "Could not record a sign-in event");
+  });
+
   it("is append-only for every role, written by Better Auth's alone, and read by no runtime role", async () => {
     const email = nextEmail();
     await createTestAccount(email);
@@ -309,6 +331,18 @@ describe("the export of the log, for Brixa support", () => {
     expect(lines[0]).toBe("\"at (Nairobi time)\",\"event\",\"factor\",\"name\",\"email\",\"by\",\"note\",\"ip_address\",\"user_agent\"");
     expect(lines.some(line => line.includes("\"password_failed\",\"password\",\"Achieng Otieno\"") && line.includes(email))).toBe(true);
     expect((await events()).at(-1)).toEqual({ event: "log_exported", userId: null, actorId: support.id, factor: null, note: `${today} to ${today}` });
+  });
+
+  it("allows each member of support ten exports an hour", async () => {
+    const support = await signedInUser({ role: "superadmin" });
+    const today = businessDate();
+
+    for (let i = 0; i < 10; i += 1)
+      expect((await exportFor(support.headers, today, today)).status).toBe(200);
+    const refused = await exportFor(support.headers, today, today);
+
+    expect(refused.status).toBe(429);
+    expect(Number(refused.headers.get("retry-after"))).toBeGreaterThan(60);
   });
 
   it("refuses anyone but platform staff, and a range backwards or longer than a year", async () => {

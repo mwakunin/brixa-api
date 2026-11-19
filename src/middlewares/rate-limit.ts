@@ -201,6 +201,14 @@ export const rateLimits = {
    */
   twoFactor: () => rateLimit({ points: 30, duration: 60, keyPrefix: "two-factor", key: byAddress }),
 
+  /**
+   * Exports of the sign-in log (CLAUDE.md §7: export endpoints have their
+   * own limit), per member of Brixa support: a quarterly review takes a
+   * handful, and a script copying the log out stops here. The log is global,
+   * so there is no facility to count by.
+   */
+  signInLogExport: () => rateLimit({ points: 10, duration: 3600, keyPrefix: "sign-in-log-export", key: byUserOrAddress }),
+
   /** Better Auth's GETs: a staff app checks its session constantly, so this only stops a flood. */
   authRead: () => rateLimit({ points: 300, duration: 60, keyPrefix: "auth-read", key: byAddress }),
 

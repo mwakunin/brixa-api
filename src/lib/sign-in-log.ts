@@ -96,6 +96,23 @@ export async function noteSignInEvent(entry: Parameters<typeof recordSignInEvent
   }
 }
 
+/**
+ * Runs one of this log's hooks so that nothing in it, a lookup made only
+ * for the log or a write, reaches the request it records: a failure is
+ * logged as an error, for alerting, and the sign-in answers as it would
+ * have without the log.
+ */
+function quietly(hook: Parameters<typeof createAuthMiddleware>[0]): Parameters<typeof createAuthMiddleware>[0] {
+  return async (ctx) => {
+    try {
+      await hook(ctx);
+    }
+    catch (err) {
+      logger.error({ error: summarizeError(err) }, "Could not record a sign-in event");
+    }
+  };
+}
+
 /** Better Auth's routes this log follows, with the factor each tries. */
 const FOLLOWED: Record<string, SignInFactor | null> = {
   "/sign-in/email": "password",
@@ -122,7 +139,7 @@ export function signInLog(): BetterAuthPlugin {
     hooks: {
       before: [{
         matcher: context => context.path === "/two-factor/verify-totp" || context.path === "/two-factor/verify-backup-code",
-        handler: createAuthMiddleware(async (ctx) => {
+        handler: createAuthMiddleware(quietly(async (ctx) => {
           const from = caller.getStore();
           if (!from)
             return;
@@ -134,11 +151,11 @@ export function signInLog(): BetterAuthPlugin {
           const cookie = ctx.context.createAuthCookie("two_factor");
           const challenge = await ctx.getSignedCookie(cookie.name, ctx.context.secret);
           from.codeOwner = challenge ? (await ctx.context.internalAdapter.findVerificationValue(challenge))?.value ?? null : null;
-        }),
+        })),
       }],
       after: [{
         matcher: context => (context.path ?? "") in FOLLOWED,
-        handler: createAuthMiddleware(async (ctx) => {
+        handler: createAuthMiddleware(quietly(async (ctx) => {
           const returned = ctx.context.returned;
           const refused = isAPIError(returned) ? returned : null;
           const factor = FOLLOWED[ctx.path] ?? null;
@@ -187,7 +204,7 @@ export function signInLog(): BetterAuthPlugin {
             await noteSignInEvent({ event: "backup_codes_renewed", userId });
           else if (ctx.path === "/change-password")
             await noteSignInEvent({ event: "password_changed", userId });
-        }),
+        })),
       }],
     },
   };
