@@ -1,6 +1,7 @@
 import type { User } from "better-auth";
 
 import { auth } from "./auth";
+import { PG_ERRORS, pgErrorCode } from "./db-errors";
 
 /**
  * Accounts made on the server, never by public sign-up (SPEC.md §2).
@@ -67,13 +68,25 @@ export async function createAccount(input: {
 }
 
 /**
- * Removes an account an unfinished invitation acceptance created, with its
- * credential and sessions (both cascade). Only ever for an account made
- * moments ago by the same request: nothing else references it yet.
+ * Undoes the account an unfinished invitation acceptance set up: its
+ * password and any session go, so a retry's password is the one that
+ * counts. The user goes too, unless something already names it. The
+ * sign-in log can, if someone tried the address in that moment, and the log
+ * keeps every row. A user with no password cannot sign in, and the next
+ * acceptance sets it up.
  */
 export async function discardAccount(userId: string): Promise<void> {
   const context = await auth.$context;
-  await context.internalAdapter.deleteUser(userId);
+  // Each on its own, first: Better Auth's deleteUser removes them too, but they must go even when the user cannot.
+  await context.internalAdapter.deleteUserSessions(userId);
+  await context.internalAdapter.deleteAccounts(userId);
+  try {
+    await context.internalAdapter.deleteUser(userId);
+  }
+  catch (err) {
+    if (pgErrorCode(err) !== PG_ERRORS.FOREIGN_KEY_VIOLATION)
+      throw err;
+  }
 }
 
 /**
@@ -81,8 +94,10 @@ export async function discardAccount(userId: string): Promise<void> {
  * address, or a new one with `password`.
  *
  * Someone who already has an account (a locum invited by a second hospital)
- * keeps their password; the invitation only adds a membership. `null` means a
- * new account was needed and no password was given.
+ * keeps their password; the invitation only adds a membership. `created`
+ * says this request set the account up with `password`: a new account, or a
+ * user with none yet (one a failed acceptance or a failed script run left).
+ * `null` means a password was needed and none was given.
  */
 export async function claimAccount(input: {
   email: string;
@@ -110,7 +125,7 @@ export async function claimAccount(input: {
     if (!found.user.emailVerified)
       await context.internalAdapter.updateUser(found.user.id, { emailVerified: true });
 
-    return { userId: found.user.id, created: false };
+    return { userId: found.user.id, created: !hasPassword };
   }
 
   if (!input.password)

@@ -72,7 +72,22 @@ export async function resetDb(): Promise<void> {
     return;
 
   const tables = rows.map(r => `"${r.tablename}"`).join(", ");
-  await pool.query(`TRUNCATE TABLE ${tables} RESTART IDENTITY CASCADE`);
+  // The sign-in log refuses TRUNCATE (migration 0114): off for this one, in the same transaction.
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("ALTER TABLE sign_in_events DISABLE TRIGGER sign_in_events_no_truncate");
+    await client.query(`TRUNCATE TABLE ${tables} RESTART IDENTITY CASCADE`);
+    await client.query("ALTER TABLE sign_in_events ENABLE TRIGGER sign_in_events_no_truncate");
+    await client.query("COMMIT");
+  }
+  catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  }
+  finally {
+    client.release();
+  }
 }
 
 let ipCounter = 0;

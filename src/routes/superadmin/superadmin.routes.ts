@@ -6,6 +6,7 @@ import { createErrorSchema, createMessageObjectSchema } from "stoker/openapi/sch
 import { forbiddenSchema, unauthorizedSchema } from "@/lib/constants";
 import { facilityNameSchema, personNameSchema } from "@/lib/validation";
 import { requireAuth, requireRole } from "@/middlewares/auth";
+import { rateLimits } from "@/middlewares/rate-limit";
 
 /**
  * The superadmin plane: onboarding facilities, across tenants by design
@@ -124,6 +125,82 @@ export const setSmsSender = createRoute({
   },
 });
 
+/** The longest export: a year, so four quarters' reviews fit in one. */
+export const EXPORT_MAX_DAYS = 366;
+
+export const SignInEventsQuerySchema = z
+  .object({
+    /** The first and last Nairobi dates the export covers, both included. */
+    from: z.iso.date(),
+    to: z.iso.date(),
+  })
+  .refine(q => q.from <= q.to, { message: "The first date comes before the last", path: ["to"] })
+  .refine(q => (Date.parse(q.to) - Date.parse(q.from)) / 86_400_000 < EXPORT_MAX_DAYS, { message: `At most ${EXPORT_MAX_DAYS} days`, path: ["to"] });
+
+export const exportSignInEvents = createRoute({
+  tags,
+  method: "get",
+  path: "/superadmin/sign-in-events",
+  summary: "Export the sign-in log",
+  description:
+    "Every sign-in, failed attempt, lock and change to how someone signs in, "
+    + "between two Nairobi dates, as CSV, for the quarterly review "
+    + "(regulation 12). The export is recorded in the log before any of it "
+    + "is read, is sent a page at a time, and is limited to ten an hour per "
+    + "member of Brixa support. A download that ends unfinished was cut off: "
+    + "ask for it again.",
+  middleware: [...superadminOnly, rateLimits.signInLogExport()],
+  request: { query: SignInEventsQuerySchema },
+  responses: {
+    [HttpStatusCodes.OK]: {
+      content: { "text/csv": { schema: z.string() } },
+      description: "The log, oldest first",
+    },
+    [HttpStatusCodes.UNAUTHORIZED]: jsonContent(unauthorizedSchema, "Not signed in"),
+    [HttpStatusCodes.FORBIDDEN]: jsonContent(forbiddenSchema, "Not platform staff"),
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(SignInEventsQuerySchema), "Not a range of dates"),
+    [HttpStatusCodes.TOO_MANY_REQUESTS]: jsonContent(
+      z.object({ message: z.string(), retryAfterSeconds: z.number().int().positive() }),
+      "Too many exports",
+    ),
+  },
+});
+
+export const TwoFactorResetBodySchema = z.strictObject({
+  email: z.email().max(254),
+  /** How who they are was checked, in a sentence: kept with the reset. */
+  reason: z.string().trim().min(10).max(500).regex(/^\P{C}+$/u, "One line, without control characters"),
+});
+
+export const resetTwoFactor = createRoute({
+  tags,
+  method: "post",
+  path: "/superadmin/two-factor-resets",
+  summary: "Reset someone's two-step sign-in",
+  description:
+    "For someone who has lost both their phone and their backup codes, once "
+    + "Brixa support has checked who they are. Their authenticator and backup "
+    + "codes are removed and every session ends; signing in next, they set up "
+    + "an authenticator again. Recorded in the sign-in log with the reason, "
+    + "and emailed to them. Never one's own. Refused while the person is "
+    + "changing their own two-step sign-in, to be tried again.",
+  middleware: superadminOnly,
+  request: { body: jsonContentRequired(TwoFactorResetBodySchema, "Whose, and how they were checked") },
+  responses: {
+    [HttpStatusCodes.OK]: jsonContent(z.object({ userId: z.string() }), "Reset"),
+    [HttpStatusCodes.UNAUTHORIZED]: jsonContent(unauthorizedSchema, "Not signed in"),
+    [HttpStatusCodes.FORBIDDEN]: jsonContent(forbiddenSchema, "Not platform staff"),
+    [HttpStatusCodes.NOT_FOUND]: jsonContent(createMessageObjectSchema("No account with that email"), "No such account"),
+    [HttpStatusCodes.CONFLICT]: jsonContent(
+      z.object({ message: z.string(), code: z.enum(["own_account", "TWO_FACTOR_CHANGE_UNDER_WAY"]) }),
+      "One's own, or a change to it under way",
+    ),
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(TwoFactorResetBodySchema), "Invalid request"),
+  },
+});
+
 export type CreateFacilityRoute = typeof createFacility;
 export type ListFacilitiesRoute = typeof listFacilities;
 export type SetSmsSenderRoute = typeof setSmsSender;
+export type ExportSignInEventsRoute = typeof exportSignInEvents;
+export type ResetTwoFactorRoute = typeof resetTwoFactor;

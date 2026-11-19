@@ -1,13 +1,14 @@
 import { eq } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { MembershipRole } from "@/lib/types";
 
 import app from "@/app";
-import db, { pool } from "@/db";
-import { auditLog, invitations, memberships, numberSeries, outbox, user } from "@/db/schema";
+import db, { authDb, pool } from "@/db";
+import { auditLog, invitations, memberships, numberSeries, outbox, signInEvents, user } from "@/db/schema";
 import { enrolForDevelopment } from "@/dev/two-factor";
 import { drainOutbox } from "@/jobs/outbox-worker";
+import { auth } from "@/lib/auth";
 import { addDays, businessDate } from "@/lib/dates";
 import { sentEmails } from "@/lib/email";
 import { hashToken, invitationToken } from "@/lib/invitations";
@@ -234,7 +235,7 @@ describe("the invitation, from email to first sign-in", () => {
     const token = tokenFor(adminEmail);
     const [invitation] = await db.select({ id: invitations.id }).from(invitations);
 
-    // Hold the invitation's row lock so both requests must queue behind it.
+    // Hold the invitation's row lock. One request queues behind it, holding the address's lock (lib/invitations.ts); the other is refused at once.
     const holder = await pool.connect();
     let both: Promise<Response[]> | undefined;
     try {
@@ -242,17 +243,20 @@ describe("the invitation, from email to first sign-in", () => {
       await holder.query("SELECT 1 FROM invitations WHERE id = $1 FOR UPDATE", [invitation.id]);
       const holderPid = Number((await holder.query("SELECT pg_backend_pid() AS pid")).rows[0].pid);
 
-      both = Promise.all([
+      const requests = [
         accept({ token, password: NEW_PASSWORD }),
         accept({ token, password: "another-password-x" }),
-      ]);
-      expect(await waitForBlockedBackend(holderPid, 5000, 2)).toBe(true);
+      ];
+      both = Promise.all(requests);
+      // The refused one answers while the other still waits behind the row lock: the two overlapped, however they were scheduled.
+      const refused = await Promise.race(requests);
+      expect(await waitForBlockedBackend(holderPid, 5000, 1)).toBe(true);
+      expect(refused.status).toBe(409);
+      expect((await refused.json()).code).toBe("accept_under_way");
       await holder.query("COMMIT");
 
       const results = await both;
       expect(results.map(r => r.status).sort()).toEqual([200, 409]);
-      const refused = results.find(r => r.status === 409)!;
-      expect((await refused.json()).code).toBe("already_accepted");
     }
     finally {
       await holder.query("ROLLBACK").catch(() => {});
@@ -322,6 +326,83 @@ describe("the invitation, from email to first sign-in", () => {
     expect(rows).toEqual([]);
 
     // The retry's password is the one that counts.
+    const retry = await accept({ token, password: NEW_PASSWORD });
+    expect(retry.status).toBe(200);
+    expect((await retry.json()).accountCreated).toBe(true);
+    await expect(signIn(adminEmail, NEW_PASSWORD)).resolves.toBeDefined();
+  });
+
+  /*
+   * Someone tries the new address in the moment between the account and the
+   * membership. The sign-in log names the account and keeps its rows, so the
+   * account stays when the acceptance fails; its password goes, and the
+   * retry sets the account up with the password typed then.
+   */
+  it("sets the account up on a retry even when the sign-in log kept the account a failed acceptance made", async () => {
+    const { adminEmail } = await onboarded();
+    const token = tokenFor(adminEmail);
+    const { internalAdapter } = await auth.$context;
+    const link = internalAdapter.linkAccount.bind(internalAdapter);
+    const tried = vi.spyOn(internalAdapter, "linkAccount").mockImplementationOnce(async (linked) => {
+      const made = await link(linked);
+      await authDb.insert(signInEvents).values({ event: "password_failed", factor: "password", userId: linked.userId });
+      return made;
+    });
+    await pool.query(`
+      CREATE FUNCTION fail_membership() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'simulated failure'; END; $$;
+      CREATE TRIGGER fail_membership BEFORE INSERT ON memberships
+        FOR EACH ROW EXECUTE FUNCTION fail_membership();
+    `);
+    try {
+      expect((await accept({ token, password: "the-first-password" })).status).toBe(500);
+    }
+    finally {
+      tried.mockRestore();
+      await pool.query("DROP TRIGGER fail_membership ON memberships; DROP FUNCTION fail_membership();");
+    }
+
+    expect((await postJson("/api/auth/sign-in/email", { email: adminEmail, password: "the-first-password" }, { "x-forwarded-for": nextIp() })).status).toBe(401);
+    const retry = await accept({ token, password: NEW_PASSWORD });
+    expect(retry.status).toBe(200);
+    expect((await retry.json()).accountCreated).toBe(true);
+    await expect(signIn(adminEmail, NEW_PASSWORD)).resolves.toBeDefined();
+  });
+
+  /*
+   * A second try arriving while a failed one is still undoing its account:
+   * the failed one's transaction is over, so the invitation is free, but its
+   * password is still on the account. Taking that account as set up, the
+   * second try would succeed, and the failed one would then take the
+   * password off it. One acceptance per address at a time, undoing included.
+   */
+  it("refuses a second try while a failed one is undoing the account it set up", async () => {
+    const { adminEmail } = await onboarded();
+    const token = tokenFor(adminEmail);
+    const { internalAdapter } = await auth.$context;
+    const undo = internalAdapter.deleteUserSessions.bind(internalAdapter);
+    let second: Response | undefined;
+    const undoing = vi.spyOn(internalAdapter, "deleteUserSessions").mockImplementationOnce(async (userId) => {
+      await pool.query("DROP TRIGGER fail_membership ON memberships; DROP FUNCTION fail_membership();");
+      second = await accept({ token, password: NEW_PASSWORD });
+      return undo(userId);
+    });
+    await pool.query(`
+      CREATE FUNCTION fail_membership() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'simulated failure'; END; $$;
+      CREATE TRIGGER fail_membership BEFORE INSERT ON memberships
+        FOR EACH ROW EXECUTE FUNCTION fail_membership();
+    `);
+    try {
+      expect((await accept({ token, password: "the-first-password" })).status).toBe(500);
+    }
+    finally {
+      undoing.mockRestore();
+      await pool.query("DROP TRIGGER IF EXISTS fail_membership ON memberships; DROP FUNCTION IF EXISTS fail_membership();");
+    }
+
+    expect(second?.status).toBe(409);
+    expect(await second?.json()).toMatchObject({ code: "accept_under_way" });
     const retry = await accept({ token, password: NEW_PASSWORD });
     expect(retry.status).toBe(200);
     expect((await retry.json()).accountCreated).toBe(true);

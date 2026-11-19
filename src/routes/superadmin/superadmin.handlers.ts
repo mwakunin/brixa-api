@@ -10,8 +10,9 @@ import { isUniqueViolation, pgConstraintName } from "@/lib/db-errors";
 import { createInvitation } from "@/lib/invitations";
 import { ACCESSION_SERIES, CLINICAL_SERIES, FISCAL_SERIES, registerSeries, STOCK_SERIES } from "@/lib/number-series";
 import { nudgingAfterCommit } from "@/lib/outbox-nudge";
+import { exportSignInLog, resetTwoStepSignIn, TwoFactorResetError } from "@/lib/sign-in-support";
 
-import type { CreateFacilityRoute, ListFacilitiesRoute, SetSmsSenderRoute } from "./superadmin.routes";
+import type { CreateFacilityRoute, ExportSignInEventsRoute, ListFacilitiesRoute, ResetTwoFactorRoute, SetSmsSenderRoute } from "./superadmin.routes";
 
 /**
  * The superadmin plane runs on the OWNER connection, by design: creating a
@@ -159,4 +160,30 @@ export const setSmsSender: AppRouteHandler<SetSmsSenderRoute> = async (c) => {
   if (!updated)
     return c.json({ message: "Not Found" }, HttpStatusCodes.NOT_FOUND);
   return c.json({ id: updated.id, smsSenderId: updated.smsSenderId }, HttpStatusCodes.OK);
+};
+
+/** The sign-in log between two Nairobi dates, as CSV (lib/sign-in-support.ts). */
+export const exportSignInEvents: AppRouteHandler<ExportSignInEventsRoute> = async (c) => {
+  const { from, to } = c.req.valid("query");
+  const csv = await exportSignInLog(from, to, c.var.user!.id);
+  return c.body(csv, HttpStatusCodes.OK, {
+    "content-type": "text/csv; charset=utf-8",
+    "content-disposition": `attachment; filename="sign-in-log-${from}-to-${to}.csv"`,
+    "cache-control": "no-store",
+  });
+};
+
+/** Someone's two-step sign-in reset by Brixa support (lib/sign-in-support.ts). */
+export const resetTwoFactor: AppRouteHandler<ResetTwoFactorRoute> = async (c) => {
+  const { email, reason } = c.req.valid("json");
+  try {
+    return c.json(await resetTwoStepSignIn({ email, reason }, c.var.user!.id), HttpStatusCodes.OK);
+  }
+  catch (err) {
+    if (!(err instanceof TwoFactorResetError))
+      throw err;
+    if (err.code === "not_found")
+      return c.json({ message: err.message }, HttpStatusCodes.NOT_FOUND);
+    return c.json({ message: err.message, code: err.code }, HttpStatusCodes.CONFLICT);
+  }
 };

@@ -115,6 +115,19 @@ export const bySignInEmailFromAddress: KeySource = async (c) => {
   return account === null ? null : `${account}:${await byAddress(c)}`;
 };
 
+/**
+ * Refuses an auth request whose body is not JSON (415). Better Auth also
+ * reads form-encoded and multipart bodies, which the account keys above
+ * cannot: a sign-in sent as a form would count against no account, and pass
+ * the lock on wrong passwords (sign-in-lock.ts). The staff app sends JSON.
+ */
+export const jsonBodiesOnly: MiddlewareHandler<AppBindings> = async (c, next) => {
+  const type = c.req.header("content-type");
+  if (type && type.split(";")[0].trim().toLowerCase() !== "application/json")
+    return c.json({ message: "Send the request as JSON.", code: "unsupported_media_type" }, HttpStatusCodes.UNSUPPORTED_MEDIA_TYPE);
+  await next();
+};
+
 export function rateLimit(options: RateLimitOptions): MiddlewareHandler<AppBindings> {
   const limiter = new RateLimiterRedis({
     storeClient: options.client ?? redis,
@@ -187,6 +200,14 @@ export const rateLimits = {
    * costs a right password, and five wrong codes lock the account.
    */
   twoFactor: () => rateLimit({ points: 30, duration: 60, keyPrefix: "two-factor", key: byAddress }),
+
+  /**
+   * Exports of the sign-in log (CLAUDE.md §7: export endpoints have their
+   * own limit), per member of Brixa support: a quarterly review takes a
+   * handful, and a script copying the log out stops here. The log is global,
+   * so there is no facility to count by.
+   */
+  signInLogExport: () => rateLimit({ points: 10, duration: 3600, keyPrefix: "sign-in-log-export", key: byUserOrAddress }),
 
   /** Better Auth's GETs: a staff app checks its session constantly, so this only stops a flood. */
   authRead: () => rateLimit({ points: 300, duration: 60, keyPrefix: "auth-read", key: byAddress }),

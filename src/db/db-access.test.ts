@@ -39,6 +39,13 @@ const OWNER_ALLOWLIST = new Map([
     + "that precedes any tenant, and the runtime role cannot insert one",
   ],
   [
+    "lib/sign-in-support.ts",
+    "Brixa support's side of sign-in, called from the superadmin plane "
+    + "alone: no runtime role may read the sign-in log, which is global, so "
+    + "its export reads it as the owner; a reset of two-step sign-in writes "
+    + "Better Auth's tables and the log in one transaction",
+  ],
+  [
     "lib/invitations.ts",
     "accepting arrives from an emailed link with no session and no facility; "
     + "the token's hash is the whole lookup and yields only the facility of "
@@ -118,6 +125,7 @@ const APP_DB_ALLOWLIST = new Map([
  */
 const AUTH_DB_ALLOWLIST = new Map([
   ["lib/auth.ts", "Better Auth's adapter, the only reason the connection exists"],
+  ["lib/sign-in-log.ts", "appends to the sign-in log, which Better Auth's role alone may write (and cannot read)"],
 ]);
 
 /** `db/index.ts` defines the connections and is never judged by the lists. */

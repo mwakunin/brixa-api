@@ -17,6 +17,7 @@ const REFUSALS: Record<InvitationErrorCode, { status: 403 | 404 | 409 | 410 | 42
   expired: { status: HttpStatusCodes.GONE, message: "This invitation has expired. Ask the facility admin to invite you again." },
   already_accepted: { status: HttpStatusCodes.CONFLICT, message: "This invitation has already been accepted. Sign in instead." },
   password_required: { status: HttpStatusCodes.UNPROCESSABLE_ENTITY, message: "Choose a password to set up your account" },
+  accept_under_way: { status: HttpStatusCodes.CONFLICT, message: "This invitation is being accepted already. Try again in a moment." },
 };
 
 /**

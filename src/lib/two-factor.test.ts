@@ -22,6 +22,7 @@ import {
   TEST_PASSWORD,
   waitForBlockedBackend,
 } from "@/test/helpers";
+import { decodeSecret } from "@/test/two-factor-secret";
 
 /**
  * Two-step sign-in (SPEC.md §2, lib/auth.ts): after the password, a code from
@@ -54,25 +55,6 @@ async function sessionOf(cookie: string): Promise<{ user: { id: string } } | nul
 
 async function get(path: string, headers: Record<string, string>): Promise<Response> {
   return app.request(path, { headers: { "x-forwarded-for": nextIp(), ...headers } });
-}
-
-/** An authenticator secret as an otpauth:// URI carries it, in base32, back to the plain secret. */
-function secretOf(totpURI: string): string {
-  const encoded = new URL(totpURI).searchParams.get("secret")!;
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-  const bytes: number[] = [];
-  let value = 0;
-  let bits = 0;
-  for (const ch of encoded.toUpperCase()) {
-    value = (value << 5) | alphabet.indexOf(ch);
-    bits += 5;
-    if (bits >= 8) {
-      bits -= 8;
-      bytes.push((value >> bits) & 255);
-      value &= (1 << bits) - 1;
-    }
-  }
-  return new TextDecoder().decode(new Uint8Array(bytes));
 }
 
 /** Holds the next request just after the API's session guard has looked at its session, until released. */
@@ -125,7 +107,7 @@ async function halfSetUp(email: string) {
   await createTestAccount(email, "New Starter", "user", { twoFactor: false });
   const headers = { cookie: (await signIn(email)).cookie, origin: appOrigin };
   const { totpURI } = await (await postJson("/api/auth/two-factor/enable", { password: TEST_PASSWORD }, headers)).json() as { totpURI: string };
-  const secret = secretOf(totpURI);
+  const secret = decodeSecret(totpURI);
   const { code } = await auth.api.generateTOTP({ body: { secret } });
   return { headers, secret, code };
 }
@@ -383,7 +365,7 @@ describe("before an authenticator is set up", () => {
     // Shown, not yet confirmed: still nothing but setting up.
     expect((await get("/me/facilities", { cookie })).status).toBe(403);
 
-    const { code } = await auth.api.generateTOTP({ body: { secret: secretOf(totpURI) } });
+    const { code } = await auth.api.generateTOTP({ body: { secret: decodeSecret(totpURI) } });
     const confirmed = await postJson("/api/auth/two-factor/verify-totp", { code }, headers);
     expect(confirmed.status).toBe(200);
     const working = cookieFrom(confirmed.headers.get("set-cookie")!);
@@ -407,7 +389,7 @@ describe("before an authenticator is set up", () => {
     const elsewhere = await signIn(email);
     const headers = { cookie: here.cookie, origin: appOrigin };
     const { totpURI } = await (await postJson("/api/auth/two-factor/enable", { password: TEST_PASSWORD }, headers)).json() as { totpURI: string };
-    const { code } = await auth.api.generateTOTP({ body: { secret: secretOf(totpURI) } });
+    const { code } = await auth.api.generateTOTP({ body: { secret: decodeSecret(totpURI) } });
 
     const confirmed = await postJson("/api/auth/two-factor/verify-totp", { code }, headers);
 

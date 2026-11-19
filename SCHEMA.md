@@ -33,7 +33,7 @@ Every table carries `facility_id` except the shared reference group.
 
 | Module | Tables |
 |---|---|
-| Tenancy and access | `facilities` (kmhfr_code, level, SHA contract ref), `memberships` (roles[], licence number and expiry; cadre and council derived, §8), `departments`, `service_points`, `number_series`, `audit_log` (its actions are the rows of `audit_actions`, a reference table), `outbox`, `job_failures`, `files` |
+| Tenancy and access | `facilities` (kmhfr_code, level, SHA contract ref), `memberships` (roles[], licence number and expiry; cadre and council derived, §8), `departments`, `service_points`, `number_series`, `audit_log` (its actions are the rows of `audit_actions`, a reference table), `outbox`, `job_failures`, `files`; and, global like the identity tables, `sign_in_events` |
 | Shared reference (no `facility_id`; read-only to the app role) | `icd_codes`, `drug_catalogue`, `sha_tariffs` (versioned), `payer_registry` |
 | Patients | `patients`, `patient_numbers`, `patient_identifiers` (incl. SHA number, client-registry ID), `patient_contacts` (next of kin; guardian for minors), `patient_alerts` (allergies and similar), `consents` |
 | Encounters | `encounters` (opd \| ipd \| emergency), `appointments`, `queue_entries`, `observations`, `diagnoses`, `clinical_notes`, `orders`, `order_items`, `procedures_performed` |
@@ -1030,7 +1030,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 
 ## 10. Append-only and immutable data
 
-**Append-only** (enforced by a trigger; the app role holds `INSERT` and `SELECT` only): `audit_log`, `mpesa_transactions`, `gateway_exchanges`, `eligibility_checks`, `stock_movements`, `controlled_drug_register`.
+**Append-only** (enforced by a trigger; the app role holds `INSERT` and `SELECT` only): `audit_log`, `mpesa_transactions`, `gateway_exchanges`, `eligibility_checks`, `stock_movements`, `controlled_drug_register`. Also `sign_in_events`, the sign-in log, which is global rather than a tenant table: Better Auth's role holds `INSERT` alone, the app role nothing, and Brixa support exports it on the owner connection.
 
 **Immutable once finalised** (a trigger refuses updates to frozen columns; corrections are a credit note, a new version or an addendum):
 

@@ -37,7 +37,7 @@ export const acceptInvitation = createRoute({
     }), "Accepted; sign in next"),
     [HttpStatusCodes.FORBIDDEN]: jsonContent(RefusalSchema, "The facility is suspended"),
     [HttpStatusCodes.NOT_FOUND]: jsonContent(RefusalSchema, "Not a valid link (unknown, revoked or replaced)"),
-    [HttpStatusCodes.CONFLICT]: jsonContent(RefusalSchema, "Already accepted"),
+    [HttpStatusCodes.CONFLICT]: jsonContent(RefusalSchema, "Already accepted, or being accepted"),
     [HttpStatusCodes.GONE]: jsonContent(RefusalSchema, "Expired"),
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(RefusalSchema, "A new account needs a password"),
     [HttpStatusCodes.TOO_MANY_REQUESTS]: jsonContent(

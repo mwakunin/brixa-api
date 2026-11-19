@@ -3,7 +3,7 @@ import type { MiddlewareHandler } from "hono";
 
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { APIError, createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
+import { APIError, createAuthMiddleware, getSessionFromCtx, isAPIError } from "better-auth/api";
 import { twoFactor } from "better-auth/plugins/two-factor";
 import { and, eq, like } from "drizzle-orm";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -17,6 +17,7 @@ import env from "@/env";
 import { emailEnabled, EmailError, sendEmail } from "./email";
 import { errorLine, summarizeError } from "./error-summary";
 import { logger } from "./logger";
+import { markEnrolled, noteSignInEvent, signInLog } from "./sign-in-log";
 
 /** The staff app's origin: scheme, host and port, whatever path APP_URL carries. */
 export const appOrigin = new URL(env.APP_URL).origin;
@@ -109,11 +110,17 @@ const NOTICE_WAIT_MS = 1_000;
  * make does not go unnoticed. Waits for the email no longer than
  * NOTICE_WAIT_MS, and never fails the change it reports.
  */
-async function notify(changed: { id: string; email: string; name: string }, what: string, subject: string, news: string): Promise<void> {
+export async function notify(
+  changed: { id: string; email: string; name: string },
+  what: string,
+  subject: string,
+  news: string,
+  closing = "If you did not do this, tell your administrator straight away.",
+): Promise<void> {
   const notice = sendQuietly(changed.id, what, {
     to: changed.email,
     subject,
-    body: `Hello ${changed.name},\n\n${news}\n\nIf you did not do this, tell your administrator straight away.`,
+    body: `Hello ${changed.name},\n\n${news}\n\n${closing}`,
   });
   await Promise.race([notice, sleep(NOTICE_WAIT_MS)]);
 }
@@ -130,7 +137,12 @@ function backupCode(): string {
   return `${five()}-${five()}`;
 }
 
-/** Whether this person's password changed after `since`: a sign-in that checked it before then rests on an old one. */
+/**
+ * Whether this person's credential changed after `since`: a new password, or
+ * Brixa support resetting their two-step sign-in, which writes the same time
+ * (superadmin.handlers.ts). A sign-in begun before then rests on what was
+ * there before, and gets no session.
+ */
 async function passwordChangedSince(userId: string, since: Date): Promise<boolean> {
   const [credential] = await authDb
     .select({ changedAt: authSchema.account.updatedAt })
@@ -307,6 +319,7 @@ export const auth = betterAuth({
     revokeSessionsOnPasswordReset: true,
     async onPasswordReset({ user: changed }) {
       logger.info({ userId: changed.id }, "Password reset");
+      await noteSignInEvent({ event: "password_reset", userId: changed.id });
       /*
        * A sign-in waiting for its code began with the old password, so it
        * ends too, as a session would. Its challenge is a verification row
@@ -324,6 +337,25 @@ export const auth = betterAuth({
     },
   },
 
+  hooks: {
+    /*
+     * A password changed by its owner is told to them, as a reset is
+     * (onPasswordReset): Better Auth's /change-password calls no hook of its
+     * own. This runs once it has answered, and only for a change made.
+     */
+    after: createAuthMiddleware(async (ctx) => {
+      const changed = ctx.context.session?.user;
+      if (ctx.path !== "/change-password" || isAPIError(ctx.context.returned) || !changed)
+        return;
+      await notify(
+        changed,
+        "password changed notice",
+        "Your Brixa HMIS password was changed",
+        "The password for your Brixa HMIS account was changed.",
+      );
+    }),
+  },
+
   databaseHooks: {
     user: {
       update: {
@@ -338,6 +370,9 @@ export const auth = betterAuth({
         async after(updated, ctx) {
           const enabled = (updated as { twoFactorEnabled?: boolean | null }).twoFactorEnabled === true;
           if (ctx?.path === "/two-factor/verify-totp" && enabled) {
+            // For the sign-in log: the session this request now issues is the same person carrying on, not a sign-in.
+            markEnrolled();
+            await noteSignInEvent({ event: "two_factor_enabled", userId: updated.id });
             await notify(
               updated,
               "authenticator set up notice",
@@ -346,6 +381,7 @@ export const auth = betterAuth({
             );
           }
           else if (ctx?.path === "/two-factor/disable" && !enabled) {
+            await noteSignInEvent({ event: "two_factor_disabled", userId: updated.id });
             await notify(
               updated,
               "two-step sign-in off notice",
@@ -357,6 +393,13 @@ export const auth = betterAuth({
       },
     },
     session: {
+      delete: {
+        // Signing out, for the sign-in log. Sessions also end by a reset or by expiring, which is not someone leaving.
+        async after(ended, ctx) {
+          if (ctx?.path === "/sign-out")
+            await noteSignInEvent({ event: "signed_out", userId: ended.userId });
+        },
+      },
       create: {
         /*
          * Better Auth checks a password, slowly by design, and then creates
@@ -436,6 +479,8 @@ export const auth = betterAuth({
       backupCodeOptions: { customBackupCodesGenerate: () => Array.from({ length: 10 }, backupCode) },
     }),
     twoFactorRules(),
+    // After the two-factor plugin, so it sees a password sign-in as the challenge the plugin made of it.
+    signInLog(),
   ],
 
   session: {
@@ -457,6 +502,11 @@ export const auth = betterAuth({
   },
 });
 
+/** The advisory lock a change to one person's two-step sign-in runs under: Better Auth's routes, and Brixa support's reset. */
+export function twoFactorChangeKey(userId: string): string {
+  return `two-factor:${userId}`;
+}
+
 /**
  * One change to a person's two-step sign-in at a time (create-app.ts, on the
  * two-factor routes). The plugin confirms an authenticator by reading it,
@@ -472,7 +522,7 @@ export const oneTwoFactorChangeAtATime: MiddlewareHandler = async (c, next) => {
   const current = await auth.api.getSession({ headers: c.req.raw.headers, query: { disableRefresh: true } });
   if (!current)
     return next();
-  const locked = await withAdvisoryLock(`two-factor:${current.user.id}`, () => next());
+  const locked = await withAdvisoryLock(twoFactorChangeKey(current.user.id), () => next());
   if (!locked.held) {
     return c.json(
       { message: "Another change to your two-step sign-in is under way. Try again in a moment.", code: "TWO_FACTOR_CHANGE_UNDER_WAY" },
