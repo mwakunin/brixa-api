@@ -29,7 +29,7 @@ The decision behind these controls is in `SPEC.md` §2 ("Two-step sign-in for ev
 
 | Control | Where | Proven by |
 |---|---|---|
-| A password reset ends every session, and every sign-in still waiting for its code. A code whose password changed after its challenge was made gets no session, even if the reset commits after the challenge is spent | `onPasswordReset` and the session hook in `src/lib/auth.ts` | `src/lib/auth.test.ts` ("sets the new password, ends every session…"), "ends a sign-in still waiting for its code…", "refuses a session to a code whose password changed…" |
+| A password reset ends every session, and every sign-in still waiting for its code. A code whose password changed after its challenge was made gets no session, even if the reset commits after the challenge is spent | `onPasswordReset` and the session hook in `src/lib/auth.ts` | `src/lib/auth.test.ts` ("sets the new password, ends every session…"), "ends a sign-in still waiting for its code…", "refuses a code whose password changed…", "makes no session for a code whose password changed as its challenge was spent" |
 | Every change to how someone signs in is emailed to them: a password reset, an authenticator set up, two-step sign-in turned off | `src/lib/auth.ts` | The same tests |
 
 ## Not yet done
