@@ -3,14 +3,14 @@ import type { MiddlewareHandler } from "hono";
 
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { APIError, createAuthMiddleware } from "better-auth/api";
+import { APIError, createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
 import { twoFactor } from "better-auth/plugins/two-factor";
 import { and, eq, like } from "drizzle-orm";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomInt } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { authDb } from "@/db";
+import { authDb, authPool } from "@/db";
 import * as authSchema from "@/db/auth-schema";
 import env from "@/env";
 
@@ -92,6 +92,9 @@ export const markCodeCheck: MiddlewareHandler = (_c, next) => signInBasis.run({ 
 /** The two routes that take a code. A session they make is one a code was given for. */
 const isCodeCheck = (path: string | undefined) => path?.startsWith("/two-factor/verify-") === true;
 
+/** Better Auth's routes that change, or give away, how someone signs in: for a session a code was given for (`twoFactorRules`). */
+const NEEDS_A_CODE = new Set(["/two-factor/get-totp-uri", "/two-factor/generate-backup-codes", "/two-factor/disable", "/change-password"]);
+
 /**
  * How long a change to how someone signs in waits for its notice before
  * answering. The Resend SDK sets no timeout, so a stalled provider would
@@ -150,12 +153,30 @@ async function passwordChangedSince(userId: string, since: Date): Promise<boolea
  * which refuses the session when a reset commits after the challenge is
  * spent; that rare race answers 500 (Better Auth's "failed to create
  * session"), with no session made.
+ *
+ * Reading the authenticator's secret back, renewing the backup codes,
+ * turning two-step sign-in off and changing the password need a session a
+ * code was given for (`twoFactorVerified`), whether or not the person has
+ * an authenticator yet. Setting one up needs none of them, and a session's
+ * flag never changes once it is made, so the check holds however the
+ * request is timed against a setup finishing elsewhere.
  */
 function twoFactorRules(): BetterAuthPlugin {
   return {
     id: "brixa-two-factor-rules",
     hooks: {
       before: [{
+        matcher: context => NEEDS_A_CODE.has(context.path ?? ""),
+        handler: createAuthMiddleware(async (ctx) => {
+          const current = await getSessionFromCtx(ctx);
+          if (current && (current.session as { twoFactorVerified?: boolean | null }).twoFactorVerified !== true) {
+            throw new APIError("UNAUTHORIZED", {
+              message: "Sign in with a code from your authenticator app first.",
+              code: "TWO_FACTOR_CODE_REQUIRED",
+            });
+          }
+        }),
+      }, {
         matcher: context => isCodeCheck(context.path),
         handler: createAuthMiddleware(async (ctx) => {
           const body = ctx.body as { trustDevice?: unknown } | undefined;
@@ -435,6 +456,31 @@ export const auth = betterAuth({
     },
   },
 });
+
+/**
+ * One change to a person's two-step sign-in at a time (create-app.ts, on the
+ * two-factor routes). The plugin confirms an authenticator by reading it,
+ * checking the code against its secret, then marking it confirmed by its id;
+ * a second setup in between would put a secret nobody checked in its place,
+ * and the mark would confirm that one. Under a per-person advisory lock, the
+ * second setup waits, then finds the authenticator confirmed. A request with
+ * no session (a sign-in's code) takes no lock.
+ */
+export const oneTwoFactorChangeAtATime: MiddlewareHandler = async (c, next) => {
+  const current = await auth.api.getSession({ headers: c.req.raw.headers, query: { disableRefresh: true } });
+  if (!current)
+    return next();
+  const key = `two-factor:${current.user.id}`;
+  const client = await authPool.connect();
+  try {
+    await client.query("SELECT pg_advisory_lock(hashtext($1))", [key]);
+    await next();
+  }
+  finally {
+    await client.query("SELECT pg_advisory_unlock(hashtext($1))", [key]).catch(() => {});
+    client.release();
+  }
+};
 
 export type Auth = typeof auth;
 export type Session = Auth["$Infer"]["Session"];

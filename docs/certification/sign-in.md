@@ -15,13 +15,15 @@ The decision behind these controls is in `SPEC.md` §2 ("Two-step sign-in for ev
 | Setting one up asks for the password, and counts only once the first code from it is right | The two-factor plugin | "sets one up with the password…" |
 | Once a person has an authenticator, only a session a code was given for counts. A session made by the password alone, before setup or by a sign-in still running as setup finished, gets nothing, Better Auth's own routes included (it cannot read the authenticator's secret back, renew the backup codes or turn two-step sign-in off), and is ended when next used | `databaseHooks.session` in `src/lib/auth.ts` (`twoFactorVerified` on each session), `endPasswordOnlySessions` and `withSession` in `src/middlewares/auth.ts` | "does not let the person's other sessions…", "refuses Better Auth's two-factor routes to a session made by the password alone…", "does not let a password sign-in that finished as setup completed work" |
 | Turning it off asks for the password, tells the person by email, and sends them back to setting it up | The plugin, and `databaseHooks.user` in `src/lib/auth.ts` | "is where turning it off sends the person back to…" |
+| Reading the authenticator's secret back, renewing the backup codes, turning two-step sign-in off and changing the password need a session a code was given for, whether or not the person has an authenticator yet. A session's flag never changes, so a setup finishing elsewhere while such a request runs cannot open these to it | `NEEDS_A_CODE` and `twoFactorRules` in `src/lib/auth.ts` | "refuses those routes to a session without a code even when setup finishes after it passed the guard", "keeps those routes for a session given a code" |
+| Changes to one person's two-step sign-in run one at a time, so a confirmation activates only the authenticator whose code it checked, never one a second setup put in its place meanwhile | `oneTwoFactorChangeAtATime` in `src/lib/auth.ts` (a per-person advisory lock) | "confirms only the authenticator whose code was checked…" |
 | Authenticator secrets and backup codes are stored only encrypted, in a table the app role cannot read | `src/db/auth-schema.ts`, `src/db/migrations/0109_two_factor_grants.sql`, `encryption.md` | `src/db/rls.test.ts` ("refuses the app role: SELECT secret FROM two_factor") |
 
 ## Limits on failed attempts
 
 | Control | Where | Proven by |
 |---|---|---|
-| Five wrong codes in a row lock the account for 15 minutes, from wherever they come | `accountLockout` in `src/lib/auth.ts` | "locks the account for fifteen minutes…" |
+| Five wrong codes in a row at sign-in lock the account for 15 minutes, from wherever they come. Wrong codes while setting an authenticator up are not counted: setup already needs a session and the password, and its code checks fall under the address limit below | `accountLockout` in `src/lib/auth.ts` | "locks the account for fifteen minutes…" |
 | Each challenge for a code takes at most five tries | The two-factor plugin | Better Auth's own tests |
 | Password guesses are limited per account from one address (10 in 15 minutes), per account from anywhere (100 in 15 minutes) and per address (10 a minute) | `src/lib/create-app.ts`, `src/middlewares/rate-limit.ts` | `src/middlewares/rate-limit.test.ts` |
 | Code checks are limited per address (30 a minute), apart from the sign-in budget | The same | "checks codes under their own address limit…" |
@@ -31,7 +33,7 @@ The decision behind these controls is in `SPEC.md` §2 ("Two-step sign-in for ev
 | Control | Where | Proven by |
 |---|---|---|
 | A password reset ends every session, and every sign-in still waiting for its code. A code whose password changed after its sign-in began gets no session: the challenge carries when the sign-in began, and the password is checked again before the challenge is spent and before the session is made. **One window is open:** a reset that commits after that last check and before Better Auth inserts the session still leaves one old-password session. Closing it needs a change inside Better Auth (`SPEC.md` §2) | `onPasswordReset`, `twoFactorRules` and the session and challenge hooks in `src/lib/auth.ts` | `src/lib/auth.test.ts` ("sets the new password, ends every session…"), "ends a sign-in still waiting for its code…", "refuses a code whose password changed after its challenge was made…", "…while its challenge was being made", "makes no session for a code whose password changed as its challenge was spent" |
-| Every change to how someone signs in is emailed to them: a password reset, an authenticator set up, two-step sign-in turned off | `src/lib/auth.ts` | The same tests |
+| Every change to how someone signs in is emailed to them: a password reset, an authenticator set up, two-step sign-in turned off. Sending is best effort: a notice that fails is logged, and the change it reports still stands | `notify` in `src/lib/auth.ts` | The same tests |
 
 ## Not yet done
 
@@ -40,3 +42,4 @@ The decision behind these controls is in `SPEC.md` §2 ("Two-step sign-in for ev
 - **Help for someone who has lost both their phone and their backup codes**: Brixa support resets their two-step sign-in after checking who they are. Next, with the log.
 - **A code can be used again within its window.** NIST SP 800-63B asks that each time-based code be accepted once. Better Auth accepts a code for about 90 seconds and does not record the last one used. Someone who saw a code would still need the password.
 - **Staff without a smartphone.** Text-message codes, if the staff walkthrough shows the need.
+- **Before someone has set an authenticator up, their password alone stands for them**, as it did before two-step sign-in: whoever knows it could set one up first. The emailed notice of a setup is the safeguard. Tying the first setup to the invitation's emailed link would close it.

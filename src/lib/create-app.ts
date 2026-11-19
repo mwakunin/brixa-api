@@ -15,7 +15,7 @@ import { rateLimits } from "@/middlewares/rate-limit";
 
 import type { AppBindings, AppOpenAPI, TenantBindings, TenantOpenAPI } from "./types";
 
-import { appOrigin, auth, markCodeCheck, markSignInStart, RESET_REQUEST_ANSWER_MS } from "./auth";
+import { appOrigin, auth, markCodeCheck, markSignInStart, oneTwoFactorChangeAtATime, RESET_REQUEST_ANSWER_MS } from "./auth";
 import { FACILITY_HEADER } from "./constants";
 import { onError } from "./on-error";
 
@@ -106,16 +106,17 @@ export default function createApp(): AppOpenAPI {
   // hospital's shift change through one shared connection. A code, too,
   // notes the password behind it, checked again when its session is made.
   // The GETs only stop a flood: a staff app checks its session constantly.
-  // Ahead of them all, a session made by the password alone, for someone who
-  // has an authenticator, is ended, so no auth route acts on it
-  // (middlewares/auth.ts).
-  app.use("/api/auth/*", endPasswordOnlySessions);
+  // After its limit, and before Better Auth sees it, each request has a
+  // session made by the password alone, for someone who has an
+  // authenticator, ended, so no auth route acts on it (middlewares/auth.ts);
+  // a request the limiter refuses never has its session looked up. Changes
+  // to one person's two-step sign-in run one at a time (lib/auth.ts).
   app.post("/api/auth/sign-in/email", rateLimits.signInAccountFromAddress(), rateLimits.signInAccount(), markSignInStart);
-  app.post("/api/auth/request-password-reset", rateLimits.auth(), answerNoSoonerThan(RESET_REQUEST_ANSWER_MS), c => auth.handler(c.req.raw));
+  app.post("/api/auth/request-password-reset", rateLimits.auth(), endPasswordOnlySessions, answerNoSoonerThan(RESET_REQUEST_ANSWER_MS), c => auth.handler(c.req.raw));
   app.on("POST", ["/api/auth/two-factor/verify-totp", "/api/auth/two-factor/verify-backup-code"], markCodeCheck);
-  app.post("/api/auth/two-factor/*", rateLimits.twoFactor(), c => auth.handler(c.req.raw));
-  app.post("/api/auth/*", rateLimits.auth(), c => auth.handler(c.req.raw));
-  app.get("/api/auth/*", rateLimits.authRead(), c => auth.handler(c.req.raw));
+  app.post("/api/auth/two-factor/*", rateLimits.twoFactor(), endPasswordOnlySessions, oneTwoFactorChangeAtATime, c => auth.handler(c.req.raw));
+  app.post("/api/auth/*", rateLimits.auth(), endPasswordOnlySessions, c => auth.handler(c.req.raw));
+  app.get("/api/auth/*", rateLimits.authRead(), endPasswordOnlySessions, c => auth.handler(c.req.raw));
 
   // Resolves the session onto every request; routes opt into requiring it.
   app.use(withSession);

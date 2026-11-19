@@ -75,6 +75,38 @@ function secretOf(totpURI: string): string {
   return new TextDecoder().decode(new Uint8Array(bytes));
 }
 
+/** Holds the next request just after the API's session guard has looked at its session, until released. */
+function holdAfterGuard() {
+  const look = auth.api.getSession;
+  let passed!: () => void;
+  const hasPassed = new Promise<void>((resolve) => {
+    passed = resolve;
+  });
+  let release!: () => void;
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const spy = vi.spyOn(auth.api, "getSession").mockImplementationOnce((async (...args: Parameters<typeof look>) => {
+    const found = await look(...args);
+    passed();
+    await released;
+    return found;
+  }) as unknown as typeof look);
+  return { hasPassed, release, restore: () => spy.mockRestore() };
+}
+
+/** Whether a request is waiting for an advisory lock, asked of Postgres until `timeoutMs`. */
+async function advisoryWaiter(timeoutMs = 5000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const { rows } = await pool.query<{ n: number }>("SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted");
+    if (rows[0].n > 0)
+      return true;
+    await sleep(20);
+  }
+  return false;
+}
+
 describe("signing in with a code", () => {
   beforeEach(async () => {
     await resetDb();
@@ -385,6 +417,89 @@ describe("before an authenticator is set up", () => {
     }
     const [row] = await db.select({ on: user.twoFactorEnabled }).from(user).where(eq(user.id, person.id));
     expect(row.on).toBe(true);
+  });
+
+  /*
+   * A request can pass the session guard while its person has no
+   * authenticator yet, and reach its route after setup finishes in another
+   * session. Those routes ask the session itself whether a code was given for
+   * it, which no setup elsewhere changes.
+   */
+  it("refuses those routes to a session without a code even when setup finishes after it passed the guard", async () => {
+    const attempts: [string, Record<string, unknown>][] = [
+      ["/api/auth/two-factor/get-totp-uri", { password: TEST_PASSWORD }],
+      ["/api/auth/two-factor/generate-backup-codes", { password: TEST_PASSWORD }],
+      ["/api/auth/two-factor/disable", { password: TEST_PASSWORD }],
+      ["/api/auth/change-password", { currentPassword: TEST_PASSWORD, newPassword: "a-brand-new-password" }],
+    ];
+    for (const [route, body] of attempts) {
+      const email = nextEmail();
+      const person = await createTestAccount(email, "New Starter", "user", { twoFactor: false });
+      const { cookie } = await signIn(email);
+      const held = holdAfterGuard();
+      const answer = postJson(route, body, { cookie, origin: appOrigin });
+      await held.hasPassed;
+      await enrolForDevelopment(person.id);
+      held.release();
+      const res = await answer;
+      held.restore();
+
+      expect(res.status, route).toBe(401);
+      expect((await res.json()).code, route).toBe("TWO_FACTOR_CODE_REQUIRED");
+    }
+  });
+
+  /*
+   * The plugin reads the authenticator it is confirming, checks the code
+   * against its secret, then marks it confirmed by its id. A second setup in
+   * between would swap in a secret nobody checked. Changes to one person's
+   * two-step sign-in run one at a time, so the second setup waits for the
+   * confirmation, and then finds it done.
+   */
+  it("confirms only the authenticator whose code was checked, a second setup waiting its turn", async () => {
+    const email = nextEmail();
+    await createTestAccount(email, "New Starter", "user", { twoFactor: false });
+    const headers = { cookie: (await signIn(email)).cookie, origin: appOrigin };
+    const { totpURI } = await (await postJson("/api/auth/two-factor/enable", { password: TEST_PASSWORD }, headers)).json() as { totpURI: string };
+    const first = secretOf(totpURI);
+    const { code } = await auth.api.generateTOTP({ body: { secret: first } });
+
+    // The confirmation is held just after it has read the authenticator it is about to confirm.
+    const { adapter } = await auth.$context;
+    const read = adapter.findOne.bind(adapter);
+    let hasRead!: () => void;
+    const reading = new Promise<void>((resolve) => {
+      hasRead = resolve;
+    });
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let held = false;
+    const spy = vi.spyOn(adapter, "findOne").mockImplementation((async (query: Parameters<typeof read>[0]) => {
+      const found = await read(query);
+      if (query.model === "twoFactor" && !held) {
+        held = true;
+        hasRead();
+        await released;
+      }
+      return found;
+    }) as unknown as typeof adapter.findOne);
+
+    const confirming = postJson("/api/auth/two-factor/verify-totp", { code }, headers);
+    await reading;
+    const secondSetup = postJson("/api/auth/two-factor/enable", { password: TEST_PASSWORD }, headers);
+    // Free to run, the second setup would finish now and swap its secret in; serialised, it waits.
+    await Promise.race([secondSetup, advisoryWaiter()]);
+    release();
+    const [confirmed, second] = await Promise.all([confirming, secondSetup]);
+    spy.mockRestore();
+
+    expect(confirmed.status).toBe(200);
+    expect(second.ok).toBe(false);
+    // What was confirmed is the authenticator whose code was checked: its codes sign in.
+    const { code: later } = await auth.api.generateTOTP({ body: { secret: first } });
+    expect((await codeStep(await passwordStep(email), { code: later })).status).toBe(200);
   });
 
   it("keeps those routes for a session given a code", async () => {
