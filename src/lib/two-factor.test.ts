@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import app from "@/app";
 import db, { pool } from "@/db";
-import { account, session } from "@/db/schema";
+import { account, session, user } from "@/db/schema";
 import { DEV_BACKUP_CODES, developmentCode, enrolForDevelopment } from "@/dev/two-factor";
 import { appOrigin, auth } from "@/lib/auth";
 import { sentEmails } from "@/lib/email";
@@ -360,6 +360,40 @@ describe("before an authenticator is set up", () => {
     expect((await get("/me/facilities", { cookie: elsewhere.cookie })).status).toBe(401);
     expect(await sessionOf(elsewhere.cookie)).toBeNull();
     expect((await get("/me/facilities", { cookie: cookieFrom(confirmed.headers.get("set-cookie")!) })).status).toBe(200);
+  });
+
+  /*
+   * Better Auth's own routes run before the API's check, and several take a
+   * session and the password. A session made by the password alone must not
+   * read the authenticator's secret back, renew the backup codes or turn
+   * two-step sign-in off, even before it has visited any other route.
+   */
+  it("refuses Better Auth's two-factor routes to a session made by the password alone, and ends it", async () => {
+    const email = nextEmail();
+    const person = await createTestAccount(email, "New Starter", "user", { twoFactor: false });
+    const routes = ["get-totp-uri", "generate-backup-codes", "disable"];
+    const sessions = [];
+    for (const _ of routes)
+      sessions.push(await signIn(email));
+    // Set up meanwhile, through another session.
+    await enrolForDevelopment(person.id);
+
+    for (const [i, route] of routes.entries()) {
+      const res = await postJson(`/api/auth/two-factor/${route}`, { password: TEST_PASSWORD }, { cookie: sessions[i].cookie, origin: appOrigin });
+      expect(res.status, route).toBe(401);
+      expect(await sessionOf(sessions[i].cookie), route).toBeNull();
+    }
+    const [row] = await db.select({ on: user.twoFactorEnabled }).from(user).where(eq(user.id, person.id));
+    expect(row.on).toBe(true);
+  });
+
+  it("keeps those routes for a session given a code", async () => {
+    const email = nextEmail();
+    await createTestAccount(email);
+    const headers = { cookie: (await signIn(email)).cookie, origin: appOrigin };
+
+    expect((await postJson("/api/auth/two-factor/get-totp-uri", { password: TEST_PASSWORD }, headers)).status).toBe(200);
+    expect((await postJson("/api/auth/two-factor/generate-backup-codes", { password: TEST_PASSWORD }, headers)).status).toBe(200);
   });
 
   // A password sign-in that read the person before setup finished makes its session after: still the password alone.

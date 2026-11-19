@@ -55,6 +55,8 @@ pnpm dev:code
 
 prints the code, which changes every 30 seconds, and the backup codes. brixa-web's `pnpm flows` and `pnpm screens` work the same code out from the same secret.
 
+The staff app asks for the code once brixa-web #10 is in. Before that, sign in through the API: post the email and password to `/api/auth/sign-in/email` and keep the cookie it sets (the challenge), then post `{ "code": "<from pnpm dev:code>" }` to `/api/auth/two-factor/verify-totp` with that cookie and an `Origin` header naming the staff app (`APP_URL`).
+
 The secret is in the code, in the open, and only the seed and the tests give it to an account. `enrolForDevelopment` refuses when `NODE_ENV` is `production`. What keeps it off a real database is the seed's own refusals above (a database not on this machine, one holding a facility, mail or SMS credentials set), the same ones that keep the seed's public password off it. An unset `NODE_ENV` counts as development, so those refusals, not `NODE_ENV`, are the guard. An account you invite by hand in development has no authenticator. The staff app asks it to set one up, with a real authenticator app, once its setup screen is in (brixa-web #10); until then such an account can sign in with its password and do nothing else.
 
 ### Starting again

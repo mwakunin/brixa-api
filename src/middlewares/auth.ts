@@ -4,11 +4,42 @@ import { createMiddleware } from "hono/factory";
 import * as HttpStatusCodes from "stoker/http-status-codes";
 import * as HttpStatusPhrases from "stoker/http-status-phrases";
 
+import type { Session } from "@/lib/auth";
 import type { ClinicalRole } from "@/lib/professions";
 import type { AppBindings, Membership, MembershipRole, TenantBindings, UserRole } from "@/lib/types";
 
 import { auth } from "@/lib/auth";
 import { businessDate, printedDate } from "@/lib/dates";
+
+/**
+ * A session made by the password alone, for someone who has an
+ * authenticator: before setup, or by a sign-in still running as setup
+ * finished. It counts for nothing (`twoFactorVerified`, lib/auth.ts).
+ */
+function passwordOnly(session: Session): boolean {
+  return session.user.twoFactorEnabled === true && session.session.twoFactorVerified !== true;
+}
+
+async function endSession(session: Session): Promise<void> {
+  await (await auth.$context).internalAdapter.deleteSession(session.session.token);
+}
+
+/**
+ * Ends a session made by the password alone, for someone who has an
+ * authenticator, before any of Better Auth's routes sees it (create-app.ts).
+ * Those routes run ahead of `withSession`, and several take a session and
+ * the password: reading the authenticator's secret back, turning two-step
+ * sign-in off, renewing the backup codes. With the session gone, each
+ * answers as for someone signed out, get-session says so too, and signing in
+ * asks for a code.
+ */
+export const endPasswordOnlySessions = createMiddleware<AppBindings>(async (c, next) => {
+  const session = await auth.api.getSession({ headers: c.req.raw.headers, query: { disableRefresh: true } });
+  if (session && passwordOnly(session))
+    await endSession(session);
+
+  await next();
+});
 
 /**
  * Resolves the Better Auth session (if any) onto the context. Always runs and
@@ -30,9 +61,9 @@ import { businessDate, printedDate } from "@/lib/dates";
 export const withSession = createMiddleware<AppBindings>(async (c, next) => {
   const session = await auth.api.getSession({ headers: c.req.raw.headers });
   const enrolled = session?.user.twoFactorEnabled === true;
-  const ready = enrolled && session.session.twoFactorVerified === true;
+  const ready = enrolled && !passwordOnly(session);
   if (session && enrolled && !ready)
-    await (await auth.$context).internalAdapter.deleteSession(session.session.token);
+    await endSession(session);
 
   c.set("user", ready ? session.user : null);
   c.set("session", ready ? session.session : null);

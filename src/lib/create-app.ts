@@ -9,7 +9,7 @@ import { notFound, serveEmojiFavicon } from "stoker/middlewares";
 import { defaultHook } from "stoker/openapi";
 
 import { answerNoSoonerThan } from "@/middlewares/answer-time";
-import { withSession } from "@/middlewares/auth";
+import { endPasswordOnlySessions, withSession } from "@/middlewares/auth";
 import { pinoLogger } from "@/middlewares/pino-logger";
 import { rateLimits } from "@/middlewares/rate-limit";
 
@@ -104,8 +104,12 @@ export default function createApp(): AppOpenAPI {
   // tries a challenge, then the account locks), and each challenge costs a
   // right password, so the address limit only stops a flood, and lets a
   // hospital's shift change through one shared connection. A code, too,
-  // notes the password behind it, checked again when its session is made. The GETs only
-  // stop a flood: a staff app checks its session constantly.
+  // notes the password behind it, checked again when its session is made.
+  // The GETs only stop a flood: a staff app checks its session constantly.
+  // Ahead of them all, a session made by the password alone, for someone who
+  // has an authenticator, is ended, so no auth route acts on it
+  // (middlewares/auth.ts).
+  app.use("/api/auth/*", endPasswordOnlySessions);
   app.post("/api/auth/sign-in/email", rateLimits.signInAccountFromAddress(), rateLimits.signInAccount(), markSignInStart);
   app.post("/api/auth/request-password-reset", rateLimits.auth(), answerNoSoonerThan(RESET_REQUEST_ANSWER_MS), c => auth.handler(c.req.raw));
   app.on("POST", ["/api/auth/two-factor/verify-totp", "/api/auth/two-factor/verify-backup-code"], markCodeCheck);
