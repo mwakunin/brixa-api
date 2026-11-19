@@ -16,8 +16,8 @@ import { auth } from "@/lib/auth";
 /** The authenticator secret of every seeded and test account. 32 characters, as the plugin's own are. */
 export const DEV_TOTP_SECRET = "brixa-dev-totp-secret-not-secret";
 
-/** Their ten backup codes, in the plugin's shape (five characters, a hyphen, five more). */
-export const DEV_BACKUP_CODES = Array.from({ length: 10 }, (_, i) => `devbk-${String(i + 1).padStart(5, "0")}`);
+/** Their ten backup codes, digits in the production shape (lib/auth.ts), so a number pad can type them. */
+export const DEV_BACKUP_CODES = Array.from({ length: 10 }, (_, i) => `00000-${String(i + 1).padStart(5, "0")}`);
 
 /**
  * Gives an account the development authenticator and backup codes, as if its

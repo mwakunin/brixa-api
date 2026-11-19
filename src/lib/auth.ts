@@ -3,9 +3,9 @@ import type { MiddlewareHandler } from "hono";
 
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { APIError, createAuthMiddleware } from "better-auth/api";
+import { APIError, createAuthMiddleware, isAPIError } from "better-auth/api";
 import { twoFactor } from "better-auth/plugins/two-factor";
-import { and, eq, like } from "drizzle-orm";
+import { and, eq, like, ne } from "drizzle-orm";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomInt } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -66,15 +66,29 @@ function failureKind(err: unknown): string {
  */
 export const RESET_REQUEST_ANSWER_MS = 1_500;
 
-/** When the password sign-in being handled began; see `markSignInStart`. */
-const signInBegan = new AsyncLocalStorage<Date>();
+/** What the sign-in being handled rests on, for the session hook and `twoFactorRules` below. */
+interface SignInBasis {
+  /** When its password was checked; null when no password is behind it (setting an authenticator up). */
+  checkedAt: Date | null;
+  /** Set when this request confirmed a new authenticator. */
+  enrolled: boolean;
+}
+
+const signInBasis = new AsyncLocalStorage<SignInBasis>();
 
 /**
  * Runs a password sign-in inside a record of when it began, for the session
  * hook below to compare with the last password change. Mounted on POST
  * /api/auth/sign-in/email (create-app.ts).
  */
-export const markSignInStart: MiddlewareHandler = (_c, next) => signInBegan.run(new Date(), next);
+export const markSignInStart: MiddlewareHandler = (_c, next) => signInBasis.run({ checkedAt: new Date(), enrolled: false }, next);
+
+/**
+ * The same for a code (create-app.ts, on the two verify routes). When its
+ * password was checked is read from its challenge by `twoFactorRules`,
+ * before the plugin spends the challenge.
+ */
+export const markCodeCheck: MiddlewareHandler = (_c, next) => signInBasis.run({ checkedAt: null, enrolled: false }, next);
 
 /**
  * How long a change to how someone signs in waits for its notice before
@@ -111,17 +125,40 @@ function backupCode(): string {
   return `${five()}-${five()}`;
 }
 
+/** Whether this person's password changed after `since`: a sign-in that checked it before then rests on an old one. */
+async function passwordChangedSince(userId: string, since: Date): Promise<boolean> {
+  const [credential] = await authDb
+    .select({ changedAt: authSchema.account.updatedAt })
+    .from(authSchema.account)
+    .where(and(eq(authSchema.account.userId, userId), eq(authSchema.account.providerId, "credential")));
+  return credential !== undefined && credential.changedAt > since;
+}
+
 /**
- * Brixa's rules on top of the two-factor plugin's own. No computer is ever
- * remembered: the computers at a desk are shared, so a code is asked at every
- * sign-in, and a request to skip it next time is refused rather than ignored.
+ * Brixa's rules on top of the two-factor plugin's own.
+ *
+ * No computer is ever remembered: the computers at a desk are shared, so a
+ * code is asked at every sign-in, and a request to skip it next time is
+ * refused rather than ignored.
+ *
+ * A code's sign-in rests on the password checked when its challenge was
+ * made. A code whose password has changed since is refused before the
+ * plugin spends the challenge, as a sign-in to start again. The challenge's
+ * time is also kept for the session hook below, which refuses the session
+ * when a reset commits after the challenge is spent; that rare race answers
+ * 500 (Better Auth's "failed to create session"), with no session made.
+ *
+ * Confirming a new authenticator ends every other session the person has:
+ * each was made by the password alone, and would otherwise carry on as if it
+ * had been given a code.
  */
 function twoFactorRules(): BetterAuthPlugin {
+  const isCodeCheck = (path: string | undefined) => path?.startsWith("/two-factor/verify-") === true;
   return {
     id: "brixa-two-factor-rules",
     hooks: {
       before: [{
-        matcher: context => context.path?.startsWith("/two-factor/verify-") === true,
+        matcher: context => isCodeCheck(context.path),
         handler: createAuthMiddleware(async (ctx) => {
           const body = ctx.body as { trustDevice?: unknown } | undefined;
           if (body?.trustDevice === true) {
@@ -129,6 +166,33 @@ function twoFactorRules(): BetterAuthPlugin {
               message: "This computer cannot be remembered: a code is asked at every sign-in.",
               code: "TRUST_DEVICE_NOT_ALLOWED",
             });
+          }
+          const basis = signInBasis.getStore();
+          const cookie = ctx.context.createAuthCookie("two_factor");
+          const challenge = await ctx.getSignedCookie(cookie.name, ctx.context.secret);
+          const found = challenge ? await ctx.context.internalAdapter.findVerificationValue(challenge) : null;
+          if (!basis || !found)
+            return;
+          // Made just after the password was checked.
+          basis.checkedAt = found.createdAt;
+          if (await passwordChangedSince(found.value, found.createdAt)) {
+            throw new APIError("UNAUTHORIZED", {
+              message: "The password changed after this sign-in began. Sign in again.",
+              code: "INVALID_TWO_FACTOR_COOKIE",
+            });
+          }
+        }),
+      }],
+      after: [{
+        matcher: context => isCodeCheck(context.path),
+        handler: createAuthMiddleware(async (ctx) => {
+          if (isAPIError(ctx.context.returned))
+            return;
+          const created = ctx.context.newSession;
+          if (created && signInBasis.getStore()?.enrolled) {
+            await authDb
+              .delete(authSchema.session)
+              .where(and(eq(authSchema.session.userId, created.user.id), ne(authSchema.session.id, created.session.id)));
           }
         }),
       }],
@@ -268,6 +332,10 @@ export const auth = betterAuth({
         async after(updated, ctx) {
           const enabled = (updated as { twoFactorEnabled?: boolean | null }).twoFactorEnabled === true;
           if (ctx?.path === "/two-factor/verify-totp" && enabled) {
+            // For twoFactorRules: the person's other sessions, made by the password alone, now end.
+            const basis = signInBasis.getStore();
+            if (basis)
+              basis.enrolled = true;
             await notify(
               updated,
               "authenticator set up notice",
@@ -292,12 +360,15 @@ export const auth = betterAuth({
          * Better Auth checks a password, slowly by design, and then creates
          * the session without looking at the password again. A sign-in that
          * checked the old password while a reset was committing would get a
-         * session after the reset had signed everyone out (with two-step
-         * sign-in, the session becomes the challenge for a code, and
-         * onPasswordReset ends the challenges that already exist). So a
-         * session for a password sign-in is refused when the password
-         * changed after that sign-in began, and the sign-in answers as for a
-         * wrong password. One begun after the change goes through.
+         * session after the reset had signed everyone out. So a session is
+         * refused when the password changed after the sign-in's password was
+         * checked: a password sign-in then answers as for a wrong password.
+         * With two-step sign-in the password step's session becomes the
+         * challenge for a code, and the same check runs again when the code
+         * makes the real session, against when the challenge was made
+         * (twoFactorRules), since a reset can commit after the challenge is
+         * spent; onPasswordReset ends the challenges not yet spent. One begun
+         * after the change goes through.
          *
          * This narrows the race; it does not close it. The read below and
          * Better Auth's session insert are separate statements, so a reset
@@ -306,14 +377,8 @@ export const auth = betterAuth({
          * where sign-in and reset could be ordered against each other.
          */
         async before(session) {
-          const began = signInBegan.getStore();
-          if (!began)
-            return;
-          const [credential] = await authDb
-            .select({ changedAt: authSchema.account.updatedAt })
-            .from(authSchema.account)
-            .where(and(eq(authSchema.account.userId, session.userId), eq(authSchema.account.providerId, "credential")));
-          if (credential && credential.changedAt > began)
+          const began = signInBasis.getStore()?.checkedAt;
+          if (began && await passwordChangedSince(session.userId, began))
             return false;
         },
       },

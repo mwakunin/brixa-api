@@ -1,5 +1,6 @@
 /* eslint-disable no-console */
 import { DEV_BACKUP_CODES, developmentCode } from "@/dev/two-factor";
+import { errorLine } from "@/lib/error-summary";
 
 /**
  * The sign-in code of every seeded account, for signing in by hand:
@@ -15,6 +16,7 @@ async function main() {
 }
 
 main().then(() => process.exit(0), (err: unknown) => {
-  console.error("Could not work out the code:", err instanceof Error ? err.message : err);
+  // A database error's message carries its SQL parameters (CLAUDE.md rule 10).
+  console.error("Could not work out the code:", errorLine(err));
   process.exit(1);
 });

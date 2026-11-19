@@ -8,11 +8,11 @@ The decision behind these controls is in `SPEC.md` §2 ("Two-step sign-in for ev
 
 | Control | Where | Proven by |
 |---|---|---|
-| Every sign-in asks for a code from an authenticator app after the password. There is no session until the code is right | `src/lib/auth.ts` (Better Auth's two-factor plugin) | `src/lib/two-factor.test.ts` ("asks for a code after the right password…") |
+| Every sign-in asks for a code from an authenticator app after the password. There is no session until the code is right, except for someone who has not set an authenticator up yet: the password gives them a session good for setting one up and for nothing else (below) | `src/lib/auth.ts` (Better Auth's two-factor plugin) | `src/lib/two-factor.test.ts` ("asks for a code after the right password…") |
 | Ten backup codes, given once at setup, each good once | The same | "takes a backup code instead…" |
 | No computer is remembered, so the code is asked at every sign-in | `twoFactorRules` in `src/lib/auth.ts` | "refuses to remember a computer…" |
 | Nobody works before setting an authenticator up: every API route refuses them with `two_factor_setup_required`, platform staff included | `withSession` and `notSignedIn` in `src/middlewares/auth.ts` | "gives a session from the password alone…", "refuses the platform's own staff…", `src/routes/onboarding.test.ts` |
-| Setting one up asks for the password, and counts only once the first code from it is right | The two-factor plugin | "sets one up with the password…" |
+| Setting one up asks for the password, and counts only once the first code from it is right. It then ends every other session the person had, each made by the password alone | The two-factor plugin, `twoFactorRules` in `src/lib/auth.ts` | "sets one up with the password…", "ends the person's other sessions…" |
 | Turning it off asks for the password, tells the person by email, and sends them back to setting it up | The plugin, and `databaseHooks.user` in `src/lib/auth.ts` | "is where turning it off sends the person back to…" |
 | Authenticator secrets and backup codes are stored only encrypted, in a table the app role cannot read | `src/db/auth-schema.ts`, `src/db/migrations/0109_two_factor_grants.sql`, `encryption.md` | `src/db/rls.test.ts` ("refuses the app role: SELECT secret FROM two_factor") |
 
@@ -29,7 +29,7 @@ The decision behind these controls is in `SPEC.md` §2 ("Two-step sign-in for ev
 
 | Control | Where | Proven by |
 |---|---|---|
-| A password reset ends every session, and every sign-in still waiting for its code | `onPasswordReset` in `src/lib/auth.ts` | `src/lib/auth.test.ts` ("sets the new password, ends every session…"), "ends a sign-in still waiting for its code…" |
+| A password reset ends every session, and every sign-in still waiting for its code. A code whose password changed after its challenge was made gets no session, even if the reset commits after the challenge is spent | `onPasswordReset` and the session hook in `src/lib/auth.ts` | `src/lib/auth.test.ts` ("sets the new password, ends every session…"), "ends a sign-in still waiting for its code…", "refuses a session to a code whose password changed…" |
 | Every change to how someone signs in is emailed to them: a password reset, an authenticator set up, two-step sign-in turned off | `src/lib/auth.ts` | The same tests |
 
 ## Not yet done

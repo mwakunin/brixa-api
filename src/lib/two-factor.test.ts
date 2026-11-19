@@ -1,6 +1,10 @@
+import { eq } from "drizzle-orm";
+import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import app from "@/app";
+import db from "@/db";
+import { account, session } from "@/db/schema";
 import { DEV_BACKUP_CODES, developmentCode } from "@/dev/two-factor";
 import { appOrigin, auth } from "@/lib/auth";
 import { sentEmails } from "@/lib/email";
@@ -155,6 +159,59 @@ describe("signing in with a code", () => {
     expect((await res.json()).code).toBe("INVALID_TWO_FACTOR_COOKIE");
   });
 
+  it("lets exactly one of two sign-ins spend the same backup code at once", async () => {
+    const email = nextEmail();
+    await createTestAccount(email);
+    const challenges = [await passwordStep(email), await passwordStep(email)];
+
+    const answers = await Promise.all(challenges.map(cookie => codeStep(cookie, { code: DEV_BACKUP_CODES[0] }, "verify-backup-code")));
+
+    expect(answers.map(a => a.status).sort()).toEqual([200, 401]);
+  });
+
+  it("refuses a code whose password changed after its challenge was made, even with the challenge still standing", async () => {
+    const email = nextEmail();
+    const person = await createTestAccount(email);
+    const challenge = await passwordStep(email);
+    await sleep(5);
+    // What a reset leaves, without its ending the challenge.
+    await db.update(account).set({ updatedAt: new Date() }).where(eq(account.userId, person.id));
+
+    const res = await codeStep(challenge, { code: await developmentCode() });
+
+    expect(res.status).toBe(401);
+    expect((await res.json()).code).toBe("INVALID_TWO_FACTOR_COOKIE");
+    // A sign-in begun after the change goes through.
+    expect((await codeStep(await passwordStep(email), { code: await developmentCode() })).status).toBe(200);
+  });
+
+  /*
+   * The plugin spends the challenge, then makes the session: a reset that
+   * commits between the two finds no challenge left to end. The race cannot
+   * be timed here, so the password's change is written as the challenge is
+   * spent.
+   */
+  it("makes no session for a code whose password changed as its challenge was spent", async () => {
+    const email = nextEmail();
+    const person = await createTestAccount(email);
+    const challenge = await passwordStep(email);
+    const { internalAdapter } = await auth.$context;
+    const spend = internalAdapter.consumeVerificationValue.bind(internalAdapter);
+    const spy = vi.spyOn(internalAdapter, "consumeVerificationValue").mockImplementation(async (identifier) => {
+      const spent = await spend(identifier);
+      await sleep(5);
+      await db.update(account).set({ updatedAt: new Date() }).where(eq(account.userId, person.id));
+      return spent;
+    });
+
+    const res = await codeStep(challenge, { code: await developmentCode() });
+    spy.mockRestore();
+
+    expect(res.ok).toBe(false);
+    expect(res.headers.get("set-cookie") ?? "").not.toMatch(/session_token=[^;]/);
+    expect(await db.select().from(session).where(eq(session.userId, person.id))).toEqual([]);
+  });
+
   it("checks codes under their own address limit, which leaves the sign-in budget alone", async () => {
     const address = { "x-forwarded-for": nextIp() };
     const checks = await Promise.all(Array.from({ length: 30 }, () => postJson("/api/auth/two-factor/verify-totp", { code: "123456" }, address)));
@@ -229,6 +286,23 @@ describe("before an authenticator is set up", () => {
     expect(sentEmails.at(-1)).toMatchObject({ to: email, subject: "Two-step sign-in is set up on your Brixa HMIS account" });
     // And from now on the password alone is not enough.
     expect((await (await postJson("/api/auth/sign-in/email", { email, password: TEST_PASSWORD })).json()).twoFactorRedirect).toBe(true);
+  });
+
+  it("ends the person's other sessions, made by the password alone, once it is set up", async () => {
+    const email = nextEmail();
+    await createTestAccount(email, "New Starter", "user", { twoFactor: false });
+    const here = await signIn(email);
+    const elsewhere = await signIn(email);
+    const headers = { cookie: here.cookie, origin: appOrigin };
+    const { totpURI } = await (await postJson("/api/auth/two-factor/enable", { password: TEST_PASSWORD }, headers)).json() as { totpURI: string };
+    const { code } = await auth.api.generateTOTP({ body: { secret: secretOf(totpURI) } });
+
+    const confirmed = await postJson("/api/auth/two-factor/verify-totp", { code }, headers);
+
+    expect(confirmed.status).toBe(200);
+    expect(await sessionOf(elsewhere.cookie)).toBeNull();
+    expect((await get("/me/facilities", { cookie: elsewhere.cookie })).status).toBe(401);
+    expect((await get("/me/facilities", { cookie: cookieFrom(confirmed.headers.get("set-cookie")!) })).status).toBe(200);
   });
 
   it("is where turning it off sends the person back to, with a notice", async () => {
