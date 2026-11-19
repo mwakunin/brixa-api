@@ -6,6 +6,7 @@ import type { MembershipRole } from "@/lib/types";
 import app from "@/app";
 import db, { pool } from "@/db";
 import { auditLog, invitations, memberships, numberSeries, outbox, user } from "@/db/schema";
+import { enrolForDevelopment } from "@/dev/two-factor";
 import { drainOutbox } from "@/jobs/outbox-worker";
 import { addDays, businessDate } from "@/lib/dates";
 import { sentEmails } from "@/lib/email";
@@ -46,6 +47,12 @@ function tokenFor(to: string) {
   if (!token)
     throw new Error(`No invitation email with a token for ${to}`);
   return token;
+}
+
+/** What the staff app's setup screen does for a new account, with the development authenticator. */
+async function setUpAuthenticator(email: string) {
+  const [account] = await db.select({ id: user.id }).from(user).where(eq(user.email, email));
+  await enrolForDevelopment(account.id);
 }
 
 function accept(body: { token: string; password?: string }, ip = nextIp()) {
@@ -183,7 +190,7 @@ describe("the invitation, from email to first sign-in", () => {
     expect(JSON.stringify(stored)).not.toContain(token);
   });
 
-  it("creates the account and the membership, and the admin can sign in and work", async () => {
+  it("creates the account and the membership, and the admin can sign in and, with an authenticator set up, work", async () => {
     const { facility, adminEmail } = await onboarded();
 
     const res = await accept({ token: tokenFor(adminEmail), password: NEW_PASSWORD });
@@ -191,6 +198,13 @@ describe("the invitation, from email to first sign-in", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ facilityId: facility.id, facilityName: "Amani Hospital", accountCreated: true });
 
+    // A new account has no authenticator yet: the first thing asked of it is to set one up.
+    const first = await signIn(adminEmail, NEW_PASSWORD);
+    const notYet = await app.request("/facility", { headers: facilityHeaders(facility.id, { id: "", email: adminEmail, headers: first }) });
+    expect(notYet.status).toBe(403);
+    expect((await notYet.json()).code).toBe("two_factor_setup_required");
+
+    await setUpAuthenticator(adminEmail);
     const session = await signIn(adminEmail, NEW_PASSWORD);
     const here = await app.request("/facility", { headers: facilityHeaders(facility.id, { id: "", email: adminEmail, headers: session }) });
     expect(here.status).toBe(200);
@@ -386,6 +400,7 @@ describe("a facility admin inviting staff", () => {
 
     await drainOutbox();
     expect((await accept({ token: tokenFor(email), password: NEW_PASSWORD })).status).toBe(200);
+    await setUpAuthenticator(email);
 
     const here = await app.request("/facility", {
       headers: facilityHeaders(facility.id, { id: "", email, headers: await signIn(email, NEW_PASSWORD) }),

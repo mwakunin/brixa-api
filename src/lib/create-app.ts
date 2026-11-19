@@ -9,13 +9,13 @@ import { notFound, serveEmojiFavicon } from "stoker/middlewares";
 import { defaultHook } from "stoker/openapi";
 
 import { answerNoSoonerThan } from "@/middlewares/answer-time";
-import { withSession } from "@/middlewares/auth";
+import { endPasswordOnlySessions, withSession } from "@/middlewares/auth";
 import { pinoLogger } from "@/middlewares/pino-logger";
 import { rateLimits } from "@/middlewares/rate-limit";
 
 import type { AppBindings, AppOpenAPI, TenantBindings, TenantOpenAPI } from "./types";
 
-import { appOrigin, auth, markSignInStart, RESET_REQUEST_ANSWER_MS } from "./auth";
+import { appOrigin, auth, markCodeCheck, markSignInStart, oneTwoFactorChangeAtATime, RESET_REQUEST_ANSWER_MS } from "./auth";
 import { FACILITY_HEADER } from "./constants";
 import { onError } from "./on-error";
 
@@ -99,12 +99,24 @@ export default function createApp(): AppOpenAPI {
   // of a remaining instant (lib/auth.ts). A request for a reset link takes a
   // fixed time to answer, so the wait does not tell an address with an
   // account from one without; the limit runs first, because a refusal says
-  // nothing about the address and is answered at once. The GETs only stop a
-  // flood: a staff app checks its session constantly.
+  // nothing about the address and is answered at once. Two-step sign-in has
+  // its own, looser limit: guessing a code is capped by the plugin (five
+  // tries a challenge, then the account locks), and each challenge costs a
+  // right password, so the address limit only stops a flood, and lets a
+  // hospital's shift change through one shared connection. A code, too,
+  // notes the password behind it, checked again when its session is made.
+  // The GETs only stop a flood: a staff app checks its session constantly.
+  // After its limit, and before Better Auth sees it, each request has a
+  // session made by the password alone, for someone who has an
+  // authenticator, ended, so no auth route acts on it (middlewares/auth.ts);
+  // a request the limiter refuses never has its session looked up. Changes
+  // to one person's two-step sign-in run one at a time (lib/auth.ts).
   app.post("/api/auth/sign-in/email", rateLimits.signInAccountFromAddress(), rateLimits.signInAccount(), markSignInStart);
-  app.post("/api/auth/request-password-reset", rateLimits.auth(), answerNoSoonerThan(RESET_REQUEST_ANSWER_MS), c => auth.handler(c.req.raw));
-  app.post("/api/auth/*", rateLimits.auth(), c => auth.handler(c.req.raw));
-  app.get("/api/auth/*", rateLimits.authRead(), c => auth.handler(c.req.raw));
+  app.post("/api/auth/request-password-reset", rateLimits.auth(), endPasswordOnlySessions, answerNoSoonerThan(RESET_REQUEST_ANSWER_MS), c => auth.handler(c.req.raw));
+  app.on("POST", ["/api/auth/two-factor/verify-totp", "/api/auth/two-factor/verify-backup-code"], markCodeCheck);
+  app.post("/api/auth/two-factor/*", rateLimits.twoFactor(), endPasswordOnlySessions, oneTwoFactorChangeAtATime, c => auth.handler(c.req.raw));
+  app.post("/api/auth/*", rateLimits.auth(), endPasswordOnlySessions, c => auth.handler(c.req.raw));
+  app.get("/api/auth/*", rateLimits.authRead(), endPasswordOnlySessions, c => auth.handler(c.req.raw));
 
   // Resolves the session onto every request; routes opt into requiring it.
   app.use(withSession);

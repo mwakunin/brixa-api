@@ -3,7 +3,6 @@ import type { Context } from "hono";
 import { and, eq } from "drizzle-orm";
 import { createMiddleware } from "hono/factory";
 import * as HttpStatusCodes from "stoker/http-status-codes";
-import * as HttpStatusPhrases from "stoker/http-status-phrases";
 import { z } from "zod";
 
 import type { AppDb } from "@/db";
@@ -12,6 +11,7 @@ import type { TenantBindings } from "@/lib/types";
 import { facilities, memberships } from "@/db/schema";
 import { runAsFacility } from "@/db/tenant-transaction";
 import { FACILITY_HEADER } from "@/lib/constants";
+import { notSignedIn } from "@/middlewares/auth";
 
 /**
  * Tenant resolution (CLAUDE.md §4): the facility comes from the signed-in
@@ -109,12 +109,8 @@ export const withFacility = createMiddleware<TenantBindings>(async (c, next) => 
     return next();
 
   const user = c.var.user;
-  if (!user) {
-    return c.json(
-      { message: HttpStatusPhrases.UNAUTHORIZED },
-      HttpStatusCodes.UNAUTHORIZED,
-    );
-  }
+  if (!user)
+    return notSignedIn(c);
 
   const requested = c.req.header(FACILITY_HEADER);
   if (!requested) {

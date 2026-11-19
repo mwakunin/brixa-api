@@ -1,9 +1,10 @@
-import type { MiddlewareHandler } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
 
 import { createMiddleware } from "hono/factory";
 import * as HttpStatusCodes from "stoker/http-status-codes";
 import * as HttpStatusPhrases from "stoker/http-status-phrases";
 
+import type { Session } from "@/lib/auth";
 import type { ClinicalRole } from "@/lib/professions";
 import type { AppBindings, Membership, MembershipRole, TenantBindings, UserRole } from "@/lib/types";
 
@@ -11,26 +12,85 @@ import { auth } from "@/lib/auth";
 import { businessDate, printedDate } from "@/lib/dates";
 
 /**
- * Resolves the Better Auth session (if any) onto the context. Always runs and
- * never rejects: routes decide whether a session is required.
+ * A session made by the password alone, for someone who has an
+ * authenticator: before setup, or by a sign-in still running as setup
+ * finished. It counts for nothing (`twoFactorVerified`, lib/auth.ts).
  */
-export const withSession = createMiddleware<AppBindings>(async (c, next) => {
-  const session = await auth.api.getSession({ headers: c.req.raw.headers });
+function passwordOnly(session: Session): boolean {
+  return session.user.twoFactorEnabled === true && session.session.twoFactorVerified !== true;
+}
 
-  c.set("user", session?.user ?? null);
-  c.set("session", session?.session ?? null);
+async function endSession(session: Session): Promise<void> {
+  await (await auth.$context).internalAdapter.deleteSession(session.session.token);
+}
+
+/**
+ * Ends a session made by the password alone, for someone who has an
+ * authenticator, before any of Better Auth's routes sees it (create-app.ts).
+ * Those routes run ahead of `withSession`, and several take a session and
+ * the password: reading the authenticator's secret back, turning two-step
+ * sign-in off, renewing the backup codes. With the session gone, each
+ * answers as for someone signed out, get-session says so too, and signing in
+ * asks for a code.
+ */
+export const endPasswordOnlySessions = createMiddleware<AppBindings>(async (c, next) => {
+  const session = await auth.api.getSession({ headers: c.req.raw.headers, query: { disableRefresh: true } });
+  if (session && passwordOnly(session))
+    await endSession(session);
 
   await next();
 });
 
-/** Rejects anyone without a valid session. */
-export const requireAuth = createMiddleware<AppBindings>(async (c, next) => {
-  if (!c.var.user) {
+/**
+ * Resolves the Better Auth session (if any) onto the context. Always runs and
+ * never rejects: routes decide whether a session is required.
+ *
+ * Every member of staff signs in with a code from an authenticator app
+ * (SPEC.md §2). Someone who has signed in with a password but not yet set one
+ * up has a session, and it is good for Better Auth's own routes alone, which
+ * are mounted ahead of this: setting the authenticator up, signing out. Here
+ * they count as not signed in, so no route can act as them by forgetting to
+ * check, and the refusal says what to do (`notSignedIn`).
+ *
+ * Once a person has an authenticator, only a session a code was given for
+ * counts (`twoFactorVerified`, lib/auth.ts). Any other of theirs was made by
+ * the password alone, before setup or while it finished: it is ended here,
+ * and the request is answered as from someone signed out, who signs in again
+ * with a code.
+ */
+export const withSession = createMiddleware<AppBindings>(async (c, next) => {
+  const session = await auth.api.getSession({ headers: c.req.raw.headers });
+  const enrolled = session?.user.twoFactorEnabled === true;
+  const ready = enrolled && !passwordOnly(session);
+  if (session && enrolled && !ready)
+    await endSession(session);
+
+  c.set("user", ready ? session.user : null);
+  c.set("session", ready ? session.session : null);
+  c.set("twoFactorSetupPending", session !== null && !enrolled);
+
+  await next();
+});
+
+/**
+ * The answer to a request that needs someone signed in and has nobody: 401,
+ * or for a person still to set up their authenticator, 403 with
+ * `two_factor_setup_required`, which sends the staff app to its setup screen.
+ */
+export function notSignedIn<E extends AppBindings>(c: Context<E>): Response {
+  if (c.var.twoFactorSetupPending) {
     return c.json(
-      { message: HttpStatusPhrases.UNAUTHORIZED },
-      HttpStatusCodes.UNAUTHORIZED,
+      { message: "Set up two-step sign-in before you start work.", code: "two_factor_setup_required" },
+      HttpStatusCodes.FORBIDDEN,
     );
   }
+  return c.json({ message: HttpStatusPhrases.UNAUTHORIZED }, HttpStatusCodes.UNAUTHORIZED);
+}
+
+/** Rejects anyone without a valid session. */
+export const requireAuth = createMiddleware<AppBindings>(async (c, next) => {
+  if (!c.var.user)
+    return notSignedIn(c);
 
   await next();
 });
@@ -45,12 +105,8 @@ export function requireRole(...allowed: UserRole[]): MiddlewareHandler<AppBindin
   return createMiddleware<AppBindings>(async (c, next) => {
     const user = c.var.user;
 
-    if (!user) {
-      return c.json(
-        { message: HttpStatusPhrases.UNAUTHORIZED },
-        HttpStatusCodes.UNAUTHORIZED,
-      );
-    }
+    if (!user)
+      return notSignedIn(c);
 
     if (!allowed.includes(user.role as UserRole)) {
       return c.json(

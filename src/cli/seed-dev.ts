@@ -20,6 +20,7 @@ import { errorLine } from "@/lib/error-summary";
 async function main() {
   const seeded = await seedDevelopment();
   console.log(`Seeded ${seeded.staff.length} members of staff at Sample Hospital. Every password: ${seeded.password}`);
+  console.log("Every sign-in also asks for a code: `pnpm dev:code` prints it.");
   for (const member of seeded.staff)
     console.log(`  ${member.desk.padEnd(14)} ${member.email.padEnd(36)} ${member.name}`);
 }

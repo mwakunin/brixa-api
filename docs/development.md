@@ -28,7 +28,7 @@ pnpm db:seed
 
 This fills the dev database with **Sample Hospital**, a made-up facility, through the API, so every rule, charge and audit entry is real:
 
-- **Staff:** one member of staff per desk (front desk, triage, doctor, lab, lab supervisor, pharmacy, stores, cashier, finance, admin), each `<desk>@sample-hospital.test`. They all share the password the command prints.
+- **Staff:** one member of staff per desk (front desk, triage, doctor, lab, lab supervisor, pharmacy, stores, cashier, finance, admin), each `<desk>@sample-hospital.test`. They all share the password the command prints, and one authenticator (below).
 - **Two more facilities,** Sample Hospital, Westside and Sample Hospital, East (suspended), each with its own admin. A relief clerk, `relief@sample-hospital.test`, works at all three, so the staff app's facility picker has something to show.
 - **Set-up:** triage, General OPD and the Dental clinic with their fees, a malaria test and a blood count, and a pharmacy stocked with two medicines.
 - **Patients**, invented, at every outpatient desk:
@@ -44,6 +44,20 @@ It refuses to run:
 - if any of its three database connections (owner, app, auth) reaches a database that is not on this machine, read as `pg` reads it;
 - with `RESEND_API_KEY`, `AT_API_KEY` or `TASKS_QUEUE` set, since it must never send an email or SMS;
 - on a database that holds any facility: one seeded already, or a real one tunnelled to `localhost` (an SSH tunnel, the Cloud SQL proxy), which every host check would pass.
+
+### Signing in by hand
+
+Every sign-in asks for a code after the password (`SPEC.md` §2). Every seeded account, and every account the tests make, shares one authenticator secret (`src/dev/two-factor.ts`), so one code works for all of them:
+
+```sh
+pnpm dev:code
+```
+
+prints the code, which changes every 30 seconds, and the backup codes. brixa-web's `pnpm flows` and `pnpm screens` work the same code out from the same secret.
+
+The staff app asks for the code once brixa-web #10 is in. Before that, sign in through the API: post the email and password to `/api/auth/sign-in/email` and keep the cookie it sets (the challenge), then post `{ "code": "<from pnpm dev:code>" }` to `/api/auth/two-factor/verify-totp` with that cookie and an `Origin` header naming the staff app (`APP_URL`). That answer spends the challenge and sets the session cookie: keep it, in place of the challenge's, and send it with the requests that follow.
+
+The secret is in the code, in the open, and only the seed and the tests give it to an account. `enrolForDevelopment` refuses when `NODE_ENV` is `production`. What keeps it off a real database is the seed's own refusals above (a database not on this machine, one holding a facility, mail or SMS credentials set), the same ones that keep the seed's public password off it. An unset `NODE_ENV` counts as development, so those refusals, not `NODE_ENV`, are the guard. An account you invite by hand in development has no authenticator. The staff app asks it to set one up, with a real authenticator app, once its setup screen is in (brixa-web #10); until then such an account can sign in with its password and do nothing else.
 
 ### Starting again
 

@@ -4,7 +4,7 @@ import db from "@/db";
 import { effectiveHost } from "@/db/connection";
 import { facilities, user } from "@/db/schema";
 import { loadDrugCatalogue } from "@/lib/drug-catalogue-load";
-import { makeFacility, resetDb } from "@/test/helpers";
+import { makeFacility, resetDb, signIn } from "@/test/helpers";
 
 import { remoteConnections, SEED_PASSWORD, SEED_STAFF, seedDevelopment } from "./seed";
 
@@ -22,10 +22,8 @@ describe("the development seed", () => {
     const { default: app } = await import("@/app");
     let ip = 0;
     async function as(email: string) {
-      ip += 1;
-      const res = await app.request("/api/auth/sign-in/email", { method: "POST", headers: { "content-type": "application/json", "x-forwarded-for": `10.253.0.${ip}` }, body: JSON.stringify({ email, password: SEED_PASSWORD }) });
-      expect(res.status, email).toBe(200);
-      const cookie = res.headers.get("set-cookie")!.split(/,(?=\s*[^;=\s]+=)/).map(c => c.split(";")[0].trim()).join("; ");
+      // The password, then the development authenticator's code, as every seeded account signs in.
+      const { cookie } = await signIn(email, SEED_PASSWORD);
       return async (route: string) => {
         ip += 1;
         const answer = await app.request(route, { headers: { cookie, "x-facility-id": seeded.facilityId, "x-forwarded-for": `10.253.0.${ip}` } });

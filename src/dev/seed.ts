@@ -8,10 +8,13 @@ import { isLocalHostName } from "@/db/connection";
 import { facilities } from "@/db/schema";
 import env from "@/env";
 import { AccountExistsError, createAccount } from "@/lib/accounts";
+import { appOrigin, auth } from "@/lib/auth";
 import { addDays, businessDate } from "@/lib/dates";
 import { drugCatalogueSize, drugCodeOf, loadDrugCatalogue } from "@/lib/drug-catalogue-load";
 import { loadIcd11 } from "@/lib/icd11-load";
 import { invitationToken } from "@/lib/invitations";
+
+import { developmentCode, enrolForDevelopment } from "./two-factor";
 
 /**
  * A made-up hospital for development (`pnpm db:seed`): a facility, one
@@ -22,10 +25,11 @@ import { invitationToken } from "@/lib/invitations";
  * who works at three.
  *
  * The hospital is built through the API as the staff app would drive it, so
- * every rule, charge and audit entry is real. Four things are not, as no
- * route makes them: the superadmin account (`createAccount`), the shared
- * drug and ICD-11 catalogues (their lib loaders), and the suspension of the
- * third facility (one update on the owner connection). Synthetic data only, and
+ * every rule, charge and audit entry is real. Five things are not, as no
+ * route makes them: the superadmin account (`createAccount`), every
+ * account's authenticator (the shared development one, `./two-factor.ts`),
+ * the shared drug and ICD-11 catalogues (their lib loaders), and the
+ * suspension of the third facility (one update on the owner connection). Synthetic data only, and
  * never a message sent: it refuses to run with email or SMS credentials set,
  * against a database that is not on this machine, or in production
  * (CLAUDE.md §8).
@@ -108,16 +112,43 @@ async function send(method: string, route: string, as: Caller | null, body?: unk
   return res.status === 204 ? null : res.json();
 }
 
+/** The name=value pairs a response sets, without the ones it clears. */
+function cookiesFrom(res: Response): string | null {
+  const setCookie = res.headers.get("set-cookie");
+  if (!setCookie)
+    return null;
+  return setCookie.split(/,(?=\s*[^;=\s]+=)/).map(c => c.split(";")[0].trim()).filter(pair => !pair.endsWith("=")).join("; ");
+}
+
+/** Signs in as staff do: the password, then the development authenticator's code. */
 async function signIn(email: string): Promise<Session> {
   const res = await app.request("/api/auth/sign-in/email", {
     method: "POST",
     headers: { "content-type": "application/json", "x-forwarded-for": nextAddress() },
     body: JSON.stringify({ email, password: SEED_PASSWORD }),
   });
-  const setCookie = res.headers.get("set-cookie");
-  if (!res.ok || !setCookie)
+  const challenge = cookiesFrom(res);
+  if (!res.ok || !challenge)
     throw new SeedError(`Signing in as ${email} answered ${res.status}`);
-  return { cookie: setCookie.split(/,(?=\s*[^;=\s]+=)/).map(c => c.split(";")[0].trim()).join("; ") };
+
+  const verified = await app.request("/api/auth/two-factor/verify-totp", {
+    method: "POST",
+    // Carrying a cookie, it names the staff app as its origin, as a browser does (Better Auth's CSRF check).
+    headers: { "content-type": "application/json", "x-forwarded-for": nextAddress(), "cookie": challenge, "origin": appOrigin },
+    body: JSON.stringify({ code: await developmentCode() }),
+  });
+  const cookie = cookiesFrom(verified);
+  if (!verified.ok || !cookie)
+    throw new SeedError(`The code for ${email} answered ${verified.status}`);
+  return { cookie };
+}
+
+/** Sets up an account's authenticator, as its owner would on first signing in. */
+async function enrol(email: string): Promise<void> {
+  const found = await (await auth.$context).internalAdapter.findUserByEmail(email);
+  if (!found)
+    throw new SeedError(`No account for ${email} to set up two-step sign-in for`);
+  await enrolForDevelopment(found.user.id);
 }
 
 // ---------------------------------------------------------------------------
@@ -163,7 +194,8 @@ async function accept(invitationId: string): Promise<void> {
 /** The facility, onboarded by a superadmin, with its admin and every other member invited and signed in. */
 async function facilityAndStaff(): Promise<{ facilityId: string; staff: Staff }> {
   try {
-    await createAccount({ email: SUPERADMIN, name: "Platform Superadmin", password: SEED_PASSWORD, role: "superadmin" });
+    const superadmin = await createAccount({ email: SUPERADMIN, name: "Platform Superadmin", password: SEED_PASSWORD, role: "superadmin" });
+    await enrolForDevelopment(superadmin.id);
   }
   catch (err) {
     if (err instanceof AccountExistsError)
@@ -174,6 +206,7 @@ async function facilityAndStaff(): Promise<{ facilityId: string; staff: Staff }>
   const { admin } = SEED_STAFF;
   const facility = await send("POST", "/superadmin/facilities", superadmin, { name: SEED_FACILITY, kmhfrCode: "DEV-00001", kephLevel: 4, county: "Nairobi", admin: { name: admin.name, email: admin.email } });
   await accept(facility.adminInvitationId);
+  await enrol(admin.email);
   const staff = { admin: { session: await signIn(admin.email), facilityId: facility.id } } as Staff;
 
   const expiresOn = addDays(businessDate(), 365);
@@ -182,6 +215,7 @@ async function facilityAndStaff(): Promise<{ facilityId: string; staff: Staff }>
       continue;
     const invited = await send("POST", "/staff/invitations", staff.admin, { name: member.name, email: member.email, roles: member.roles, ...(member.licence ? { licence: { ...member.licence, expiresOn } } : {}) });
     await accept(invited.id);
+    await enrol(member.email);
     staff[key] = { session: await signIn(member.email), facilityId: facility.id };
   }
   await otherFacilities(superadmin);
@@ -198,6 +232,7 @@ async function otherFacilities(superadmin: Caller): Promise<void> {
   for (const other of OTHER_FACILITIES) {
     const facility = await send("POST", "/superadmin/facilities", superadmin, { name: other.name, kmhfrCode: other.kmhfrCode, kephLevel: 4, county: "Nairobi", admin: other.admin });
     await accept(facility.adminInvitationId);
+    await enrol(other.admin.email);
     const admin = { session: await signIn(other.admin.email), facilityId: facility.id };
     const invited = await send("POST", "/staff/invitations", admin, { name: relief.name, email: relief.email, roles: other.roles });
     await accept(invited.id);
