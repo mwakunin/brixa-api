@@ -17,7 +17,7 @@ import env from "@/env";
 import { emailEnabled, EmailError, sendEmail } from "./email";
 import { errorLine, summarizeError } from "./error-summary";
 import { logger } from "./logger";
-import { markEnrolled, recordSignInEvent, signInLog } from "./sign-in-log";
+import { markEnrolled, noteSignInEvent, signInLog } from "./sign-in-log";
 
 /** The staff app's origin: scheme, host and port, whatever path APP_URL carries. */
 export const appOrigin = new URL(env.APP_URL).origin;
@@ -137,7 +137,12 @@ function backupCode(): string {
   return `${five()}-${five()}`;
 }
 
-/** Whether this person's password changed after `since`: a sign-in that checked it before then rests on an old one. */
+/**
+ * Whether this person's credential changed after `since`: a new password, or
+ * Brixa support resetting their two-step sign-in, which writes the same time
+ * (superadmin.handlers.ts). A sign-in begun before then rests on what was
+ * there before, and gets no session.
+ */
 async function passwordChangedSince(userId: string, since: Date): Promise<boolean> {
   const [credential] = await authDb
     .select({ changedAt: authSchema.account.updatedAt })
@@ -314,7 +319,7 @@ export const auth = betterAuth({
     revokeSessionsOnPasswordReset: true,
     async onPasswordReset({ user: changed }) {
       logger.info({ userId: changed.id }, "Password reset");
-      await recordSignInEvent({ event: "password_reset", userId: changed.id });
+      await noteSignInEvent({ event: "password_reset", userId: changed.id });
       /*
        * A sign-in waiting for its code began with the old password, so it
        * ends too, as a session would. Its challenge is a verification row
@@ -348,7 +353,7 @@ export const auth = betterAuth({
           if (ctx?.path === "/two-factor/verify-totp" && enabled) {
             // For the sign-in log: the session this request now issues is the same person carrying on, not a sign-in.
             markEnrolled();
-            await recordSignInEvent({ event: "two_factor_enabled", userId: updated.id });
+            await noteSignInEvent({ event: "two_factor_enabled", userId: updated.id });
             await notify(
               updated,
               "authenticator set up notice",
@@ -357,7 +362,7 @@ export const auth = betterAuth({
             );
           }
           else if (ctx?.path === "/two-factor/disable" && !enabled) {
-            await recordSignInEvent({ event: "two_factor_disabled", userId: updated.id });
+            await noteSignInEvent({ event: "two_factor_disabled", userId: updated.id });
             await notify(
               updated,
               "two-step sign-in off notice",
@@ -373,7 +378,7 @@ export const auth = betterAuth({
         // Signing out, for the sign-in log. Sessions also end by a reset or by expiring, which is not someone leaving.
         async after(ended, ctx) {
           if (ctx?.path === "/sign-out")
-            await recordSignInEvent({ event: "signed_out", userId: ended.userId });
+            await noteSignInEvent({ event: "signed_out", userId: ended.userId });
         },
       },
       create: {

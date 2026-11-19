@@ -550,7 +550,7 @@ export const signInEvents = pgTable("sign_in_events", {
   oneOf("sign_in_events_event_known", t.event, ["password_failed", "password_accepted", "signed_in", "code_failed", "locked", "refused_locked", "signed_out", "password_reset", "password_changed", "two_factor_enabled", "two_factor_disabled", "backup_codes_renewed", "two_factor_reset", "log_exported"]),
   oneOf("sign_in_events_factor_known", t.factor, ["password", "totp", "backup_code"]),
   // A reset is support's act on someone else, with a reason; an export is support's, of the whole log.
-  check("sign_in_events_reset_by_someone_else", sql`${t.event} <> 'two_factor_reset' OR (${t.actorId} IS NOT NULL AND ${t.actorId} <> ${t.userId} AND ${t.note} IS NOT NULL)`),
+  check("sign_in_events_reset_by_someone_else", sql`${t.event} <> 'two_factor_reset' OR (${t.userId} IS NOT NULL AND ${t.actorId} IS NOT NULL AND ${t.actorId} <> ${t.userId} AND ${t.note} IS NOT NULL)`),
   check("sign_in_events_export_has_actor", sql`${t.event} <> 'log_exported' OR ${t.actorId} IS NOT NULL`),
 ]);
 

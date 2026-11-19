@@ -15,6 +15,7 @@ describe("the development seed", () => {
     await resetDb();
   });
 
+  // A whole hospital set up through the API, some thirty sign-ins each with its code: longer than the suite's 20 s.
   it("fills every outpatient desk, through the API, once", async () => {
     const seeded = await seedDevelopment();
     expect(seeded.staff).toHaveLength(Object.keys(SEED_STAFF).length);
@@ -61,7 +62,7 @@ describe("the development seed", () => {
     ]);
 
     await expect(seedDevelopment()).rejects.toThrow(/seeded already/);
-  });
+  }, 60_000);
 
   it("finds the medicines it stocks before writing anything, and stops there if the catalogue lacks one", async () => {
     await loadDrugCatalogue("code,generic_name,strength,form,dose_unit,route,controlled_schedule\nAMX-500-CAP,Amoxicillin,500 mg,Capsule,capsule,oral,\n");

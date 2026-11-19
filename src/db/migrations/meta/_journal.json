@@ -792,6 +792,20 @@
       "when": 1795076655539,
       "tag": "0112_sign_in_events_append_only",
       "breakpoints": true
+    },
+    {
+      "idx": 113,
+      "version": "7",
+      "when": 1795098820664,
+      "tag": "0113_sign_in_events_reset_names_someone",
+      "breakpoints": true
+    },
+    {
+      "idx": 114,
+      "version": "7",
+      "when": 1795098825927,
+      "tag": "0114_sign_in_events_no_truncate",
+      "breakpoints": true
     }
   ]
 }

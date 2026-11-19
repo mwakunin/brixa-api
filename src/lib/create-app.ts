@@ -11,7 +11,7 @@ import { defaultHook } from "stoker/openapi";
 import { answerNoSoonerThan } from "@/middlewares/answer-time";
 import { endPasswordOnlySessions, withSession } from "@/middlewares/auth";
 import { pinoLogger } from "@/middlewares/pino-logger";
-import { rateLimits } from "@/middlewares/rate-limit";
+import { jsonBodiesOnly, rateLimits } from "@/middlewares/rate-limit";
 import { signInLock } from "@/middlewares/sign-in-lock";
 
 import type { AppBindings, AppOpenAPI, TenantBindings, TenantOpenAPI } from "./types";
@@ -117,6 +117,8 @@ export default function createApp(): AppOpenAPI {
   // authenticator, ended, so no auth route acts on it (middlewares/auth.ts);
   // a request the limiter refuses never has its session looked up. Changes
   // to one person's two-step sign-in run one at a time (lib/auth.ts).
+  // Their bodies are JSON or nothing: the account keys read JSON alone (middlewares/rate-limit.ts).
+  app.post("/api/auth/*", jsonBodiesOnly);
   app.post("/api/auth/sign-in/email", rateLimits.signInAccountFromAddress(), rateLimits.signInAccount(), signInLock(), markSignInStart);
   app.post("/api/auth/request-password-reset", rateLimits.auth(), endPasswordOnlySessions, answerNoSoonerThan(RESET_REQUEST_ANSWER_MS), c => auth.handler(c.req.raw));
   app.on("POST", ["/api/auth/two-factor/verify-totp", "/api/auth/two-factor/verify-backup-code"], markCodeCheck);

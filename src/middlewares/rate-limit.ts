@@ -115,6 +115,19 @@ export const bySignInEmailFromAddress: KeySource = async (c) => {
   return account === null ? null : `${account}:${await byAddress(c)}`;
 };
 
+/**
+ * Refuses an auth request whose body is not JSON (415). Better Auth also
+ * reads form-encoded and multipart bodies, which the account keys above
+ * cannot: a sign-in sent as a form would count against no account, and pass
+ * the lock on wrong passwords (sign-in-lock.ts). The staff app sends JSON.
+ */
+export const jsonBodiesOnly: MiddlewareHandler<AppBindings> = async (c, next) => {
+  const type = c.req.header("content-type");
+  if (type && type.split(";")[0].trim().toLowerCase() !== "application/json")
+    return c.json({ message: "Send the request as JSON.", code: "unsupported_media_type" }, HttpStatusCodes.UNSUPPORTED_MEDIA_TYPE);
+  await next();
+};
+
 export function rateLimit(options: RateLimitOptions): MiddlewareHandler<AppBindings> {
   const limiter = new RateLimiterRedis({
     storeClient: options.client ?? redis,

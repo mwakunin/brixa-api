@@ -1,0 +1,2 @@
+ALTER TABLE "sign_in_events" DROP CONSTRAINT "sign_in_events_reset_by_someone_else";--> statement-breakpoint
+ALTER TABLE "sign_in_events" ADD CONSTRAINT "sign_in_events_reset_by_someone_else" CHECK ("sign_in_events"."event" <> 'two_factor_reset' OR ("sign_in_events"."user_id" IS NOT NULL AND "sign_in_events"."actor_id" IS NOT NULL AND "sign_in_events"."actor_id" <> "sign_in_events"."user_id" AND "sign_in_events"."note" IS NOT NULL));

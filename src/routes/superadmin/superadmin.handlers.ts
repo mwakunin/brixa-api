@@ -5,7 +5,7 @@ import * as HttpStatusCodes from "stoker/http-status-codes";
 import type { AppRouteHandler } from "@/lib/types";
 
 import db from "@/db";
-import { facilities, priceLists, session, signInEvents, twoFactor, user, verification } from "@/db/schema";
+import { account, facilities, priceLists, session, signInEvents, twoFactor, user, verification } from "@/db/schema";
 import { recordAudit } from "@/lib/audit";
 import { notify } from "@/lib/auth";
 import { addDays, startOfBusinessDay } from "@/lib/dates";
@@ -213,7 +213,9 @@ export const exportSignInEvents: AppRouteHandler<ExportSignInEventsRoute> = asyn
  *
  * Their authenticator and backup codes go, every session and every sign-in
  * waiting for a code ends, and the reset is logged with support's reason, in
- * one transaction on the owner connection. Signing in next, they are asked
+ * one transaction on the owner connection. It also writes the credential's
+ * change time, as a new password does, so a code check already under way is
+ * refused its session. Signing in next, they are asked
  * to set an authenticator up again. They are told by email, so a reset they
  * did not ask for does not go unnoticed.
  */
@@ -236,6 +238,8 @@ export const resetTwoFactor: AppRouteHandler<ResetTwoFactorRoute> = async (c) =>
     await tx.update(user).set({ twoFactorEnabled: false }).where(eq(user.id, person.id));
     await tx.delete(session).where(eq(session.userId, person.id));
     await tx.delete(verification).where(and(eq(verification.value, person.id), like(verification.identifier, "2fa-%")));
+    // A fence for a sign-in already under way: like a password change, this time refuses it a session (lib/auth.ts).
+    await tx.update(account).set({ updatedAt: new Date() }).where(and(eq(account.userId, person.id), eq(account.providerId, "credential")));
     await recordSignInEvent({ event: "two_factor_reset", userId: person.id, actorId: superadmin.id, note: reason }, tx);
   });
 

@@ -9,7 +9,7 @@ import type { AppBindings } from "@/lib/types";
 
 import { auth } from "@/lib/auth";
 import { redis } from "@/lib/redis";
-import { recordSignInEvent } from "@/lib/sign-in-log";
+import { noteSignInEvent } from "@/lib/sign-in-log";
 
 import { bySignInEmailFromAddress } from "./rate-limit";
 
@@ -69,7 +69,7 @@ export function signInLock(client?: Redis): MiddlewareHandler<AppBindings> {
 
     const counted = await limiter.get(key);
     if (counted && counted.consumedPoints >= LOCK_AFTER) {
-      await recordSignInEvent({ event: "refused_locked", userId: await accountNamed(email), factor: "password" });
+      await noteSignInEvent({ event: "refused_locked", userId: await accountNamed(email), factor: "password" });
       const retryAfter = Math.max(1, Math.ceil(counted.msBeforeNext / 1000));
       c.header("Retry-After", String(retryAfter));
       return c.json(
@@ -88,7 +88,7 @@ export function signInLock(client?: Redis): MiddlewareHandler<AppBindings> {
       const after = await limiter.penalty(key, 1);
       if (after.consumedPoints === LOCK_AFTER) {
         await limiter.block(key, LOCK_SECONDS);
-        await recordSignInEvent({ event: "locked", userId: await accountNamed(email), factor: "password" });
+        await noteSignInEvent({ event: "locked", userId: await accountNamed(email), factor: "password" });
       }
     }
     else if (c.res.ok) {

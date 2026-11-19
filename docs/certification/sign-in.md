@@ -24,7 +24,7 @@ The decisions behind these controls are in `SPEC.md` §2 ("Two-step sign-in for 
 | Control | Where | Proven by |
 |---|---|---|
 | Five wrong codes in a row at sign-in lock the account for 15 minutes, from wherever they come. Wrong codes while setting an authenticator up are not counted: setup already needs a session and the password, and its code checks fall under the address limit below | `accountLockout` in `src/lib/auth.ts` | "locks the account for fifteen minutes…" |
-| Five wrong passwords in a row lock the account from that address for 15 minutes, refusing even the right password, and the lock is logged. Counted per account and address, so a stranger who knows an email cannot lock its owner out at their desk | `src/middlewares/sign-in-lock.ts` | `src/lib/sign-in-log.test.ts` ("the lock on wrong passwords") |
+| Five wrong passwords within 15 minutes, with no right one between, lock the account from that address for 15 minutes from the fifth, refusing even the right password; the lock is logged, and once it ends the count starts again. Counted per account and address, so a stranger who knows an email cannot lock its owner out at their desk. A sign-in whose body is not JSON is refused before anything is counted, since only JSON names the account | `src/middlewares/sign-in-lock.ts` | `src/lib/sign-in-log.test.ts` ("the lock on wrong passwords") |
 | Each challenge for a code takes at most five tries | The two-factor plugin | Better Auth's own tests |
 | Password guesses are limited per account from one address (10 in 15 minutes), per account from anywhere (100 in 15 minutes) and per address (10 a minute) | `src/lib/create-app.ts`, `src/middlewares/rate-limit.ts` | `src/middlewares/rate-limit.test.ts` |
 | Code checks are limited per address (30 a minute), apart from the sign-in budget | The same | "checks codes under their own address limit…" |
@@ -43,8 +43,8 @@ The decisions behind these controls are in `SPEC.md` §2 ("Two-step sign-in for 
 | Every sign-in is logged, by the factor that finished it, with each wrong password and wrong code, each lock and each try while locked, and each sign-out | `src/lib/sign-in-log.ts`, `src/middlewares/sign-in-lock.ts` | `src/lib/sign-in-log.test.ts` ("the sign-in log") |
 | Every change to how someone signs in is logged: a password reset or change, an authenticator set up or turned off, backup codes renewed, a reset by support | The same, and `src/lib/auth.ts` | The same |
 | Each event records the address (as the trusted proxies report it) and the browser it came from. A password tried on an address with no account is recorded under no one, without what was typed | The same | "records a wrong password under its account…" |
-| The log is append-only for every role, the owner included, and nothing deletes from it: kept at least 20 years | `src/db/migrations/0112_sign_in_events_append_only.sql` | "is append-only for every role…" |
-| Only Better Auth's role writes it, and it cannot read it back; the app role cannot touch it | The same migration | The same test |
+| The log is append-only for every role, the owner included: neither an update, a delete nor a TRUNCATE gets through, and nothing deletes from it: kept at least 20 years | `src/db/migrations/0112_sign_in_events_append_only.sql` | "is append-only for every role…" |
+| Of the roles the API runs as, only Better Auth's writes it, and it cannot read it back; the app role cannot touch it. Brixa support's export and resets write their events on the owner connection, in the same transaction as what they record. An event that cannot be written is logged as an error and never blocks or undoes what it describes, which has already happened | The same migration, `src/lib/sign-in-log.ts` | The same test, "sets an authenticator up even when its event cannot be written…" |
 | Brixa support exports it between two dates as CSV for the quarterly review, at most a year at a time. Each export is itself logged. Cells a spreadsheet would read as a formula are neutralised | `GET /superadmin/sign-in-events`, `src/routes/superadmin/` | "the export of the log, for Brixa support" |
 
 ## Lost phones
@@ -52,7 +52,7 @@ The decisions behind these controls are in `SPEC.md` §2 ("Two-step sign-in for 
 | Control | Where | Proven by |
 |---|---|---|
 | Someone who has lost both their phone and their backup codes is reset by Brixa support, after checking who they are, never by a facility admin. The reason is required and logged; nobody resets their own | `POST /superadmin/two-factor-resets` | "resetting someone's two-step sign-in, by Brixa support" |
-| A reset removes the authenticator and backup codes, ends every session and every sign-in waiting for a code, and emails the person. Their next sign-in sets up a new authenticator | The same | The same |
+| A reset removes the authenticator and backup codes, ends every session and every sign-in waiting for a code, and emails the person. Their next sign-in sets up a new authenticator. It writes the time a password change would, so a code check already under way is refused its session | The same | The same, and "refuses a session to a code check under way when support resets…" |
 
 ## Not yet done
 

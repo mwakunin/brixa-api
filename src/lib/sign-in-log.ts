@@ -1,7 +1,7 @@
 import type { BetterAuthPlugin } from "better-auth";
 import type { MiddlewareHandler } from "hono";
 
-import { createAuthMiddleware, isAPIError } from "better-auth/api";
+import { createAuthMiddleware, getSessionFromCtx, isAPIError } from "better-auth/api";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import type { AppDb } from "@/db";
@@ -12,6 +12,8 @@ import { signInEvents } from "@/db/schema";
 import { callerAddress } from "@/middlewares/rate-limit";
 
 import { BUSINESS_TIME_ZONE } from "./dates";
+import { summarizeError } from "./error-summary";
+import { logger } from "./logger";
 
 /**
  * The sign-in log (SPEC.md §2, `sign_in_events`): every sign-in, failed
@@ -28,6 +30,12 @@ interface Caller {
   userAgent: string | null;
   /** Set when this request finished setting up an authenticator: its new session is not a sign-in. */
   enrolled: boolean;
+  /**
+   * Whose code a code route checks: the session's person while setting an
+   * authenticator up, else the challenge's. Found before the route runs,
+   * since a right code sent at the same moment can spend the challenge.
+   */
+  codeOwner: string | null;
 }
 
 const caller = new AsyncLocalStorage<Caller>();
@@ -40,6 +48,7 @@ export const rememberCaller: MiddlewareHandler<AppBindings> = (c, next) => calle
   ipAddress: callerAddress(c) ?? null,
   userAgent: c.req.header("user-agent")?.slice(0, USER_AGENT_MAX) ?? null,
   enrolled: false,
+  codeOwner: null,
 }, next);
 
 /** This request set an authenticator up; the session it then issues is the same person carrying on. */
@@ -70,6 +79,23 @@ export async function recordSignInEvent(
   });
 }
 
+/**
+ * Records an event on Better Auth's side, after what it describes has
+ * happened. A failure to write it is logged as an error, for alerting, and
+ * goes no further: the sign-in, setup or reset it describes is done, and
+ * failing the request now would undo none of it and could leave it half
+ * finished. Brixa support's export and resets write theirs inside their own
+ * transaction instead (`recordSignInEvent`), and fail with it.
+ */
+export async function noteSignInEvent(entry: Parameters<typeof recordSignInEvent>[0]): Promise<void> {
+  try {
+    await recordSignInEvent(entry);
+  }
+  catch (err) {
+    logger.error({ error: summarizeError(err), event: entry.event }, "Could not record a sign-in event");
+  }
+}
+
 /** Better Auth's routes this log follows, with the factor each tries. */
 const FOLLOWED: Record<string, SignInFactor | null> = {
   "/sign-in/email": "password",
@@ -94,6 +120,22 @@ export function signInLog(): BetterAuthPlugin {
   return {
     id: "brixa-sign-in-log",
     hooks: {
+      before: [{
+        matcher: context => context.path === "/two-factor/verify-totp" || context.path === "/two-factor/verify-backup-code",
+        handler: createAuthMiddleware(async (ctx) => {
+          const from = caller.getStore();
+          if (!from)
+            return;
+          const current = await getSessionFromCtx(ctx);
+          if (current) {
+            from.codeOwner = current.user.id;
+            return;
+          }
+          const cookie = ctx.context.createAuthCookie("two_factor");
+          const challenge = await ctx.getSignedCookie(cookie.name, ctx.context.secret);
+          from.codeOwner = challenge ? (await ctx.context.internalAdapter.findVerificationValue(challenge))?.value ?? null : null;
+        }),
+      }],
       after: [{
         matcher: context => (context.path ?? "") in FOLLOWED,
         handler: createAuthMiddleware(async (ctx) => {
@@ -106,36 +148,34 @@ export function signInLog(): BetterAuthPlugin {
             const named = email ? await ctx.context.internalAdapter.findUserByEmail(email) : null;
             // An address with no account is recorded without it: what was typed may be a password in the wrong box.
             if (refused?.statusCode === 401)
-              await recordSignInEvent({ event: "password_failed", userId: named?.user.id, factor });
+              await noteSignInEvent({ event: "password_failed", userId: named?.user.id, factor });
             else if (!refused && isRecord(returned) && returned.twoFactorRedirect === true)
-              await recordSignInEvent({ event: "password_accepted", userId: named?.user.id, factor });
+              await noteSignInEvent({ event: "password_accepted", userId: named?.user.id, factor });
             else if (!refused && ctx.context.newSession)
-              await recordSignInEvent({ event: "signed_in", userId: ctx.context.newSession.user.id, factor });
+              await noteSignInEvent({ event: "signed_in", userId: ctx.context.newSession.user.id, factor });
             return;
           }
 
           if (ctx.path === "/two-factor/verify-totp" || ctx.path === "/two-factor/verify-backup-code") {
             if (!refused) {
               if (ctx.context.newSession && !caller.getStore()?.enrolled)
-                await recordSignInEvent({ event: "signed_in", userId: ctx.context.newSession.user.id, factor });
+                await noteSignInEvent({ event: "signed_in", userId: ctx.context.newSession.user.id, factor });
               return;
             }
-            // Whose sign-in: the challenge the password step left. None while setting an authenticator up.
-            const cookie = ctx.context.createAuthCookie("two_factor");
-            const challenge = await ctx.getSignedCookie(cookie.name, ctx.context.secret);
-            const userId = challenge ? (await ctx.context.internalAdapter.findVerificationValue(challenge))?.value : undefined;
+            // Whose code: found by the before hook, while the challenge was still there to read.
+            const userId = caller.getStore()?.codeOwner;
             if (!userId)
               return;
             const code = isRecord(refused.body) ? refused.body.code : undefined;
             if (code === "INVALID_CODE" || code === "INVALID_BACKUP_CODE") {
-              await recordSignInEvent({ event: "code_failed", userId, factor });
+              await noteSignInEvent({ event: "code_failed", userId, factor });
               // The plugin refuses every try once locked, so this is seen once, at the try that locked it.
               const authenticator = await ctx.context.adapter.findOne<{ lockedUntil: Date | null }>({ model: "twoFactor", where: [{ field: "userId", value: userId }] });
               if (authenticator?.lockedUntil && new Date(authenticator.lockedUntil) > new Date())
-                await recordSignInEvent({ event: "locked", userId, factor });
+                await noteSignInEvent({ event: "locked", userId, factor });
             }
             else if (code === "ACCOUNT_TEMPORARILY_LOCKED") {
-              await recordSignInEvent({ event: "refused_locked", userId, factor });
+              await noteSignInEvent({ event: "refused_locked", userId, factor });
             }
             return;
           }
@@ -144,9 +184,9 @@ export function signInLog(): BetterAuthPlugin {
           if (refused || !userId)
             return;
           if (ctx.path === "/two-factor/generate-backup-codes")
-            await recordSignInEvent({ event: "backup_codes_renewed", userId });
+            await noteSignInEvent({ event: "backup_codes_renewed", userId });
           else if (ctx.path === "/change-password")
-            await recordSignInEvent({ event: "password_changed", userId });
+            await noteSignInEvent({ event: "password_changed", userId });
         }),
       }],
     },
