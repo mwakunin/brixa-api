@@ -243,17 +243,20 @@ describe("the invitation, from email to first sign-in", () => {
       await holder.query("SELECT 1 FROM invitations WHERE id = $1 FOR UPDATE", [invitation.id]);
       const holderPid = Number((await holder.query("SELECT pg_backend_pid() AS pid")).rows[0].pid);
 
-      both = Promise.all([
+      const requests = [
         accept({ token, password: NEW_PASSWORD }),
         accept({ token, password: "another-password-x" }),
-      ]);
+      ];
+      both = Promise.all(requests);
+      // The refused one answers while the other still waits behind the row lock: the two overlapped, however they were scheduled.
+      const refused = await Promise.race(requests);
       expect(await waitForBlockedBackend(holderPid, 5000, 1)).toBe(true);
+      expect(refused.status).toBe(409);
+      expect((await refused.json()).code).toBe("accept_under_way");
       await holder.query("COMMIT");
 
       const results = await both;
       expect(results.map(r => r.status).sort()).toEqual([200, 409]);
-      const refused = results.find(r => r.status === 409)!;
-      expect((await refused.json()).code).toBe("accept_under_way");
     }
     finally {
       await holder.query("ROLLBACK").catch(() => {});
