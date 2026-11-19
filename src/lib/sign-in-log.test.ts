@@ -15,7 +15,7 @@ import { LOCK_SECONDS } from "@/middlewares/sign-in-lock";
 import { cookieFrom, createTestAccount, nextEmail, nextIp, postJson, resetDb, signedInUser, signIn, TEST_PASSWORD } from "@/test/helpers";
 import { decodeSecret } from "@/test/two-factor-secret";
 
-import { signInEventsCsv } from "./sign-in-log";
+import { EXPORT_PAGE_ROWS, signInEventsCsv } from "./sign-in-support";
 
 /**
  * The sign-in log (SPEC.md §2, lib/sign-in-log.ts) and the lock on wrong
@@ -333,6 +333,38 @@ describe("the export of the log, for Brixa support", () => {
     expect((await events()).at(-1)).toEqual({ event: "log_exported", userId: null, actorId: support.id, factor: null, note: `${today} to ${today}` });
   });
 
+  /*
+   * A long range is read a page at a time, so the API holds one page of it
+   * however many events it covers. Events that share a time, or differ by a
+   * microsecond, are neither repeated nor lost where one page ends.
+   */
+  it("sends a long range a page at a time, every event once and oldest first", async () => {
+    const support = await signedInUser({ role: "superadmin" });
+    const count = EXPORT_PAGE_ROWS * 2 + 500;
+    await db.execute(sql`
+      INSERT INTO sign_in_events (event, factor, at, user_agent)
+      SELECT 'password_failed', 'password', '2026-01-15 10:00:00.123456+03'::timestamptz + (g % 7) * interval '1 microsecond', 'agent ' || g
+      FROM generate_series(1, ${count}) AS g`);
+
+    const res = await exportFor(support.headers, "2026-01-15", "2026-01-15");
+
+    expect(res.status).toBe(200);
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let text = "";
+    let chunks = 0;
+    for (let read = await reader.read(); !read.done; read = await reader.read()) {
+      chunks += 1;
+      text += decoder.decode(read.value, { stream: true });
+    }
+    const agents = text.trim().split("\r\n").slice(1).map(line => Number(line.split(",").at(-1)!.replace(/\D/g, "")));
+    expect(chunks).toBeGreaterThanOrEqual(3);
+    expect(agents).toHaveLength(count);
+    expect(new Set(agents).size).toBe(count);
+    // Oldest first: the microsecond each was given never goes back.
+    expect(agents.map(g => g % 7)).toEqual(agents.map(g => g % 7).sort((a, b) => a - b));
+  });
+
   it("allows each member of support ten exports an hour", async () => {
     const support = await signedInUser({ role: "superadmin" });
     const today = businessDate();
@@ -357,7 +389,7 @@ describe("the export of the log, for Brixa support", () => {
   it("opens with an apostrophe any cell a spreadsheet would take for a formula", () => {
     const csv = signInEventsCsv([{ at: new Date("2026-11-19T05:00:00Z"), event: "signed_in", factor: "totp", name: "=HYPERLINK(\"http://x\")", email: "a@b.test", actorEmail: null, note: null, ipAddress: null, userAgent: "-cmd" }]);
 
-    expect(csv.split("\r\n")[1]).toBe("\"2026-11-19 08:00:00\",\"signed_in\",\"totp\",\"'=HYPERLINK(\"\"http://x\"\")\",\"a@b.test\",\"\",\"\",\"\",\"'-cmd\"");
+    expect(csv.split("\r\n")[0]).toBe("\"2026-11-19 08:00:00\",\"signed_in\",\"totp\",\"'=HYPERLINK(\"\"http://x\"\")\",\"a@b.test\",\"\",\"\",\"\",\"'-cmd\"");
   });
 });
 
@@ -436,6 +468,31 @@ describe("resetting someone's two-step sign-in, by Brixa support", () => {
     expect(await refused?.json()).toMatchObject({ code: "TWO_FACTOR_CHANGE_UNDER_WAY" });
     expect(await db.select().from(twoFactor).where(eq(twoFactor.userId, person.id))).toHaveLength(1);
     expect((await reset(support.headers, { email: person.email, reason })).status).toBe(200);
+  });
+
+  // Support's acts wait for their events (lib/sign-in-support.ts), unlike a sign-in, which has already happened.
+  it("refuses a reset or an export whose event cannot be written, and changes nothing", async () => {
+    const support = await signedInUser({ role: "superadmin" });
+    const person = await signedInUser();
+    const today = businessDate();
+    await db.execute(sql`
+      CREATE FUNCTION refuse_support_events() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'simulated failure'; END; $$;
+      CREATE TRIGGER refuse_support_events BEFORE INSERT ON sign_in_events
+        FOR EACH ROW WHEN (NEW.event IN ('two_factor_reset', 'log_exported')) EXECUTE FUNCTION refuse_support_events();
+    `);
+    try {
+      expect((await reset(support.headers, { email: person.email, reason })).status).toBe(500);
+      const exported = await app.request(`/superadmin/sign-in-events?from=${today}&to=${today}`, { headers: { "x-forwarded-for": nextIp(), ...support.headers } });
+      expect(exported.status).toBe(500);
+    }
+    finally {
+      await db.execute(sql`DROP TRIGGER refuse_support_events ON sign_in_events; DROP FUNCTION refuse_support_events();`);
+    }
+
+    expect(await db.select().from(twoFactor).where(eq(twoFactor.userId, person.id))).toHaveLength(1);
+    expect(await db.select().from(session).where(eq(session.userId, person.id))).not.toEqual([]);
+    expect(sentEmails.some(m => m.to === person.email && m.subject === "Your Brixa HMIS two-step sign-in was reset")).toBe(false);
   });
 
   it("will not record a reset without the person it was for", async () => {

@@ -1,19 +1,16 @@
-import { and, asc, eq, gte, like, lt } from "drizzle-orm";
-import { alias } from "drizzle-orm/pg-core";
+import { asc, eq } from "drizzle-orm";
 import * as HttpStatusCodes from "stoker/http-status-codes";
 
 import type { AppRouteHandler } from "@/lib/types";
 
-import db, { withAdvisoryLock } from "@/db";
-import { account, facilities, priceLists, session, signInEvents, twoFactor, user, verification } from "@/db/schema";
+import db from "@/db";
+import { facilities, priceLists } from "@/db/schema";
 import { recordAudit } from "@/lib/audit";
-import { notify, twoFactorChangeKey } from "@/lib/auth";
-import { addDays, startOfBusinessDay } from "@/lib/dates";
 import { isUniqueViolation, pgConstraintName } from "@/lib/db-errors";
 import { createInvitation } from "@/lib/invitations";
 import { ACCESSION_SERIES, CLINICAL_SERIES, FISCAL_SERIES, registerSeries, STOCK_SERIES } from "@/lib/number-series";
 import { nudgingAfterCommit } from "@/lib/outbox-nudge";
-import { recordSignInEvent, signInEventsCsv } from "@/lib/sign-in-log";
+import { exportSignInLog, resetTwoStepSignIn, TwoFactorResetError } from "@/lib/sign-in-support";
 
 import type { CreateFacilityRoute, ExportSignInEventsRoute, ListFacilitiesRoute, ResetTwoFactorRoute, SetSmsSenderRoute } from "./superadmin.routes";
 
@@ -165,97 +162,28 @@ export const setSmsSender: AppRouteHandler<SetSmsSenderRoute> = async (c) => {
   return c.json({ id: updated.id, smsSenderId: updated.smsSenderId }, HttpStatusCodes.OK);
 };
 
-/**
- * The sign-in log between two Nairobi dates, as CSV, for the quarterly
- * review. Read on the owner connection, as the rest of this plane is: no
- * other role may read the log. The export is recorded in the log, by whom
- * and for which dates, in the same transaction.
- */
+/** The sign-in log between two Nairobi dates, as CSV (lib/sign-in-support.ts). */
 export const exportSignInEvents: AppRouteHandler<ExportSignInEventsRoute> = async (c) => {
   const { from, to } = c.req.valid("query");
-  const superadmin = c.var.user!;
-  const person = alias(user, "person");
-  const actor = alias(user, "actor");
-
-  const events = await db.transaction(async (tx) => {
-    const rows = await tx
-      .select({
-        at: signInEvents.at,
-        event: signInEvents.event,
-        factor: signInEvents.factor,
-        name: person.name,
-        email: person.email,
-        actorEmail: actor.email,
-        note: signInEvents.note,
-        ipAddress: signInEvents.ipAddress,
-        userAgent: signInEvents.userAgent,
-      })
-      .from(signInEvents)
-      .leftJoin(person, eq(person.id, signInEvents.userId))
-      .leftJoin(actor, eq(actor.id, signInEvents.actorId))
-      .where(and(gte(signInEvents.at, startOfBusinessDay(from)), lt(signInEvents.at, startOfBusinessDay(addDays(to, 1)))))
-      .orderBy(asc(signInEvents.at), asc(signInEvents.id));
-    await recordSignInEvent({ event: "log_exported", actorId: superadmin.id, note: `${from} to ${to}` }, tx);
-    return rows;
-  });
-
-  return c.body(signInEventsCsv(events), HttpStatusCodes.OK, {
+  const csv = await exportSignInLog(from, to, c.var.user!.id);
+  return c.body(csv, HttpStatusCodes.OK, {
     "content-type": "text/csv; charset=utf-8",
     "content-disposition": `attachment; filename="sign-in-log-${from}-to-${to}.csv"`,
     "cache-control": "no-store",
   });
 };
 
-/**
- * Resets the two-step sign-in of someone who has lost both their phone and
- * their backup codes, once Brixa support has checked who they are. Never a
- * facility admin's act: an account can belong to several facilities.
- *
- * Their authenticator and backup codes go, every session and every sign-in
- * waiting for a code ends, and the reset is logged with support's reason, in
- * one transaction on the owner connection. It also writes the credential's
- * change time, as a new password does, so a code check already under way is
- * refused its session. Signing in next, they are asked
- * to set an authenticator up again. They are told by email, so a reset they
- * did not ask for does not go unnoticed.
- */
+/** Someone's two-step sign-in reset by Brixa support (lib/sign-in-support.ts). */
 export const resetTwoFactor: AppRouteHandler<ResetTwoFactorRoute> = async (c) => {
   const { email, reason } = c.req.valid("json");
-  const superadmin = c.var.user!;
-
-  const [person] = await db.select({ id: user.id, name: user.name, email: user.email }).from(user).where(eq(user.email, email.toLowerCase()));
-  if (!person)
-    return c.json({ message: "No account with that email" }, HttpStatusCodes.NOT_FOUND);
-  if (person.id === superadmin.id) {
-    return c.json(
-      { message: "Your own two-step sign-in is reset by someone else at Brixa support, not by you.", code: "own_account" as const },
-      HttpStatusCodes.CONFLICT,
-    );
+  try {
+    return c.json(await resetTwoStepSignIn({ email, reason }, c.var.user!.id), HttpStatusCodes.OK);
   }
-
-  // Under the lock the person's own changes take (lib/auth.ts): a setup finishing meanwhile would turn two-step sign-in back on with no authenticator.
-  const reset = await withAdvisoryLock(twoFactorChangeKey(person.id), () => db.transaction(async (tx) => {
-    await tx.delete(twoFactor).where(eq(twoFactor.userId, person.id));
-    await tx.update(user).set({ twoFactorEnabled: false }).where(eq(user.id, person.id));
-    await tx.delete(session).where(eq(session.userId, person.id));
-    await tx.delete(verification).where(and(eq(verification.value, person.id), like(verification.identifier, "2fa-%")));
-    // A fence for a sign-in already under way: like a password change, this time refuses it a session (lib/auth.ts).
-    await tx.update(account).set({ updatedAt: new Date() }).where(and(eq(account.userId, person.id), eq(account.providerId, "credential")));
-    await recordSignInEvent({ event: "two_factor_reset", userId: person.id, actorId: superadmin.id, note: reason }, tx);
-  }));
-  if (!reset.held) {
-    return c.json(
-      { message: "A change to this person's two-step sign-in is under way. Try again in a moment.", code: "TWO_FACTOR_CHANGE_UNDER_WAY" as const },
-      HttpStatusCodes.CONFLICT,
-    );
+  catch (err) {
+    if (!(err instanceof TwoFactorResetError))
+      throw err;
+    if (err.code === "not_found")
+      return c.json({ message: err.message }, HttpStatusCodes.NOT_FOUND);
+    return c.json({ message: err.message, code: err.code }, HttpStatusCodes.CONFLICT);
   }
-
-  await notify(
-    person,
-    "two-step sign-in reset notice",
-    "Your Brixa HMIS two-step sign-in was reset",
-    "Brixa support reset two-step sign-in for your Brixa HMIS account, and every device that was signed in has been signed out. The next time you sign in, you will set up an authenticator app again.",
-    "If you did not ask for this, tell your administrator straight away.",
-  );
-  return c.json({ userId: person.id }, HttpStatusCodes.OK);
 };

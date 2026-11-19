@@ -11,7 +11,6 @@ import { authDb } from "@/db";
 import { signInEvents } from "@/db/schema";
 import { callerAddress } from "@/middlewares/rate-limit";
 
-import { BUSINESS_TIME_ZONE } from "./dates";
 import { summarizeError } from "./error-summary";
 import { logger } from "./logger";
 
@@ -208,60 +207,4 @@ export function signInLog(): BetterAuthPlugin {
       }],
     },
   };
-}
-
-// ---------------------------------------------------------------------------
-// The export, for the quarterly review
-// ---------------------------------------------------------------------------
-
-export interface ExportedEvent {
-  at: Date;
-  event: SignInEvent;
-  factor: SignInFactor | null;
-  name: string | null;
-  email: string | null;
-  actorEmail: string | null;
-  note: string | null;
-  ipAddress: string | null;
-  userAgent: string | null;
-}
-
-const EXPORT_COLUMNS = ["at (Nairobi time)", "event", "factor", "name", "email", "by", "note", "ip_address", "user_agent"];
-
-const nairobiTime = new Intl.DateTimeFormat("en-CA", {
-  timeZone: BUSINESS_TIME_ZONE,
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
-  hourCycle: "h23",
-});
-
-/**
- * One CSV cell. Quoted always, quotes doubled; and a cell a spreadsheet
- * would take for a formula (`=`, `+`, `-`, `@`, a tab, a return) is opened
- * with an apostrophe, since a name or a browser string is anyone's to fill.
- */
-function cell(value: string | null): string {
-  const text = value ?? "";
-  const safe = /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
-  return `"${safe.replaceAll("\"", "\"\"")}"`;
-}
-
-/** The log as CSV, one event a line, oldest first, for a spreadsheet. */
-export function signInEventsCsv(events: ExportedEvent[]): string {
-  const lines = events.map(e => [
-    nairobiTime.format(e.at).replace(", ", " "),
-    e.event,
-    e.factor,
-    e.name,
-    e.email,
-    e.actorEmail,
-    e.note,
-    e.ipAddress,
-    e.userAgent,
-  ].map(cell).join(","));
-  return `${[EXPORT_COLUMNS.map(cell).join(","), ...lines].join("\r\n")}\r\n`;
 }

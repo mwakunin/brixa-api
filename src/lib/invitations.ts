@@ -220,7 +220,7 @@ export async function sendInvitation(job: { facilityId: string; subjectId: strin
 export interface AcceptedInvitation {
   facilityId: string;
   facilityName: string;
-  /** Whether accepting made a new account, rather than joining an existing one. */
+  /** Whether accepting set the account up with the password given, rather than joining one that had a password already. */
   accountCreated: boolean;
 }
 
@@ -247,9 +247,10 @@ export async function acceptInvitation(input: { token: string; password?: string
   /*
    * The account is written on Better Auth's own connection, so it commits on
    * its own while the rest of this waits on the tenant transaction. If that
-   * transaction then fails, the account this attempt created is removed, so a
-   * retry starts clean and keeps the password typed then, rather than finding
-   * a half-finished account and ignoring the new password.
+   * transaction then fails, the account this attempt set up is undone
+   * (`discardAccount`): its password goes, so a retry keeps the password
+   * typed then, rather than finding a half-finished account and ignoring the
+   * new password.
    */
   let createdUserId: string | null = null;
 

@@ -145,8 +145,10 @@ export const exportSignInEvents = createRoute({
   description:
     "Every sign-in, failed attempt, lock and change to how someone signs in, "
     + "between two Nairobi dates, as CSV, for the quarterly review "
-    + "(regulation 12). The export is itself recorded in the log, and "
-    + "limited to ten an hour per member of Brixa support.",
+    + "(regulation 12). The export is recorded in the log before any of it "
+    + "is read, is sent a page at a time, and is limited to ten an hour per "
+    + "member of Brixa support. A download that ends unfinished was cut off: "
+    + "ask for it again.",
   middleware: [...superadminOnly, rateLimits.signInLogExport()],
   request: { query: SignInEventsQuerySchema },
   responses: {

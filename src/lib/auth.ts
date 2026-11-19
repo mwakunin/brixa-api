@@ -3,7 +3,7 @@ import type { MiddlewareHandler } from "hono";
 
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
-import { APIError, createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
+import { APIError, createAuthMiddleware, getSessionFromCtx, isAPIError } from "better-auth/api";
 import { twoFactor } from "better-auth/plugins/two-factor";
 import { and, eq, like } from "drizzle-orm";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -335,6 +335,25 @@ export const auth = betterAuth({
         "The password for your Brixa HMIS account was changed, and every device that was signed in has been signed out.",
       );
     },
+  },
+
+  hooks: {
+    /*
+     * A password changed by its owner is told to them, as a reset is
+     * (onPasswordReset): Better Auth's /change-password calls no hook of its
+     * own. This runs once it has answered, and only for a change made.
+     */
+    after: createAuthMiddleware(async (ctx) => {
+      const changed = ctx.context.session?.user;
+      if (ctx.path !== "/change-password" || isAPIError(ctx.context.returned) || !changed)
+        return;
+      await notify(
+        changed,
+        "password changed notice",
+        "Your Brixa HMIS password was changed",
+        "The password for your Brixa HMIS account was changed.",
+      );
+    }),
   },
 
   databaseHooks: {

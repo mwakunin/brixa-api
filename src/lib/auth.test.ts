@@ -1,9 +1,10 @@
+import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import app from "@/app";
-import db from "@/db";
-import { user } from "@/db/schema";
-import { AccountExistsError } from "@/lib/accounts";
+import db, { authDb } from "@/db";
+import { signInEvents, user } from "@/db/schema";
+import { AccountExistsError, createAccount, discardAccount } from "@/lib/accounts";
 import { appOrigin, auth, logForBetterAuth, RESET_REQUEST_ANSWER_MS } from "@/lib/auth";
 import { sentEmails } from "@/lib/email";
 import { logger } from "@/lib/logger";
@@ -62,6 +63,50 @@ describe("accounts", () => {
     const res = await postJson("/api/auth/sign-in/email", { email, password: "not-the-password" });
 
     expect(res.status).toBe(401);
+  });
+
+  /*
+   * An acceptance that failed removes the account it made (lib/invitations.ts).
+   * A sign-in tried on the address in that moment is in the sign-in log,
+   * which keeps its rows, so the account itself stays; its password goes.
+   */
+  it("takes the password from a discarded account even when the sign-in log keeps the account", async () => {
+    const email = nextEmail();
+    const made = await createAccount({ email, name: "Wanjiru Kamau", password: TEST_PASSWORD });
+    await authDb.insert(signInEvents).values({ event: "password_failed", factor: "password", userId: made.id });
+
+    await discardAccount(made.id);
+
+    expect((await postJson("/api/auth/sign-in/email", { email, password: TEST_PASSWORD })).status).toBe(401);
+    expect(await db.select({ id: user.id }).from(user).where(eq(user.email, email))).toEqual([{ id: made.id }]);
+  });
+});
+
+/**
+ * A password changed by its owner is told to them by email, as a reset is
+ * (lib/auth.ts): Better Auth's own route sends nothing.
+ */
+describe("changing a password", () => {
+  beforeEach(async () => {
+    await resetDb();
+  });
+
+  it("tells the person, and sends nothing for a change refused", async () => {
+    const email = nextEmail();
+    await createTestAccount(email);
+    const { cookie } = await signIn(email);
+    const headers = { cookie, origin: appOrigin };
+    const notices = () => sentEmails.filter(m => m.to === email && m.subject === "Your Brixa HMIS password was changed");
+
+    const refused = await postJson("/api/auth/change-password", { currentPassword: "not-the-password", newPassword: "a-brand-new-password" }, headers);
+    expect(refused.status).toBe(400);
+    expect(notices()).toHaveLength(0);
+
+    const changed = await postJson("/api/auth/change-password", { currentPassword: TEST_PASSWORD, newPassword: "a-brand-new-password" }, headers);
+
+    expect(changed.status).toBe(200);
+    expect(notices()).toHaveLength(1);
+    expect(notices()[0].body).toContain("tell your administrator");
   });
 });
 
