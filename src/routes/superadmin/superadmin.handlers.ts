@@ -4,10 +4,10 @@ import * as HttpStatusCodes from "stoker/http-status-codes";
 
 import type { AppRouteHandler } from "@/lib/types";
 
-import db from "@/db";
+import db, { withAdvisoryLock } from "@/db";
 import { account, facilities, priceLists, session, signInEvents, twoFactor, user, verification } from "@/db/schema";
 import { recordAudit } from "@/lib/audit";
-import { notify } from "@/lib/auth";
+import { notify, twoFactorChangeKey } from "@/lib/auth";
 import { addDays, startOfBusinessDay } from "@/lib/dates";
 import { isUniqueViolation, pgConstraintName } from "@/lib/db-errors";
 import { createInvitation } from "@/lib/invitations";
@@ -233,7 +233,8 @@ export const resetTwoFactor: AppRouteHandler<ResetTwoFactorRoute> = async (c) =>
     );
   }
 
-  await db.transaction(async (tx) => {
+  // Under the lock the person's own changes take (lib/auth.ts): a setup finishing meanwhile would turn two-step sign-in back on with no authenticator.
+  const reset = await withAdvisoryLock(twoFactorChangeKey(person.id), () => db.transaction(async (tx) => {
     await tx.delete(twoFactor).where(eq(twoFactor.userId, person.id));
     await tx.update(user).set({ twoFactorEnabled: false }).where(eq(user.id, person.id));
     await tx.delete(session).where(eq(session.userId, person.id));
@@ -241,7 +242,13 @@ export const resetTwoFactor: AppRouteHandler<ResetTwoFactorRoute> = async (c) =>
     // A fence for a sign-in already under way: like a password change, this time refuses it a session (lib/auth.ts).
     await tx.update(account).set({ updatedAt: new Date() }).where(and(eq(account.userId, person.id), eq(account.providerId, "credential")));
     await recordSignInEvent({ event: "two_factor_reset", userId: person.id, actorId: superadmin.id, note: reason }, tx);
-  });
+  }));
+  if (!reset.held) {
+    return c.json(
+      { message: "A change to this person's two-step sign-in is under way. Try again in a moment.", code: "TWO_FACTOR_CHANGE_UNDER_WAY" as const },
+      HttpStatusCodes.CONFLICT,
+    );
+  }
 
   await notify(
     person,

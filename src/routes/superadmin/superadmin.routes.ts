@@ -180,7 +180,8 @@ export const resetTwoFactor = createRoute({
     + "Brixa support has checked who they are. Their authenticator and backup "
     + "codes are removed and every session ends; signing in next, they set up "
     + "an authenticator again. Recorded in the sign-in log with the reason, "
-    + "and emailed to them. Never one's own.",
+    + "and emailed to them. Never one's own. Refused while the person is "
+    + "changing their own two-step sign-in, to be tried again.",
   middleware: superadminOnly,
   request: { body: jsonContentRequired(TwoFactorResetBodySchema, "Whose, and how they were checked") },
   responses: {
@@ -188,7 +189,10 @@ export const resetTwoFactor = createRoute({
     [HttpStatusCodes.UNAUTHORIZED]: jsonContent(unauthorizedSchema, "Not signed in"),
     [HttpStatusCodes.FORBIDDEN]: jsonContent(forbiddenSchema, "Not platform staff"),
     [HttpStatusCodes.NOT_FOUND]: jsonContent(createMessageObjectSchema("No account with that email"), "No such account"),
-    [HttpStatusCodes.CONFLICT]: jsonContent(z.object({ message: z.string(), code: z.literal("own_account") }), "One's own"),
+    [HttpStatusCodes.CONFLICT]: jsonContent(
+      z.object({ message: z.string(), code: z.enum(["own_account", "TWO_FACTOR_CHANGE_UNDER_WAY"]) }),
+      "One's own, or a change to it under way",
+    ),
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(TwoFactorResetBodySchema), "Invalid request"),
   },
 });

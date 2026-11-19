@@ -3,10 +3,10 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import app from "@/app";
-import db, { appPool, authDb, authPool } from "@/db";
-import { session, signInEvents } from "@/db/schema";
+import db, { appPool, authDb, authPool, withAdvisoryLock } from "@/db";
+import { session, signInEvents, twoFactor } from "@/db/schema";
 import { DEV_BACKUP_CODES, developmentCode } from "@/dev/two-factor";
-import { appOrigin, auth } from "@/lib/auth";
+import { appOrigin, auth, twoFactorChangeKey } from "@/lib/auth";
 import { businessDate } from "@/lib/dates";
 import { pgErrorCode } from "@/lib/db-errors";
 import { sentEmails } from "@/lib/email";
@@ -417,6 +417,25 @@ describe("resetting someone's two-step sign-in, by Brixa support", () => {
     expect(resetAnswer?.status).toBe(200);
     expect(res.ok).toBe(false);
     expect(await db.select().from(session).where(eq(session.userId, person.id))).toEqual([]);
+  });
+
+  /*
+   * Setting an authenticator up runs under the person's two-factor lock
+   * (lib/auth.ts). A reset in the middle of it would let the setup turn
+   * two-step sign-in back on with no authenticator left to check a code.
+   */
+  it("refuses a reset while a change to the person's two-step sign-in is under way, to be tried again", async () => {
+    const support = await signedInUser({ role: "superadmin" });
+    const person = await signedInUser();
+
+    const during = await withAdvisoryLock(twoFactorChangeKey(person.id), () => reset(support.headers, { email: person.email, reason }));
+
+    expect(during.held).toBe(true);
+    const refused = during.held ? during.value : null;
+    expect(refused?.status).toBe(409);
+    expect(await refused?.json()).toMatchObject({ code: "TWO_FACTOR_CHANGE_UNDER_WAY" });
+    expect(await db.select().from(twoFactor).where(eq(twoFactor.userId, person.id))).toHaveLength(1);
+    expect((await reset(support.headers, { email: person.email, reason })).status).toBe(200);
   });
 
   it("will not record a reset without the person it was for", async () => {

@@ -17,7 +17,7 @@ import { bySignInEmailFromAddress } from "./rate-limit";
 
 /** Wrong passwords in a row that lock an account from one address. */
 export const LOCK_AFTER = 5;
-/** How long that lasts, from the wrong password that set it. */
+/** How long the lock lasts, from the fifth wrong password; also how long a count runs, from the first. */
 export const LOCK_SECONDS = 15 * 60;
 
 /**
@@ -51,7 +51,9 @@ async function emailOf(c: Context<AppBindings>): Promise<string | null> {
 /**
  * Locks an account after five wrong passwords in a row (regulation 12;
  * DHA's certification framework asks for accounts locked after repeated
- * wrong passwords), for 15 minutes, and logs the lock.
+ * wrong passwords), for 15 minutes, and logs the lock. The five fall within
+ * 15 minutes of the first: the count starts with it and does not stretch
+ * with later ones.
  *
  * Counted per account and address, as the tight sign-in limit is
  * (middlewares/rate-limit.ts): someone who knows a clinician's email can
@@ -61,16 +63,30 @@ async function emailOf(c: Context<AppBindings>): Promise<string | null> {
  * passwords in a row. While locked, even the right password is refused,
  * before Better Auth checks it, and the answer is the same whether or not
  * the account exists.
+ *
+ * With Redis down, each instance counts in its own memory. A lock set there
+ * holds until it ends, even once Redis is back, and a right password clears
+ * that count too, or a later outage would bring it back.
  */
 export function signInLock(client?: Redis): MiddlewareHandler<AppBindings> {
+  // Redis down: this instance counts on its own rather than stopping counting.
+  const inMemory = new RateLimiterMemory({ keyPrefix: "rl-mem:signin-lock", points: LOCK_AFTER, duration: LOCK_SECONDS });
   const limiter = new RateLimiterRedis({
     storeClient: client ?? redis,
     keyPrefix: "rl:signin-lock",
     points: LOCK_AFTER,
     duration: LOCK_SECONDS,
-    // Redis down: this instance counts on its own rather than stopping counting.
-    insuranceLimiter: new RateLimiterMemory({ keyPrefix: "rl-mem:signin-lock", points: LOCK_AFTER, duration: LOCK_SECONDS }),
+    insuranceLimiter: inMemory,
   });
+
+  /** A lock running on the key, in Redis or in this instance's memory. */
+  async function lockOn(key: string) {
+    for (const counted of [await limiter.get(key), await inMemory.get(key)]) {
+      if (counted && counted.consumedPoints >= LOCK_AFTER)
+        return counted;
+    }
+    return null;
+  }
 
   return createMiddleware<AppBindings>(async (c, next) => {
     const key = await bySignInEmailFromAddress(c);
@@ -79,10 +95,10 @@ export function signInLock(client?: Redis): MiddlewareHandler<AppBindings> {
     // Read now: Better Auth consumes the body.
     const email = await emailOf(c);
 
-    const counted = await limiter.get(key);
-    if (counted && counted.consumedPoints >= LOCK_AFTER) {
+    const lock = await lockOn(key);
+    if (lock) {
       await noteSignInEvent({ event: "refused_locked", userId: await accountNamed(email), factor: "password" });
-      const retryAfter = Math.max(1, Math.ceil(counted.msBeforeNext / 1000));
+      const retryAfter = Math.max(1, Math.ceil(lock.msBeforeNext / 1000));
       c.header("Retry-After", String(retryAfter));
       return c.json(
         {
@@ -105,6 +121,7 @@ export function signInLock(client?: Redis): MiddlewareHandler<AppBindings> {
     }
     else if (c.res.ok) {
       await limiter.delete(key);
+      await inMemory.delete(key);
     }
   });
 }

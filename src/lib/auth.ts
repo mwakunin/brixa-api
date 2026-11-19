@@ -483,6 +483,11 @@ export const auth = betterAuth({
   },
 });
 
+/** The advisory lock a change to one person's two-step sign-in runs under: Better Auth's routes, and Brixa support's reset. */
+export function twoFactorChangeKey(userId: string): string {
+  return `two-factor:${userId}`;
+}
+
 /**
  * One change to a person's two-step sign-in at a time (create-app.ts, on the
  * two-factor routes). The plugin confirms an authenticator by reading it,
@@ -498,7 +503,7 @@ export const oneTwoFactorChangeAtATime: MiddlewareHandler = async (c, next) => {
   const current = await auth.api.getSession({ headers: c.req.raw.headers, query: { disableRefresh: true } });
   if (!current)
     return next();
-  const locked = await withAdvisoryLock(`two-factor:${current.user.id}`, () => next());
+  const locked = await withAdvisoryLock(twoFactorChangeKey(current.user.id), () => next());
   if (!locked.held) {
     return c.json(
       { message: "Another change to your two-step sign-in is under way. Try again in a moment.", code: "TWO_FACTOR_CHANGE_UNDER_WAY" },
