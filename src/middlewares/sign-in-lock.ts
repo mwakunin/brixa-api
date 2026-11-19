@@ -64,9 +64,11 @@ async function emailOf(c: Context<AppBindings>): Promise<string | null> {
  * before Better Auth checks it, and the answer is the same whether or not
  * the account exists.
  *
- * With Redis down, each instance counts in its own memory. A lock set there
- * holds until it ends, even once Redis is back, and a right password clears
- * that count too, or a later outage would bring it back.
+ * With Redis down, each instance counts in its own memory. A lock is kept
+ * in this instance's memory as well as in Redis, so one set either way holds
+ * until it ends, whether Redis comes back or goes away meanwhile. A right
+ * password clears the count in memory too, or a later outage would bring it
+ * back.
  */
 export function signInLock(client?: Redis): MiddlewareHandler<AppBindings> {
   // Redis down: this instance counts on its own rather than stopping counting.
@@ -116,6 +118,7 @@ export function signInLock(client?: Redis): MiddlewareHandler<AppBindings> {
       const after = await limiter.penalty(key, 1);
       if (after.consumedPoints === LOCK_AFTER) {
         await limiter.block(key, LOCK_SECONDS);
+        await inMemory.block(key, LOCK_SECONDS);
         await noteSignInEvent({ event: "locked", userId: await accountNamed(email), factor: "password" });
       }
     }

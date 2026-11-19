@@ -50,6 +50,8 @@ async function redisDown() {
 }
 
 async function redisBack() {
+  if (flaky.status === "ready")
+    return;
   await flaky.connect();
 }
 
@@ -65,6 +67,17 @@ describe("the lock on wrong passwords, while Redis is down", () => {
     expect((await signIn(email, RIGHT, address)).status).toBe(429);
 
     await redisBack();
+
+    expect((await signIn(email, RIGHT, address)).status).toBe(429);
+  });
+
+  it("keeps a lock set while Redis was up through an outage that follows", async () => {
+    const email = nextEmail();
+    const address = nextIp();
+    await redisBack();
+    await wrongPasswords(5, email, address);
+
+    await redisDown();
 
     expect((await signIn(email, RIGHT, address)).status).toBe(429);
   });

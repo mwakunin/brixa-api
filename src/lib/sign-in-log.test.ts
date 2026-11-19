@@ -391,6 +391,13 @@ describe("the export of the log, for Brixa support", () => {
 
     expect(csv.split("\r\n")[0]).toBe("\"2026-11-19 08:00:00\",\"signed_in\",\"totp\",\"'=HYPERLINK(\"\"http://x\"\")\",\"a@b.test\",\"\",\"\",\"\",\"'-cmd\"");
   });
+
+  // Some spreadsheets read the full-width signs as the plain ones.
+  it("opens a cell starting with a full-width formula sign with an apostrophe too", () => {
+    const csv = signInEventsCsv([{ at: new Date("2026-11-19T05:00:00Z"), event: "two_factor_reset", factor: null, name: "\uFF0B254", email: "a@b.test", actorEmail: "\uFF20support", note: "\uFF1DSUM(A1)", ipAddress: null, userAgent: "\uFF0Dcmd" }]);
+
+    expect(csv.split("\r\n")[0]).toBe("\"2026-11-19 08:00:00\",\"two_factor_reset\",\"\",\"'\uFF0B254\",\"a@b.test\",\"'\uFF20support\",\"'\uFF1DSUM(A1)\",\"\",\"'\uFF0Dcmd\"");
+  });
 });
 
 describe("resetting someone's two-step sign-in, by Brixa support", () => {

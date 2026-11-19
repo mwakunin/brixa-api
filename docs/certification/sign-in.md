@@ -61,7 +61,7 @@ The decisions behind these controls are in `SPEC.md` §2 ("Two-step sign-in for 
   - if Better Auth fails after turning two-step sign-in on but before finishing, the person cannot finish setting it up.
 
   The person is emailed about any setup, and Brixa support's reset (`POST /superadmin/two-factor-resets`, above) clears either. Closing them needs Better Auth's setup to commit in one step, to be raised with Better Auth with the sign-in race.
-- **Counts across a Redis outage.** While Redis is down, each instance counts wrong passwords in its own memory, and a count short of a lock does not move between the two stores when Redis goes or comes back. A lock set in memory holds until it ends, and a right password clears the count in memory (above). Two cases remain:
+- **Counts across a Redis outage.** While Redis is down, each instance counts wrong passwords in its own memory, and a count short of a lock does not move between the two stores when Redis goes or comes back. A lock is kept in both and holds until it ends, and a right password clears the count in memory (above). Two cases remain:
   - wrong passwords counted in one store do not add to those in the other, so each time Redis goes or comes back, up to four more can be tried before the lock;
   - a right password during an outage cannot clear a count Redis already held, so after Redis is back one more wrong password can lock that account from that address for 15 minutes.
 

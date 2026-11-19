@@ -54,12 +54,13 @@ const nairobiTime = new Intl.DateTimeFormat("en-CA", {
 
 /**
  * One CSV cell. Quoted always, quotes doubled; and a cell a spreadsheet
- * would take for a formula (`=`, `+`, `-`, `@`, a tab, a return) is opened
- * with an apostrophe, since a name or a browser string is anyone's to fill.
+ * would take for a formula (`=`, `+`, `-`, `@`, a tab, a return, or the
+ * full-width `＝＋－＠`, which some read as the plain ones) is opened with an
+ * apostrophe, since a name or a browser string is anyone's to fill.
  */
 function cell(value: string | null): string {
   const text = value ?? "";
-  const safe = /^[=+\-@\t\r]/.test(text) ? `'${text}` : text;
+  const safe = /^[=+\-@\t\r\uFF1D\uFF0B\uFF0D\uFF20]/.test(text) ? `'${text}` : text;
   return `"${safe.replaceAll("\"", "\"\"")}"`;
 }
 

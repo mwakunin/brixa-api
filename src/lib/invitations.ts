@@ -4,7 +4,7 @@ import { createHash, createHmac, randomUUID } from "node:crypto";
 import type { AppDb } from "@/db";
 import type { MembershipRole } from "@/db/schema";
 
-import db from "@/db";
+import db, { withAdvisoryLock } from "@/db";
 import { facilities, invitations, memberships, user } from "@/db/schema";
 import { runAsFacility } from "@/db/tenant-transaction";
 import env from "@/env";
@@ -38,7 +38,8 @@ export type InvitationErrorCode
     | "expired"
     | "already_accepted"
     | "password_required"
-    | "facility_suspended";
+    | "facility_suspended"
+    | "accept_under_way";
 
 export class InvitationError extends Error {
   constructor(readonly code: InvitationErrorCode) {
@@ -237,13 +238,30 @@ export async function acceptInvitation(input: { token: string; password?: string
   const tokenHash = hashToken(input.token);
 
   const [found] = await db
-    .select({ id: invitations.id, facilityId: invitations.facilityId })
+    .select({ id: invitations.id, facilityId: invitations.facilityId, email: invitations.email })
     .from(invitations)
     .where(eq(invitations.tokenHash, tokenHash))
     .limit(1);
   if (!found)
     throw new InvitationError("not_found");
 
+  /*
+   * One acceptance per address at a time, from the first read to the last
+   * write of undoing a failed one: the invitation's row lock ends with the
+   * tenant transaction, before the undoing. A try arriving in between would
+   * find the failed try's password still on the account, take the account
+   * as set up, and be left with no password once the undoing finished. A
+   * second try while one runs is refused, to be tried again; the address
+   * covers invitations from two facilities as well as a double click.
+   */
+  const accepted = await withAdvisoryLock(`account-claim:${found.email.toLowerCase()}`, () => acceptFound(found, tokenHash, input.password));
+  if (!accepted.held)
+    throw new InvitationError("accept_under_way");
+  return accepted.value;
+}
+
+/** Accepts the invitation `found`, undoing the account it set up if the rest fails. */
+async function acceptFound(found: { id: string; facilityId: string }, tokenHash: string, password: string | undefined): Promise<AcceptedInvitation> {
   /*
    * The account is written on Better Auth's own connection, so it commits on
    * its own while the rest of this waits on the tenant transaction. If that
@@ -255,7 +273,7 @@ export async function acceptInvitation(input: { token: string; password?: string
   let createdUserId: string | null = null;
 
   try {
-    return await runAsFacility(found.facilityId, tx => acceptLocked(tx, found.id, tokenHash, input.password, (userId) => {
+    return await runAsFacility(found.facilityId, tx => acceptLocked(tx, found.id, tokenHash, password, (userId) => {
       createdUserId = userId;
     }));
   }

@@ -235,7 +235,7 @@ describe("the invitation, from email to first sign-in", () => {
     const token = tokenFor(adminEmail);
     const [invitation] = await db.select({ id: invitations.id }).from(invitations);
 
-    // Hold the invitation's row lock so both requests must queue behind it.
+    // Hold the invitation's row lock. One request queues behind it, holding the address's lock (lib/invitations.ts); the other is refused at once.
     const holder = await pool.connect();
     let both: Promise<Response[]> | undefined;
     try {
@@ -247,13 +247,13 @@ describe("the invitation, from email to first sign-in", () => {
         accept({ token, password: NEW_PASSWORD }),
         accept({ token, password: "another-password-x" }),
       ]);
-      expect(await waitForBlockedBackend(holderPid, 5000, 2)).toBe(true);
+      expect(await waitForBlockedBackend(holderPid, 5000, 1)).toBe(true);
       await holder.query("COMMIT");
 
       const results = await both;
       expect(results.map(r => r.status).sort()).toEqual([200, 409]);
       const refused = results.find(r => r.status === 409)!;
-      expect((await refused.json()).code).toBe("already_accepted");
+      expect((await refused.json()).code).toBe("accept_under_way");
     }
     finally {
       await holder.query("ROLLBACK").catch(() => {});
@@ -360,6 +360,46 @@ describe("the invitation, from email to first sign-in", () => {
     }
 
     expect((await postJson("/api/auth/sign-in/email", { email: adminEmail, password: "the-first-password" }, { "x-forwarded-for": nextIp() })).status).toBe(401);
+    const retry = await accept({ token, password: NEW_PASSWORD });
+    expect(retry.status).toBe(200);
+    expect((await retry.json()).accountCreated).toBe(true);
+    await expect(signIn(adminEmail, NEW_PASSWORD)).resolves.toBeDefined();
+  });
+
+  /*
+   * A second try arriving while a failed one is still undoing its account:
+   * the failed one's transaction is over, so the invitation is free, but its
+   * password is still on the account. Taking that account as set up, the
+   * second try would succeed, and the failed one would then take the
+   * password off it. One acceptance per address at a time, undoing included.
+   */
+  it("refuses a second try while a failed one is undoing the account it set up", async () => {
+    const { adminEmail } = await onboarded();
+    const token = tokenFor(adminEmail);
+    const { internalAdapter } = await auth.$context;
+    const undo = internalAdapter.deleteUserSessions.bind(internalAdapter);
+    let second: Response | undefined;
+    const undoing = vi.spyOn(internalAdapter, "deleteUserSessions").mockImplementationOnce(async (userId) => {
+      await pool.query("DROP TRIGGER fail_membership ON memberships; DROP FUNCTION fail_membership();");
+      second = await accept({ token, password: NEW_PASSWORD });
+      return undo(userId);
+    });
+    await pool.query(`
+      CREATE FUNCTION fail_membership() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'simulated failure'; END; $$;
+      CREATE TRIGGER fail_membership BEFORE INSERT ON memberships
+        FOR EACH ROW EXECUTE FUNCTION fail_membership();
+    `);
+    try {
+      expect((await accept({ token, password: "the-first-password" })).status).toBe(500);
+    }
+    finally {
+      undoing.mockRestore();
+      await pool.query("DROP TRIGGER IF EXISTS fail_membership ON memberships; DROP FUNCTION IF EXISTS fail_membership();");
+    }
+
+    expect(second?.status).toBe(409);
+    expect(await second?.json()).toMatchObject({ code: "accept_under_way" });
     const retry = await accept({ token, password: NEW_PASSWORD });
     expect(retry.status).toBe(200);
     expect((await retry.json()).accountCreated).toBe(true);
