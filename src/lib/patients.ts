@@ -491,8 +491,10 @@ export async function addIdentifier(
     }
   }
 
+  // Stamped as it is added, with the patient held, so the document added last is the latest even when
+  // its request began before another's was added: the default, now(), is when the transaction began.
   const added = await tx.insert(patientIdentifiers)
-    .values({ facilityId, patientId: id, type: input.type, value, addedBy: actor.membershipId })
+    .values({ facilityId, patientId: id, type: input.type, value, addedBy: actor.membershipId, addedAt: sql`clock_timestamp()` })
     .onConflictDoNothing()
     .returning({ id: patientIdentifiers.id });
   // Already on file: nothing changed, so nothing to audit.

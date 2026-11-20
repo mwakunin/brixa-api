@@ -1,14 +1,15 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import type { MembershipRole } from "@/lib/types";
 
 import app from "@/app";
 import db from "@/db";
-import { auditLog } from "@/db/schema";
+import { auditLog, memberships } from "@/db/schema";
 import { runAsFacility } from "@/db/tenant-transaction";
 import { dateOfBirthForAge } from "@/lib/dates";
 import { registerSeries } from "@/lib/number-series";
+import { addIdentifier } from "@/lib/patients";
 import { facilityHeaders, makeFacility, nextIp, resetDb, signedInUserAt } from "@/test/helpers";
 
 type Person = Awaited<ReturnType<typeof signedInUserAt>>;
@@ -192,6 +193,29 @@ describe("finding and opening a patient", () => {
     const later = await (await call("GET", "/patients?q=Kamau", facility.id, clerk)).json();
     // An SHA number is not an identity document, however recent.
     expect(later.patients[0].idDocument).toEqual({ type: "passport", value: "AK123456" });
+  });
+
+  it("shows the document added last, though its request began before another's was added", async () => {
+    const [membership] = await db.select({ id: memberships.id }).from(memberships).where(eq(memberships.userId, clerk.id));
+    let go!: () => void;
+    const gate = new Promise<void>(resolve => (go = resolve));
+    let added!: Promise<unknown>;
+    // One clerk's request begins, and waits before adding a passport...
+    await new Promise<void>((begun) => {
+      added = runAsFacility(facility.id, async (tx) => {
+        await tx.execute(sql`SELECT 1`);
+        begun();
+        await gate;
+        await addIdentifier(tx, facility.id, patient.id, { type: "passport", value: "AK123456" }, { userId: clerk.id, membershipId: membership.id });
+      });
+    });
+    // ...while another adds an alien card, and is done first.
+    expect((await call("POST", `/patients/${patient.id}/identifiers`, facility.id, clerk, { type: "alien_id", value: "AC55555" })).status).toBe(200);
+    go();
+    await added;
+
+    const found = await (await call("GET", "/patients?q=Kamau", facility.id, clerk)).json();
+    expect(found.patients[0].idDocument).toEqual({ type: "passport", value: "AK123456" });
   });
 
   it("shows no identity document for a patient who has none", async () => {
