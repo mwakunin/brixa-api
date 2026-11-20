@@ -31,6 +31,12 @@ export interface PatientActor {
 export const IDENTITY_DOCUMENTS = ["national_id", "passport", "birth_certificate", "alien_id", "refugee_id"] as const;
 export type IdentityDocument = (typeof IDENTITY_DOCUMENTS)[number];
 
+/** An identity document as shown: its type, and its number as stored. */
+export interface IdDocument {
+  type: IdentityDocument;
+  value: string;
+}
+
 export type DuplicateReason = "same_id" | "same_name_and_phone" | "same_name_and_birth_date";
 
 export interface PatientSummary {
@@ -46,7 +52,7 @@ export interface PatientSummary {
    * The identity document added most recently, which clerks check a match
    * against (decided 2026-11-20). An SHA or registry number does not count.
    */
-  idDocument: { type: IdentityDocument; value: string } | null;
+  idDocument: IdDocument | null;
 }
 
 /** Someone to reach about a patient, such as a child's guardian. */
@@ -55,7 +61,7 @@ export interface ContactInput {
   relationship?: string | null;
   /** E.164, already normalised. */
   phone?: string | null;
-  idDocument?: { type: IdentityDocument; value: string } | null;
+  idDocument?: IdDocument | null;
 }
 
 export interface PatientContact {
@@ -63,7 +69,7 @@ export interface PatientContact {
   name: string;
   relationship: string | null;
   phone: string | null;
-  idDocument: { type: IdentityDocument; value: string } | null;
+  idDocument: IdDocument | null;
   addedAt: Date;
 }
 
@@ -244,14 +250,8 @@ export async function registerPatient(
   }
 
   const contacts = input.contacts ?? [];
-  if (contacts.length > 0) {
-    await tx.insert(patientContacts).values(contacts.map(contact => ({
-      facilityId,
-      patientId: patient.id,
-      ...contactColumns(contact),
-      addedBy: actor.membershipId,
-    })));
-  }
+  for (const contact of contacts)
+    await insertContact(tx, facilityId, patient.id, contact, actor);
 
   await recordAudit(tx, {
     facilityId,
@@ -545,6 +545,12 @@ export async function addContact(
   if (!patient)
     throw new PatientError("not_found");
 
+  await insertContact(tx, facilityId, patientId, input, actor);
+  return (await load(tx, patientId))!;
+}
+
+/** Stores a contact and audits its addition, whether at registration or later. */
+async function insertContact(tx: AppDb, facilityId: string, patientId: string, input: ContactInput, actor: PatientActor): Promise<void> {
   const columns = contactColumns(input);
   const [contact] = await tx.insert(patientContacts)
     .values({ facilityId, patientId, ...columns, addedBy: actor.membershipId })
@@ -559,8 +565,6 @@ export async function addContact(
     summary: columns.relationship ? `Added a contact (${columns.relationship})` : "Added a contact",
     detail: { contactId: contact.id, ...columns },
   });
-
-  return (await load(tx, patientId))!;
 }
 
 export type ContactChanges = Partial<ContactInput>;

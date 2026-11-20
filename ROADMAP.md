@@ -45,9 +45,9 @@ Decided 2026-11-17, as recommended:
 
 The inpatient screens come with P5.
 
-**F2 was walked through with the pilot's staff on 2026-11-20.** Every screen survives, with changes (brixa-web's `docs/outpatient-journey.md`). The API gaps it found are fixed in two pull requests:
-1. **The front desk:** each search result's identity document, and a patient's contacts.
-2. **The other desks:**
+**F2 was walked through with the pilot's staff on 2026-11-20.** Every screen survives, with changes (brixa-web's `docs/outpatient-journey.md`). The API gaps it found are being fixed in two pull requests:
+1. **The front desk** (#35, in review): each search result's identity document, and a patient's contacts.
+2. **The other desks** (to follow; until it merges, none of these exist):
    - the consultation's one read for the patient;
    - today's complaint at triage;
    - the pharmacy's stock flag and its quote before preparing;
@@ -364,7 +364,9 @@ Everything the pilot needs to leave its current system on one day. The pilot is 
 - **The outpatient screens** (§1, steps F1–F3), which every item below is used through.
 - **Consumables on orders** (P4 question 11) were decided and not built: a dressing's bandage is charged today by manual posting, with a reason. The pilot's staff asked for both, item by item or not (the staff walkthrough, 2026-11-20). The owner left it for later, so it is not built before go-live.
 
-- **Migration** from the pilot's current system: patients and legacy numbers (`SCHEMA.md` §6), open balances and deposits. The hospital is new, so the volume is small; the tooling is still built to be reused. The pilot's old records are on paper and it starts afresh, so the owner left the patient import for later (2026-11-20).
+- **Migration tooling**, built to be reused by later hospitals: patients and legacy numbers (`SCHEMA.md` §6), open balances and deposits.
+  - **At the pilot's cutover:** its old records are on paper and it starts afresh, so the owner left the patient import for later (2026-11-20).
+  - Whether it has open balances or deposits to bring over is still to be asked. The hospital is new, so the volume is small either way.
 - **Opening stock**, from a physical count on cutover day: per store and batch (batch number, expiry, quantity, cost), loaded as `opening_balance` movements (`SCHEMA.md` §8). Controlled drugs also get an opening entry in their register, matching the old register's closing balance. Without this, stock on hand would be zero on day one and nothing could be dispensed.
 - **Reports a facility must file or run daily:** MOH 705A/705B and 717, revenue and cashier summaries, stock status.
 - **PWA offline support** at the service points that need it.

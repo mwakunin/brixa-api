@@ -404,14 +404,17 @@ describe("a patient's contacts", () => {
   }
 
   async function registered(body: unknown) {
-    return (await call("POST", "/patients", facility.id, clerk, body)).json();
+    const res = await call("POST", "/patients", facility.id, clerk, body);
+    expect(res.status).toBe(201);
+    return res.json();
   }
 
   it("registers a child with their guardian, stored as phones and IDs are", async () => {
     const res = await call("POST", "/patients", facility.id, clerk, child({ contacts: [mother] }));
 
     expect(res.status).toBe(201);
-    expect((await res.json()).contacts).toEqual([{
+    const patient = await res.json();
+    expect(patient.contacts).toEqual([{
       id: expect.any(String),
       name: "Grace Atieno",
       relationship: "mother",
@@ -421,6 +424,20 @@ describe("a patient's contacts", () => {
     }]);
     const [entry] = await auditOf("patient.registered");
     expect(entry.detail).toMatchObject({ contacts: 1 });
+    // Each contact is audited as added, as one added later is.
+    const added = await auditOf("patient.contact_added");
+    expect(added).toEqual([expect.objectContaining({
+      actorId: clerk.id,
+      entityId: patient.id,
+      detail: {
+        contactId: patient.contacts[0].id,
+        name: "Grace Atieno",
+        relationship: "mother",
+        phone: "+254722111222",
+        idType: "national_id",
+        idValue: "22333444",
+      },
+    })]);
   });
 
   it("never treats a guardian's ID as the child's", async () => {
