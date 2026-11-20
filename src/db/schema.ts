@@ -345,6 +345,7 @@ export const auditLog = pgTable("audit_log", {
     | "encounter.closed"
     | "encounter.cancelled"
     | "encounter.viewed"
+    | "encounter.complaint_recorded"
     | "patient.admitted"
     | "patient.transferred"
     | "patient.discharged"
@@ -1203,9 +1204,25 @@ export const encounters = pgTable("encounters", {
   cancelReason: text(),
   /** The visit this one came from, e.g. the emergency attendance an admission followed. */
   parentEncounterId: uuid(),
+  /**
+   * Why the patient came today, in a few words, as triage hears it (decided
+   * 2026-11-20, after the staff walkthrough): the doctor reads it first.
+   * Clinical content, so hidden with the rest of a sensitive clinic's visit
+   * (rule 27). Corrected in place while the visit is open, each change
+   * audited with the old text.
+   */
+  complaint: text(),
+  complaintRecordedAt: timestamp({ withTimezone: true }),
+  complaintRecordedBy: uuid(),
   updatedAt: updatedAt(),
 }, t => [
   unique("encounters_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({ name: "encounters_complaint_recorded_by_fk", columns: [t.facilityId, t.complaintRecordedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  check(
+    "encounters_complaint_recorded",
+    sql`num_nonnulls(${t.complaint}, ${t.complaintRecordedAt}, ${t.complaintRecordedBy}) IN (0, 3)
+      AND (${t.complaint} IS NULL OR length(btrim(${t.complaint})) > 0)`,
+  ),
   foreignKey({ name: "encounters_patient_fk", columns: [t.facilityId, t.patientId], foreignColumns: [patients.facilityId, patients.id] }),
   foreignKey({ name: "encounters_opened_by_fk", columns: [t.facilityId, t.openedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
   foreignKey({ name: "encounters_closed_by_fk", columns: [t.facilityId, t.closedBy], foreignColumns: [memberships.facilityId, memberships.id] }),

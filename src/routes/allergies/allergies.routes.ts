@@ -23,7 +23,7 @@ const RefusalSchema = z.object({ message: z.string(), code: z.string() });
 const IdParamsSchema = z.object({ id: z.uuid() });
 const oneLine = (max: number) => z.string().trim().min(1).max(max).regex(/^\P{C}+$/u, "One line");
 
-const AllergySchema = z.object({
+export const AllergySchema = z.object({
   id: z.uuid(),
   category: z.enum(["drug", "food", "environment", "other", "none_known"]),
   /** Null for "no known allergies". */

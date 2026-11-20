@@ -1,3 +1,4 @@
+import type { z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 
 import * as HttpStatusCodes from "stoker/http-status-codes";
@@ -7,7 +8,7 @@ import type { TenantBindings, TenantRouteHandler } from "@/lib/types";
 
 import * as allergies from "@/lib/allergies";
 
-import type { ListAllergiesRoute, RecordAllergyRoute, RemoveAllergyRoute } from "./allergies.routes";
+import type { AllergySchema, ListAllergiesRoute, RecordAllergyRoute, RemoveAllergyRoute } from "./allergies.routes";
 
 function actorOf(c: Context<TenantBindings>) {
   return { userId: c.var.user!.id, membershipId: c.var.membership.id };
@@ -30,7 +31,7 @@ function refusal(c: Context, err: unknown) {
 
 type Listed = Awaited<ReturnType<typeof allergies.listAllergies>>[number];
 
-function allergyJson(a: Listed) {
+export function allergyJson(a: Listed): z.infer<typeof AllergySchema> {
   return { ...a, recordedAt: a.recordedAt.toISOString(), removedAt: a.removedAt?.toISOString() ?? null };
 }
 

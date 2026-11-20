@@ -49,7 +49,7 @@ const ReasonBodySchema = z.object({ reason: z.string().trim().min(3).max(200).re
 
 const AuthorSchema = z.object({ membershipId: z.uuid(), name: z.string() });
 
-const NoteSchema = z.object({
+export const NoteSchema = z.object({
   id: z.uuid(),
   kind: z.enum(["consultation", "nursing"]),
   /** A draft is shown only to its author. */

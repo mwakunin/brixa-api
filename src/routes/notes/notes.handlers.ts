@@ -1,3 +1,4 @@
+import type { z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 
 import * as HttpStatusCodes from "stoker/http-status-codes";
@@ -8,16 +9,7 @@ import type { TenantBindings, TenantRouteHandler } from "@/lib/types";
 import * as notes from "@/lib/notes";
 import { restrictedJson } from "@/lib/validation";
 
-import type {
-  AddAddendumRoute,
-  DiscardDraftRoute,
-  EditDraftRoute,
-  ListNotesRoute,
-  MarkEnteredInErrorRoute,
-  MarkSensitiveRoute,
-  SignNoteRoute,
-  StartNoteRoute,
-} from "./notes.routes";
+import type { AddAddendumRoute, DiscardDraftRoute, EditDraftRoute, ListNotesRoute, MarkEnteredInErrorRoute, MarkSensitiveRoute, NoteSchema, SignNoteRoute, StartNoteRoute } from "./notes.routes";
 
 function actorOf(c: Context<TenantBindings>): notes.NoteActor {
   return { userId: c.var.user!.id, membershipId: c.var.membership.id, roles: c.var.membership.roles };
@@ -39,7 +31,7 @@ function refusal(c: Context, err: unknown) {
   return c.json({ message: err.message, code: err.code }, HttpStatusCodes.CONFLICT);
 }
 
-function noteJson(n: notes.ShownNote) {
+export function noteJson(n: notes.ShownNote): z.infer<typeof NoteSchema> {
   return {
     ...n,
     createdAt: n.createdAt.toISOString(),

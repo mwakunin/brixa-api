@@ -1,3 +1,4 @@
+import type { z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 
 import * as HttpStatusCodes from "stoker/http-status-codes";
@@ -10,17 +11,7 @@ import * as results from "@/lib/lab-results";
 import * as lab from "@/lib/specimens";
 import { restrictedJson } from "@/lib/validation";
 
-import type {
-  CollectSpecimenRoute,
-  EnterResultRoute,
-  ListResultsRoute,
-  ReceiveSpecimenRoute,
-  RecollectSpecimenRoute,
-  RejectSpecimenRoute,
-  ReleaseResultRoute,
-  VerifyResultRoute,
-  ViewWorklistRoute,
-} from "./lab.routes";
+import type { CollectSpecimenRoute, EnterResultRoute, ListResultsRoute, ReceiveSpecimenRoute, RecollectSpecimenRoute, RejectSpecimenRoute, ReleaseResultRoute, ResultSchema, VerifyResultRoute, ViewWorklistRoute } from "./lab.routes";
 
 function actorOf(c: Context<TenantBindings>): OrderActor {
   return { userId: c.var.user!.id, membershipId: c.var.membership.id, roles: c.var.membership.roles };
@@ -52,7 +43,7 @@ function specimenJson(s: lab.ShownSpecimen) {
   return { ...s, collectedAt: s.collectedAt.toISOString(), receivedAt: iso(s.receivedAt), rejectedAt: iso(s.rejectedAt) };
 }
 
-function resultJson(r: results.ShownResult) {
+export function resultJson(r: results.ShownResult): z.infer<typeof ResultSchema> {
   return {
     ...r,
     enteredAt: r.enteredAt.toISOString(),

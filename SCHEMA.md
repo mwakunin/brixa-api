@@ -638,6 +638,23 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 - **Cancelling a visit** is refused while a draft, or a signed note or addendum not marked entered in error, stands (`has_clinical_records`), as for vital signs and diagnoses. An addendum counts even under a marked note: once the visit is cancelled it could no longer be marked.
 - **Not yet:** note templates by clinic, which the frontend can offer over these sections. Sensitive notes and break-glass came with slice 7, below.
 
+**As built (after the staff walkthrough, 2026-11-20): today's complaint and the consultation read.**
+
+- **Today's complaint:** `encounters.complaint`, with who recorded it and when (all three or none, by CHECK).
+  - Doctors look first at "the complaint and vitals from triage", so the triage nurse records it in a few words (at most 200 characters, one line).
+  - `PUT /encounters/{id}/complaint` records it, by nurses, doctors and clinical officers under a current licence, while the visit is open (`not_open`). Sending it again corrects it.
+  - Each change is audited as `encounter.complaint_recorded`, with the old and new text. The same text sent again is no change.
+  - It is clinical content: hidden with the rest of a sensitive clinic's visit (rule 27), seen by whoever recorded it and the staff assigned the category. Only someone who may see it changes it.
+- **`GET /encounters/{id}/consultation`** (clinical roles), audited once as `encounter.viewed` ("Viewed the consultation"). It answers SPEC §7.9's one or two calls for a screen, where the doctor's screen needed seven reads. It returns:
+  - the patient (names, OP number, sex, age);
+  - this visit's vital signs, the standing allergies and today's complaint;
+  - this visit's notes (signed ones, and the reader's own drafts), diagnoses, orders, results and lab reports;
+  - **the last visit:** the patient's most recent earlier outpatient visit or emergency attendance, with its date, its clinic, its standing diagnoses by name and the medicines prescribed.
+- **Withheld as in the separate reads.** Each part goes through the same filter as its own read (`notesSeen`, `diagnosesSeen`, `ordersSeen`, `resultsSeen`, extracted from them).
+  - Everything withheld is listed together under `restricted`, by date only.
+  - A last visit to a sensitive clinic the reader may not see shows its date alone, since a clinic's name discloses. Only staff assigned its category, or a break-glass grant, see more.
+  - Records seen through a grant alert their recorders, once.
+
 **As built (P3, slice 4a): orders and the lab catalogue.** Decided 2026-11-10 and 2026-11-11 (`ROADMAP.md` P3):
 
 - **The lab catalogue**, kept by the facility admin and the lab supervisor, read by every member (it holds no patient data):
