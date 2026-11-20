@@ -210,8 +210,14 @@ describe("finding and opening a patient", () => {
       });
     });
     // ...while another adds an alien card, and is done first.
-    expect((await call("POST", `/patients/${patient.id}/identifiers`, facility.id, clerk, { type: "alien_id", value: "AC55555" })).status).toBe(200);
-    go();
+    try {
+      expect((await call("POST", `/patients/${patient.id}/identifiers`, facility.id, clerk, { type: "alien_id", value: "AC55555" })).status).toBe(200);
+    }
+    finally {
+      // Let go on a failure too, so the held transaction gives its connection back; the failure above is the one reported.
+      go();
+      await added.catch(() => undefined);
+    }
     await added;
 
     const found = await (await call("GET", "/patients?q=Kamau", facility.id, clerk)).json();
