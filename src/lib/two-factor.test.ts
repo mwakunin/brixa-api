@@ -72,6 +72,17 @@ async function within(step: Promise<void>, what: string, ms = 5_000): Promise<vo
 }
 
 /**
+ * A request sent while another is held: its failure is observed at once, so
+ * nothing goes unhandled while the test waits elsewhere, and cleanup awaits
+ * it with `Promise.allSettled` once the hold is released, so no request
+ * outlives its test.
+ */
+function sent(request: Promise<Response>): Promise<Response> {
+  request.catch(() => {});
+  return request;
+}
+
+/**
  * Holds the next request just after the API's session guard has looked at
  * its session, until released. `restore` releases it too: call it in a
  * `finally`, so a failing test leaves no request held and no spy behind.
@@ -478,9 +489,9 @@ describe("before an authenticator is set up", () => {
       const person = await createTestAccount(email, "New Starter", "user", { twoFactor: false });
       const { cookie } = await signIn(email);
       const held = holdAfterGuard();
+      const answer = sent(postJson(route, body, { cookie, origin: appOrigin }));
       let res: Response;
       try {
-        const answer = postJson(route, body, { cookie, origin: appOrigin });
         await held.passed();
         await enrolForDevelopment(person.id);
         held.release();
@@ -488,6 +499,7 @@ describe("before an authenticator is set up", () => {
       }
       finally {
         held.restore();
+        await Promise.allSettled([answer]);
       }
 
       expect(res.status, route).toBe(401);
@@ -506,10 +518,10 @@ describe("before an authenticator is set up", () => {
     const email = nextEmail();
     const { headers, secret, code } = await halfSetUp(email);
     const held = await holdConfirmation();
+    const confirming = sent(postJson("/api/auth/two-factor/verify-totp", { code }, headers));
     let second: Response;
     let confirmed: Response;
     try {
-      const confirming = postJson("/api/auth/two-factor/verify-totp", { code }, headers);
       await held.read();
       // Free to run, the second setup would finish now and swap its secret in.
       second = await postJson("/api/auth/two-factor/enable", { password: TEST_PASSWORD }, headers);
@@ -518,6 +530,7 @@ describe("before an authenticator is set up", () => {
     }
     finally {
       held.restore();
+      await Promise.allSettled([confirming]);
     }
 
     expect(second.status).toBe(409);
@@ -539,11 +552,11 @@ describe("before an authenticator is set up", () => {
     const someoneElse = nextEmail();
     await createTestAccount(someoneElse);
     const held = await holdConfirmation();
+    const confirming = sent(postJson("/api/auth/two-factor/verify-totp", { code }, headers));
     let burst: Response[];
     let elsewhere: Awaited<ReturnType<typeof signIn>>;
     let confirmed: Response;
     try {
-      const confirming = postJson("/api/auth/two-factor/verify-totp", { code }, headers);
       await held.read();
       burst = await Promise.all(Array.from({ length: 12 }, () => postJson("/api/auth/two-factor/enable", { password: TEST_PASSWORD }, headers)));
       elsewhere = await signIn(someoneElse);
@@ -552,6 +565,7 @@ describe("before an authenticator is set up", () => {
     }
     finally {
       held.restore();
+      await Promise.allSettled([confirming]);
     }
 
     expect(burst.every(res => res.status === 409)).toBe(true);
