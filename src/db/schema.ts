@@ -388,6 +388,8 @@ export const auditLog = pgTable("audit_log", {
     | "mpesa.listed"
     | "mpesa.stk_requested"
     | "mpesa.stk_viewed"
+    | "mpesa.callback_token_rotated"
+    | "mpesa.callback_replayed"
     | "adjustment.reversal_requested"
     | "adjustment.reversed"
     | "adjustment.reversal_rejected"
@@ -3455,6 +3457,12 @@ export const cashierShifts = pgTable("cashier_shifts", {
  * from Safaricom carries no session, and the token is what names the
  * facility (the shortcode in its body is caller-supplied and decides
  * nothing).
+ *
+ * A paybill belongs to one facility (decided 2026-11-20): Safaricom sends a
+ * paybill's confirmations to one set of URLs, so a second facility
+ * registering it would take the first one's. A replaced token keeps working
+ * for a while (lib/mpesa.ts, `rotateCallbackToken`), so Safaricom's calls
+ * already on their way, or still going to the old URLs, are not lost.
  */
 export const mpesaSettings = pgTable("mpesa_settings", {
   facilityId: uuid().primaryKey().references(() => facilities.id),
@@ -3463,12 +3471,22 @@ export const mpesaSettings = pgTable("mpesa_settings", {
   callbackToken: text().notNull().unique(),
   /** When Safaricom last accepted this paybill's C2B callback URLs. */
   urlsRegisteredAt: timestamp({ withTimezone: true }),
+  /** The token the last replacement retired, while it still works. */
+  previousCallbackToken: text().unique(),
+  /** Until when it works: null until the new URLs are registered, then an hour after. */
+  previousTokenUntil: timestamp({ withTimezone: true }),
+  /** When the token was last replaced. */
+  callbackTokenRotatedAt: timestamp({ withTimezone: true }),
   updatedBy: uuid().notNull(),
   updatedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
 }, t => [
   foreignKey({ name: "mpesa_settings_updated_by_fk", columns: [t.facilityId, t.updatedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  uniqueIndex("mpesa_settings_shortcode_key").on(t.shortcode),
   check("mpesa_settings_shortcode_shape", sql`${t.shortcode} ~ '^[0-9]{5,7}$'`),
   check("mpesa_settings_callback_token_shape", sql`${t.callbackToken} ~ '^[A-Za-z0-9_-]{43}$'`),
+  check("mpesa_settings_previous_token_shape", sql`${t.previousCallbackToken} ~ '^[A-Za-z0-9_-]{43}$'`),
+  check("mpesa_settings_previous_token_rotated", sql`${t.previousCallbackToken} IS NULL OR ${t.callbackTokenRotatedAt} IS NOT NULL`),
+  check("mpesa_settings_previous_token_until_has_token", sql`${t.previousTokenUntil} IS NULL OR ${t.previousCallbackToken} IS NOT NULL`),
 ]);
 
 /**
@@ -3578,6 +3596,7 @@ export const gatewayExchanges = pgTable("gateway_exchanges", {
   createdAt: createdAt(),
 }, t => [
   foreignKey({ name: "gateway_exchanges_stk_request_fk", columns: [t.facilityId, t.stkRequestId], foreignColumns: [mpesaStkRequests.facilityId, mpesaStkRequests.id] }),
+  unique("gateway_exchanges_facility_id_id_key").on(t.facilityId, t.id),
   index("gateway_exchanges_stk_request_index").on(t.stkRequestId),
   // An early refusal, found by its checkout id once the send records it.
   // Hash, like the transactions' one: kept callbacks must never be refused for their id's size.
@@ -3585,6 +3604,25 @@ export const gatewayExchanges = pgTable("gateway_exchanges", {
   oneOf("gateway_exchanges_gateway_known", t.gateway, ["daraja"]),
   oneOf("gateway_exchanges_operation_known", t.operation, ["register_urls", "stk_push", "stk_callback", "c2b_confirmation"]),
   check("gateway_exchanges_register_has_no_request", sql`${t.operation} NOT IN ('register_urls', 'c2b_confirmation') OR ${t.stkRequestId} IS NULL`),
+]);
+
+/**
+ * A prompt's callback that could not be recorded when it came (kept in
+ * `gateway_exchanges` as "Could not be recorded": Safaricom does not call
+ * back again), replayed by finance through the same steps as the first
+ * attempt. Once each, by whom, and what came of it. Written once.
+ */
+export const mpesaCallbackReplays = pgTable("mpesa_callback_replays", {
+  exchangeId: uuid().primaryKey(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  replayedBy: uuid().notNull(),
+  replayedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  /** Paid towards its prompt, waiting in the queue, a refused prompt closed, or nothing that could be booked. */
+  outcome: text().$type<"paid" | "queued" | "failed" | "unusable">().notNull(),
+}, t => [
+  foreignKey({ name: "mpesa_callback_replays_exchange_fk", columns: [t.facilityId, t.exchangeId], foreignColumns: [gatewayExchanges.facilityId, gatewayExchanges.id] }),
+  foreignKey({ name: "mpesa_callback_replays_replayed_by_fk", columns: [t.facilityId, t.replayedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  oneOf("mpesa_callback_replays_outcome_known", t.outcome, ["paid", "queued", "failed", "unusable"]),
 ]);
 
 /**
@@ -3851,6 +3889,7 @@ export const TENANT_TABLES = [
   "mpesa_transactions",
   "mpesa_stk_requests",
   "gateway_exchanges",
+  "mpesa_callback_replays",
   "stores",
   "stock_items",
   "reorder_levels",

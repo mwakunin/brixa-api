@@ -15,6 +15,7 @@ import type { PaymentMethod } from "./payments";
 import { recordAudit } from "./audit";
 import { decryptSecret, encryptSecret, generateCallbackToken } from "./crypto";
 import { exchangeOf, registerC2bUrls } from "./daraja";
+import { isUniqueViolation, pgConstraintName } from "./db-errors";
 import { errorLine } from "./error-summary";
 import { enqueue } from "./outbox";
 import { PaymentError, recordPayment } from "./payments";
@@ -39,12 +40,18 @@ export class MpesaError extends Error {
     | "not_set_up"
     | "not_found"
     | "not_unmatched"
-    | "phone_invalid") {
+    | "phone_invalid"
+    | "paybill_taken"
+    | "callback_not_found"
+    | "already_replayed") {
     super({
       not_set_up: "M-Pesa is not set up for this facility",
       not_found: "No such M-Pesa transaction",
       not_unmatched: "This M-Pesa transaction is not waiting to be placed",
       phone_invalid: "A Kenyan mobile number is needed, e.g. 0712 345 678",
+      paybill_taken: "This paybill is already set up for another facility. A paybill's payments can go to one facility only.",
+      callback_not_found: "No such M-Pesa callback waiting to be replayed",
+      already_replayed: "This M-Pesa callback has been replayed already",
     }[code]);
     this.name = "MpesaError";
   }
@@ -71,10 +78,17 @@ export function credentialsOf(stored: string): DarajaCredentials {
 }
 
 /**
+ * How long a replaced callback token keeps working once the new URLs are
+ * registered: long enough for Safaricom's calls already on their way.
+ */
+export const PREVIOUS_TOKEN_GRACE_MS = 60 * 60 * 1000;
+
+/**
  * Saves the paybill and its credentials, encrypted, and queues the C2B URL
  * registration with Safaricom (rule 18: never from inside this transaction).
  * The callback token survives a change of credentials, so URLs already
- * registered keep working.
+ * registered keep working. A paybill another facility has is refused: its
+ * confirmations go to one set of URLs.
  */
 export async function saveSettings(
   tx: AppDb,
@@ -90,9 +104,16 @@ export async function saveSettings(
   } satisfies DarajaCredentials));
   const values = { shortcode: input.shortcode, credentials, updatedBy: actor.membershipId, updatedAt: new Date(), urlsRegisteredAt: null };
 
-  await tx.insert(mpesaSettings)
-    .values({ facilityId, callbackToken: existing?.callbackToken ?? generateCallbackToken(), ...values })
-    .onConflictDoUpdate({ target: mpesaSettings.facilityId, set: values });
+  try {
+    await tx.insert(mpesaSettings)
+      .values({ facilityId, callbackToken: existing?.callbackToken ?? generateCallbackToken(), ...values })
+      .onConflictDoUpdate({ target: mpesaSettings.facilityId, set: values });
+  }
+  catch (err) {
+    if (isUniqueViolation(err) && pgConstraintName(err) === "mpesa_settings_shortcode_key")
+      throw new MpesaError("paybill_taken");
+    throw err;
+  }
   await enqueue(tx, { facilityId, operation: "mpesa.register_urls", subjectId: facilityId });
   await recordAudit(tx, {
     facilityId,
@@ -105,12 +126,59 @@ export async function saveSettings(
   });
 }
 
+/**
+ * Replaces the callback token, for one that may have leaked (ROADMAP.md P6).
+ * Prompts sent from now carry the new one, and the new URLs are registered
+ * with Safaricom in the background. In production Safaricom takes a
+ * paybill's URLs once: the old registration is deleted on the Daraja portal
+ * first, then registration is asked again (`requestRegistration`).
+ *
+ * The old token keeps working until the new URLs are registered, and an
+ * hour after, but only so far as a leaked token can do no harm on its own
+ * (lib/mpesa-callbacks.ts): a prompt sent before now has its outcome
+ * recorded, and a paybill confirmation is kept but never placed by itself.
+ * A second replacement meanwhile ends the oldest token at once.
+ */
+export async function rotateCallbackToken(tx: AppDb, facilityId: string, actor: PatientActor, at = new Date()): Promise<void> {
+  const [settings] = await tx.select({ callbackToken: mpesaSettings.callbackToken }).from(mpesaSettings).limit(1);
+  if (!settings)
+    throw new MpesaError("not_set_up");
+  await tx.update(mpesaSettings).set({
+    callbackToken: generateCallbackToken(),
+    previousCallbackToken: settings.callbackToken,
+    previousTokenUntil: null,
+    callbackTokenRotatedAt: at,
+    urlsRegisteredAt: null,
+  }).where(eq(mpesaSettings.facilityId, facilityId));
+  await enqueue(tx, { facilityId, operation: "mpesa.register_urls", subjectId: facilityId });
+  await recordAudit(tx, {
+    facilityId,
+    actorId: actor.userId,
+    action: "mpesa.callback_token_rotated",
+    entityType: "facility",
+    entityId: facilityId,
+    summary: "Replaced the M-Pesa callback token",
+  });
+}
+
+/** Asks Safaricom again for the current URLs, once a registration it refused can go through. */
+export async function requestRegistration(tx: AppDb, facilityId: string): Promise<void> {
+  const [settings] = await tx.select({ facilityId: mpesaSettings.facilityId }).from(mpesaSettings).limit(1);
+  if (!settings)
+    throw new MpesaError("not_set_up");
+  await enqueue(tx, { facilityId, operation: "mpesa.register_urls", subjectId: facilityId });
+}
+
 export interface MpesaSettingsView {
   shortcode: string;
   urlsRegisteredAt: Date | null;
   /** The last registration attempt's error, if it failed. */
   lastRegistrationError: string | null;
   callbackUrls: CallbackUrls;
+  /** When the callback token was last replaced, if ever. */
+  callbackTokenRotatedAt: Date | null;
+  /** Whether the replaced token still works, and until when: null while the new URLs wait to be registered. */
+  previousToken: { until: Date | null } | null;
 }
 
 /** What the admin sees: never the credentials, only that they are set. */
@@ -129,6 +197,10 @@ export async function settingsView(tx: AppDb): Promise<MpesaSettingsView | null>
     urlsRegisteredAt: settings.urlsRegisteredAt,
     lastRegistrationError: last?.error ?? null,
     callbackUrls: callbackUrls(settings.callbackToken),
+    callbackTokenRotatedAt: settings.callbackTokenRotatedAt,
+    previousToken: settings.previousCallbackToken && (!settings.previousTokenUntil || settings.previousTokenUntil > new Date())
+      ? { until: settings.previousTokenUntil }
+      : null,
   };
 }
 
@@ -152,8 +224,10 @@ export async function recordExchange(
 /**
  * Outbox handler: registers the paybill's C2B URLs with Safaricom. Marks them
  * registered only if the settings are still the ones it registered (the
- * ciphertext changes on every save), so a change made meanwhile is
- * registered by its own job.
+ * ciphertext changes on every save, the token on every replacement). If they
+ * changed while it ran, its registration may have landed after theirs, so it
+ * asks again for the current ones: the last to land is then the current.
+ * Once registered, a replaced token works for an hour more.
  */
 export async function registerUrls(job: { facilityId: string; subjectId: string }): Promise<"done" | "skipped"> {
   const settings = await runAsFacility(job.facilityId, async tx => (await tx.select().from(mpesaSettings).limit(1))[0]);
@@ -169,7 +243,14 @@ export async function registerUrls(job: { facilityId: string; subjectId: string 
     });
     await runAsFacility(job.facilityId, async (tx) => {
       await recordExchange(tx, job.facilityId, { operation: "register_urls", ...exchange });
-      await tx.update(mpesaSettings).set({ urlsRegisteredAt: new Date() }).where(eq(mpesaSettings.credentials, settings.credentials));
+      const now = new Date();
+      const marked = await tx.update(mpesaSettings).set({
+        urlsRegisteredAt: now,
+        previousTokenUntil: sql`CASE WHEN ${mpesaSettings.previousCallbackToken} IS NOT NULL AND ${mpesaSettings.previousTokenUntil} IS NULL
+          THEN ${new Date(now.getTime() + PREVIOUS_TOKEN_GRACE_MS)}::timestamptz ELSE ${mpesaSettings.previousTokenUntil} END`,
+      }).where(and(eq(mpesaSettings.credentials, settings.credentials), eq(mpesaSettings.callbackToken, settings.callbackToken))).returning({ id: mpesaSettings.facilityId });
+      if (marked.length === 0)
+        await enqueue(tx, { facilityId: job.facilityId, operation: "mpesa.register_urls", subjectId: job.facilityId });
     });
     return "done";
   }

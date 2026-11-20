@@ -10,6 +10,10 @@ router.use(withFacility);
 
 router.openapi(routes.getSettings, handlers.getSettings);
 router.openapi(routes.putSettings, handlers.putSettings);
+router.openapi(routes.rotateCallbackToken, handlers.rotateCallbackToken);
+router.openapi(routes.requestRegistration, handlers.requestRegistration);
+router.openapi(routes.listUnrecordedCallbacks, handlers.listUnrecordedCallbacks);
+router.openapi(routes.replayCallback, handlers.replayCallback);
 router.openapi(routes.listTransactions, handlers.listTransactions);
 router.openapi(routes.assignTransaction, handlers.assignTransaction);
 router.openapi(routes.rejectTransaction, handlers.rejectTransaction);
