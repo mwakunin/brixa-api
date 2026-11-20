@@ -37,15 +37,31 @@ const SexSchema = z.enum(["male", "female", "intersex"]);
 const NoPhoneReasonSchema = z.enum(["no_phone", "unidentified"]);
 const NoIdReasonSchema = z.enum(["none_held", "not_carried", "unidentified"]);
 
+const PhoneSchema = z.string().trim().max(30).refine(v => normalizePhone(v) !== null, "Not a phone number we recognise");
+
+const IdentifierValueSchema = z.string().trim().min(1).max(60).refine(
+  v => /^[A-Z0-9/-]{1,40}$/.test(normalizeIdentifier(v)),
+  "Letters, digits, / and - only",
+);
+
 const IdentifierSchema = z.object({
   type: z.enum(IDENTIFIER_TYPES),
-  value: z.string().trim().min(1).max(60).refine(
-    v => /^[A-Z0-9/-]{1,40}$/.test(normalizeIdentifier(v)),
-    "Letters, digits, / and - only",
-  ),
+  value: IdentifierValueSchema,
 });
 
-const PhoneSchema = z.string().trim().max(30).refine(v => normalizePhone(v) !== null, "Not a phone number we recognise");
+/** A contact's identity document. */
+const IdDocumentSchema = z.object({ type: z.enum(IDENTITY_DOCUMENTS), value: IdentifierValueSchema });
+
+/** How a contact is related to the patient, as told: mother, father, aunt. */
+const RelationshipSchema = z.string().trim().min(2).max(40).regex(/^\P{C}+$/u, "One line, without control characters");
+
+/** Someone to reach about the patient, such as a child's guardian. */
+const ContactSchema = z.object({
+  name: personNameSchema,
+  relationship: RelationshipSchema.optional(),
+  phone: PhoneSchema.optional(),
+  idDocument: IdDocumentSchema.optional(),
+});
 
 /** A date of birth: a real day, not in the future, not before 1900. */
 const DateOfBirthSchema = z.iso.date().refine(d => d >= "1900-01-01" && d <= businessDate(), "Not a possible date of birth");
@@ -67,6 +83,8 @@ const RegisterBodySchema = z.object({
   noIdReason: NoIdReasonSchema.optional(),
   /** Brought in unable to say who they are. */
   unidentified: z.boolean().default(false),
+  /** A child's guardian, for example. Never part of the duplicate check. */
+  contacts: z.array(ContactSchema).max(3).default([]),
   /** The clerk saw the likely duplicates and says this is someone else. */
   confirmNotDuplicate: z.boolean().default(false),
 }).superRefine((body, ctx) => {
@@ -107,6 +125,13 @@ const UpdateBodySchema = z.object({
   "Give a phone number or the reason there is none, not both",
 );
 
+const UpdateContactBodySchema = z.object({
+  name: personNameSchema,
+  relationship: RelationshipSchema.nullable(),
+  phone: PhoneSchema.nullable(),
+  idDocument: IdDocumentSchema.nullable(),
+}).partial().refine(body => Object.keys(body).length > 0, "Nothing to change");
+
 const AddIdentifierBodySchema = IdentifierSchema.extend({
   confirmNotDuplicate: z.boolean().default(false),
 });
@@ -121,9 +146,21 @@ export const PatientSummarySchema = z.object({
   dateOfBirth: z.string(),
   age: z.number().int(),
   phone: z.string().nullable(),
+  idDocument: z.object({ type: z.enum(IDENTITY_DOCUMENTS), value: z.string() }).nullable().openapi({
+    description: "The identity document added most recently. An SHA or registry number does not count.",
+  }),
 });
 
-const PatientRecordSchema = PatientSummarySchema.omit({ opNumber: true }).extend({
+const ContactRecordSchema = z.object({
+  id: z.uuid(),
+  name: z.string(),
+  relationship: z.string().nullable(),
+  phone: z.string().nullable(),
+  idDocument: z.object({ type: z.enum(IDENTITY_DOCUMENTS), value: z.string() }).nullable(),
+  addedAt: z.string(),
+});
+
+const PatientRecordSchema = PatientSummarySchema.omit({ opNumber: true, idDocument: true }).extend({
   dobIsEstimated: z.boolean(),
   noPhoneReason: NoPhoneReasonSchema.nullable(),
   noIdReason: NoIdReasonSchema.nullable(),
@@ -133,6 +170,7 @@ const PatientRecordSchema = PatientSummarySchema.omit({ opNumber: true }).extend
   registeredAt: z.string(),
   numbers: z.array(z.object({ kind: z.enum(["outpatient", "inpatient"]), number: z.string(), issuedAt: z.string() })),
   identifiers: z.array(z.object({ type: z.enum(IDENTIFIER_TYPES), value: z.string(), addedAt: z.string() })),
+  contacts: z.array(ContactRecordSchema),
 });
 
 const DuplicateSchema = z.object({
@@ -144,6 +182,7 @@ const DuplicateSchema = z.object({
 });
 
 const PatientParamsSchema = z.object({ id: z.uuid() });
+const ContactParamsSchema = z.object({ id: z.uuid(), contactId: z.uuid() });
 const SearchQuerySchema = z.object({
   q: z.string().trim().min(2).max(100).openapi({ description: "An OP or IP number, phone, ID number, or names" }),
 });
@@ -244,8 +283,48 @@ export const addIdentifier = createRoute({
   },
 });
 
+export const addContact = createRoute({
+  tags,
+  method: "post",
+  path: "/patients/{id}/contacts",
+  summary: "Add a contact, such as a child's guardian",
+  description: "A contact's ID number is not the patient's: it is never searched or checked for duplicates.",
+  middleware: [registrarsOnly] as const,
+  request: {
+    headers: facilityHeaders,
+    params: PatientParamsSchema,
+    body: jsonContentRequired(ContactSchema, "The contact"),
+  },
+  responses: {
+    [HttpStatusCodes.OK]: jsonContent(PatientRecordSchema, "Added"),
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(ContactSchema), "Invalid contact"),
+    ...tenantResponses,
+  },
+});
+
+export const updateContact = createRoute({
+  tags,
+  method: "patch",
+  path: "/patients/{id}/contacts/{contactId}",
+  summary: "Correct a patient's contact",
+  description: "Each changed field's old and new value is recorded in the audit log. Null clears a field other than the name.",
+  middleware: [registrarsOnly] as const,
+  request: {
+    headers: facilityHeaders,
+    params: ContactParamsSchema,
+    body: jsonContentRequired(UpdateContactBodySchema, "The fields to change"),
+  },
+  responses: {
+    [HttpStatusCodes.OK]: jsonContent(PatientRecordSchema, "Corrected"),
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(UpdateContactBodySchema), "Invalid change"),
+    ...tenantResponses,
+  },
+});
+
 export type RegisterPatientRoute = typeof registerPatient;
 export type SearchPatientsRoute = typeof searchPatients;
 export type GetPatientRoute = typeof getPatient;
 export type UpdatePatientRoute = typeof updatePatient;
 export type AddIdentifierRoute = typeof addIdentifier;
+export type AddContactRoute = typeof addContact;
+export type UpdateContactRoute = typeof updateContact;

@@ -12,10 +12,12 @@ import * as patients from "@/lib/patients";
 import { normalizePhone } from "@/lib/phone";
 
 import type {
+  AddContactRoute,
   AddIdentifierRoute,
   GetPatientRoute,
   RegisterPatientRoute,
   SearchPatientsRoute,
+  UpdateContactRoute,
   UpdatePatientRoute,
 } from "./patients.routes";
 
@@ -45,7 +47,15 @@ function recordJson(r: PatientRecord) {
     registeredAt: r.registeredAt.toISOString(),
     numbers: r.numbers.map(n => ({ ...n, issuedAt: n.issuedAt.toISOString() })),
     identifiers: r.identifiers.map(i => ({ ...i, addedAt: i.addedAt.toISOString() })),
+    contacts: r.contacts.map(contact => ({ ...contact, addedAt: contact.addedAt.toISOString() })),
   };
+}
+
+/** A contact as the clerk typed it, its phone normalised to E.164 (rule 13). */
+function contactInput<T extends { phone?: string | null }>(contact: T): Omit<T, "phone"> & { phone?: string | null } {
+  if (contact.phone === undefined)
+    return contact;
+  return { ...contact, phone: contact.phone === null ? null : normalizePhone(contact.phone) };
 }
 
 /** The rule each registration CHECK holds, as the clerk should read it. */
@@ -101,6 +111,7 @@ export const registerPatient: TenantRouteHandler<RegisterPatientRoute> = async (
       identifiers: body.identifiers,
       noIdReason: body.noIdReason ?? null,
       unidentified: body.unidentified,
+      contacts: body.contacts.map(contact => contactInput(contact)),
       confirmNotDuplicate: body.confirmNotDuplicate,
     }, actorOf(c));
 
@@ -171,6 +182,38 @@ export const addIdentifier: TenantRouteHandler<AddIdentifierRoute> = async (c) =
 
   try {
     const record = await patients.addIdentifier(c.var.db, c.var.facility.id, id, body, actorOf(c));
+    return c.json(recordJson(record), HttpStatusCodes.OK);
+  }
+  catch (err) {
+    const refused = refusal(c, err);
+    if (refused)
+      return refused as never;
+    throw err;
+  }
+};
+
+export const addContact: TenantRouteHandler<AddContactRoute> = async (c) => {
+  const { id } = c.req.valid("param");
+  const body = c.req.valid("json");
+
+  try {
+    const record = await patients.addContact(c.var.db, c.var.facility.id, id, contactInput(body), actorOf(c));
+    return c.json(recordJson(record), HttpStatusCodes.OK);
+  }
+  catch (err) {
+    const refused = refusal(c, err);
+    if (refused)
+      return refused as never;
+    throw err;
+  }
+};
+
+export const updateContact: TenantRouteHandler<UpdateContactRoute> = async (c) => {
+  const { id, contactId } = c.req.valid("param");
+  const body = c.req.valid("json");
+
+  try {
+    const record = await patients.updateContact(c.var.db, c.var.facility.id, id, contactId, contactInput(body), actorOf(c));
     return c.json(recordJson(record), HttpStatusCodes.OK);
   }
   catch (err) {

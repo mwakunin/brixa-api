@@ -1,14 +1,15 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import type { MembershipRole } from "@/lib/types";
 
 import app from "@/app";
 import db from "@/db";
-import { auditLog } from "@/db/schema";
+import { auditLog, memberships } from "@/db/schema";
 import { runAsFacility } from "@/db/tenant-transaction";
 import { dateOfBirthForAge } from "@/lib/dates";
 import { registerSeries } from "@/lib/number-series";
+import { addIdentifier } from "@/lib/patients";
 import { facilityHeaders, makeFacility, nextIp, resetDb, signedInUserAt } from "@/test/helpers";
 
 type Person = Awaited<ReturnType<typeof signedInUserAt>>;
@@ -182,6 +183,53 @@ describe("finding and opening a patient", () => {
     expect((await search(q)).ids).toEqual([patient.id]);
   });
 
+  it("shows each match's identity document, the one added last", async () => {
+    const first = await (await call("GET", "/patients?q=Kamau", facility.id, clerk)).json();
+    expect(first.patients[0].idDocument).toEqual({ type: "national_id", value: "12345678" });
+
+    await call("POST", `/patients/${patient.id}/identifiers`, facility.id, clerk, { type: "passport", value: "AK123456" });
+    await call("POST", `/patients/${patient.id}/identifiers`, facility.id, clerk, { type: "sha_number", value: "SHA99" });
+
+    const later = await (await call("GET", "/patients?q=Kamau", facility.id, clerk)).json();
+    // An SHA number is not an identity document, however recent.
+    expect(later.patients[0].idDocument).toEqual({ type: "passport", value: "AK123456" });
+  });
+
+  it("shows the document added last, though its request began before another's was added", async () => {
+    const [membership] = await db.select({ id: memberships.id }).from(memberships).where(eq(memberships.userId, clerk.id));
+    let go!: () => void;
+    const gate = new Promise<void>(resolve => (go = resolve));
+    let added!: Promise<unknown>;
+    // One clerk's request begins, and waits before adding a passport...
+    await new Promise<void>((begun) => {
+      added = runAsFacility(facility.id, async (tx) => {
+        await tx.execute(sql`SELECT 1`);
+        begun();
+        await gate;
+        await addIdentifier(tx, facility.id, patient.id, { type: "passport", value: "AK123456" }, { userId: clerk.id, membershipId: membership.id });
+      });
+    });
+    // ...while another adds an alien card, and is done first.
+    expect((await call("POST", `/patients/${patient.id}/identifiers`, facility.id, clerk, { type: "alien_id", value: "AC55555" })).status).toBe(200);
+    go();
+    await added;
+
+    const found = await (await call("GET", "/patients?q=Kamau", facility.id, clerk)).json();
+    expect(found.patients[0].idDocument).toEqual({ type: "passport", value: "AK123456" });
+  });
+
+  it("shows no identity document for a patient who has none", async () => {
+    await call("POST", "/patients", facility.id, clerk, wanjiru({
+      givenName: "Baraka",
+      phone: "0799000111",
+      identifiers: [{ type: "sha_number", value: "SHA12" }],
+      noIdReason: "none_held",
+    }));
+
+    const found = await (await call("GET", "/patients?q=Baraka", facility.id, clerk)).json();
+    expect(found.patients).toEqual([expect.objectContaining({ givenName: "Baraka", idDocument: null })]);
+  });
+
   it("finds nobody for a name that is not on file", async () => {
     expect((await search("Otieno")).ids).toEqual([]);
   });
@@ -349,5 +397,153 @@ describe("correcting a patient's details", () => {
     const cashier = await signedInUserAt(facility.id, ["cashier"] as MembershipRole[]);
 
     expect((await patch(patient.id, { familyName: "Otieno" }, cashier)).status).toBe(403);
+  });
+});
+
+describe("a patient's contacts", () => {
+  let facility: Awaited<ReturnType<typeof facilityWithRegister>>;
+  let clerk: Person;
+
+  beforeEach(async () => {
+    await resetDb();
+    facility = await facilityWithRegister();
+    clerk = await signedInUserAt(facility.id, ["records_clerk"]);
+  });
+
+  const mother = { name: "Grace Atieno", relationship: "mother", phone: "0722 111 222", idDocument: { type: "national_id", value: "22 333 444" } };
+
+  /** A child of eight, with no ID of their own. */
+  function child(overrides: Record<string, unknown> = {}) {
+    return wanjiru({
+      givenName: "Baraka",
+      familyName: "Otieno",
+      dateOfBirth: undefined,
+      estimatedAgeYears: 8,
+      phone: undefined,
+      noPhoneReason: "no_phone",
+      identifiers: [],
+      noIdReason: "none_held",
+      ...overrides,
+    });
+  }
+
+  async function registered(body: unknown) {
+    const res = await call("POST", "/patients", facility.id, clerk, body);
+    expect(res.status).toBe(201);
+    return res.json();
+  }
+
+  it("registers a child with their guardian, stored as phones and IDs are", async () => {
+    const res = await call("POST", "/patients", facility.id, clerk, child({ contacts: [mother] }));
+
+    expect(res.status).toBe(201);
+    const patient = await res.json();
+    expect(patient.contacts).toEqual([{
+      id: expect.any(String),
+      name: "Grace Atieno",
+      relationship: "mother",
+      phone: "+254722111222",
+      idDocument: { type: "national_id", value: "22333444" },
+      addedAt: expect.any(String),
+    }]);
+    const [entry] = await auditOf("patient.registered");
+    expect(entry.detail).toMatchObject({ contacts: 1 });
+    // Each contact is audited as added, as one added later is.
+    const added = await auditOf("patient.contact_added");
+    expect(added).toEqual([expect.objectContaining({
+      actorId: clerk.id,
+      entityId: patient.id,
+      detail: {
+        contactId: patient.contacts[0].id,
+        name: "Grace Atieno",
+        relationship: "mother",
+        phone: "+254722111222",
+        idType: "national_id",
+        idValue: "22333444",
+      },
+    })]);
+  });
+
+  it("never treats a guardian's ID as the child's", async () => {
+    await registered(child({ contacts: [mother] }));
+
+    // Searching for the mother's ID number does not find the child...
+    const found = await (await call("GET", "/patients?q=22333444", facility.id, clerk)).json();
+    expect(found.patients).toEqual([]);
+
+    // ...and registering the mother herself raises no duplicate warning.
+    const herself = await call("POST", "/patients", facility.id, clerk, wanjiru({
+      givenName: "Grace",
+      familyName: "Atieno",
+      phone: "0722 111 222",
+      identifiers: [{ type: "national_id", value: "22333444" }],
+    }));
+    expect(herself.status).toBe(201);
+  });
+
+  it("adds a contact later, and corrects it with each change audited", async () => {
+    const patient = await registered(child());
+
+    const added = await call("POST", `/patients/${patient.id}/contacts`, facility.id, clerk, { name: "John Otieno", relationship: "father" });
+    expect(added.status).toBe(200);
+    const [contact] = (await added.json()).contacts;
+    expect(contact).toMatchObject({ name: "John Otieno", relationship: "father", phone: null, idDocument: null });
+    const [addedEntry] = await auditOf("patient.contact_added");
+    expect(addedEntry).toMatchObject({ actorId: clerk.id, entityId: patient.id, detail: { contactId: contact.id } });
+
+    const corrected = await call("PATCH", `/patients/${patient.id}/contacts/${contact.id}`, facility.id, clerk, {
+      phone: "0733 444 555",
+      idDocument: { type: "passport", value: "BK765432" },
+    });
+
+    expect(corrected.status).toBe(200);
+    expect((await corrected.json()).contacts[0]).toMatchObject({ phone: "+254733444555", idDocument: { type: "passport", value: "BK765432" } });
+    const [entry] = await auditOf("patient.contact_updated");
+    expect(entry.detail).toEqual({
+      contactId: contact.id,
+      phone: { from: null, to: "+254733444555" },
+      idType: { from: null, to: "passport" },
+      idValue: { from: null, to: "BK765432" },
+    });
+  });
+
+  it("clears a contact's details, and audits nothing when nothing changes", async () => {
+    const patient = await registered(child({ contacts: [mother] }));
+    const contactId = patient.contacts[0].id;
+    const patchContact = (body: unknown) => call("PATCH", `/patients/${patient.id}/contacts/${contactId}`, facility.id, clerk, body);
+
+    const cleared = await patchContact({ phone: null, idDocument: null });
+    expect((await cleared.json()).contacts[0]).toMatchObject({ phone: null, idDocument: null });
+
+    expect((await patchContact({ name: "Grace Atieno" })).status).toBe(200);
+    expect(await auditOf("patient.contact_updated")).toHaveLength(1);
+  });
+
+  it.each([
+    ["no name", { relationship: "mother" }],
+    ["an SHA number for an ID", { name: "Grace Atieno", idDocument: { type: "sha_number", value: "SHA1" } }],
+    ["a phone that is not one", { name: "Grace Atieno", phone: "12345" }],
+  ])("refuses a contact with %s", async (_label, contact) => {
+    const patient = await registered(child());
+
+    expect((await call("POST", `/patients/${patient.id}/contacts`, facility.id, clerk, contact)).status).toBe(422);
+  });
+
+  it("finds no contact through another patient", async () => {
+    const patient = await registered(child({ contacts: [mother] }));
+    const other = await registered(wanjiru());
+
+    const res = await call("PATCH", `/patients/${other.id}/contacts/${patient.contacts[0].id}`, facility.id, clerk, { name: "Someone Else" });
+
+    expect(res.status).toBe(404);
+  });
+
+  it("is shown to any member who opens the record, and changed only by front-desk staff", async () => {
+    const patient = await registered(child({ contacts: [mother] }));
+    const cashier = await signedInUserAt(facility.id, ["cashier"] as MembershipRole[]);
+
+    const opened = await call("GET", `/patients/${patient.id}`, facility.id, cashier);
+    expect((await opened.json()).contacts).toHaveLength(1);
+    expect((await call("POST", `/patients/${patient.id}/contacts`, facility.id, cashier, { name: "John Otieno" })).status).toBe(403);
   });
 });
