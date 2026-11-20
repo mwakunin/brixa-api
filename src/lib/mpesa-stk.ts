@@ -295,6 +295,9 @@ async function actorOf(tx: AppDb, membershipId: string): Promise<PatientActor> {
 async function settleForRequest(tx: AppDb, facilityId: string, request: StkRow, transaction: TransactionRow): Promise<"paid" | "queued"> {
   if (request.status === "completed")
     return "queued";
+  // Came to a replaced callback token, which anyone holding it could have used: a person places it, never a prompt's result.
+  if (transaction.cameOnReplacedToken)
+    return "queued";
   if (transaction.amountCents !== request.amountCents) {
     await tx.update(mpesaTransactions)
       .set({ statusReason: `Paid ${formatKes(transaction.amountCents)} against a prompt for ${formatKes(request.amountCents)}; check before placing it` })

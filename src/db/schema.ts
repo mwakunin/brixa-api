@@ -3512,6 +3512,12 @@ export const mpesaTransactions = pgTable("mpesa_transactions", {
   amountCents: integer().notNull(),
   transactedAt: timestamp({ withTimezone: true }).notNull(),
   rawPayload: jsonb().notNull(),
+  /**
+   * It came to a replaced callback token, which anyone holding it could
+   * have used (lib/mpesa-callbacks.ts): never matched or placed by itself,
+   * only by a person who has checked it against the M-Pesa statement.
+   */
+  cameOnReplacedToken: boolean().default(false).notNull(),
   status: text().$type<"unmatched" | "allocated" | "rejected">().default("unmatched").notNull(),
   statusReason: text(),
   receivedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),

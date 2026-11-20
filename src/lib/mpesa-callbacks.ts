@@ -138,7 +138,8 @@ const SAME_RECEIPT_ON_CURRENT = "The same receipt then came to the current M-Pes
 async function receiptOnFile(facilityId: string, receiptNumber: string, payload: unknown): Promise<void> {
   const flagged = await runAsFacility(facilityId, async (tx) => {
     const [first] = await tx.select().from(mpesaTransactions).where(eq(mpesaTransactions.transactionId, receiptNumber)).for("update").limit(1);
-    if (first?.status !== "unmatched" || first.statusReason !== ON_REPLACED_TOKEN)
+    // Came to the replaced token, whatever paybill it named, and not flagged already.
+    if (!first?.cameOnReplacedToken || first.status !== "unmatched" || first.statusReason === SAME_RECEIPT_ON_CURRENT)
       return false;
     await recordExchange(tx, facilityId, { operation: "c2b_confirmation", response: payload as Record<string, unknown>, error: "Same receipt as a confirmation that came to the replaced callback address" });
     await tx.update(mpesaTransactions).set({ statusReason: SAME_RECEIPT_ON_CURRENT }).where(eq(mpesaTransactions.id, first.id));
@@ -186,9 +187,10 @@ export async function onC2bConfirmation(token: string, payload: unknown): Promis
         amountCents: parsed.amountCents,
         transactedAt: parsed.transactedAt,
         rawPayload: payload as Record<string, unknown>,
-        statusReason: foreign
-          ? `Paid to paybill ${parsed.shortcode}, not this facility's current one; check before placing it`
-          : replaced ? ON_REPLACED_TOKEN : null,
+        cameOnReplacedToken: replaced,
+        statusReason: replaced
+          ? ON_REPLACED_TOKEN
+          : foreign ? `Paid to paybill ${parsed.shortcode}, not this facility's current one; check before placing it` : null,
       }).returning({ id: mpesaTransactions.id });
       await recordAudit(tx, {
         facilityId: settings.facilityId,

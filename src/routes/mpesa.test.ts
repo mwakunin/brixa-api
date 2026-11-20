@@ -1047,6 +1047,65 @@ describe("m-Pesa hardening", () => {
     expect(await paymentOf("SKCOLLIDE1")).toBeUndefined();
   });
 
+  // Came to the old token naming another paybill too: still known to have come there.
+  it("flag a receipt the old token took first even when it named another paybill", async () => {
+    daraja();
+    await setUp();
+    await drainOutbox();
+    const old = token;
+    await rotate();
+    await at(old, "/c2b/confirmation", confirmation({ TransID: "SKCOLLIDE2", BusinessShortCode: "999999" }));
+
+    expect((await at((await settingsRow()).callbackToken, "/c2b/confirmation", confirmation({ TransID: "SKCOLLIDE2" }))).status).toBe(200);
+
+    const [first] = await db.select().from(mpesaTransactions).where(eq(mpesaTransactions.transactionId, "SKCOLLIDE2"));
+    expect(first).toMatchObject({ status: "unmatched", cameOnReplacedToken: true });
+    const kept = await db.select().from(gatewayExchanges).where(and(eq(gatewayExchanges.operation, "c2b_confirmation"), eq(gatewayExchanges.error, "Same receipt as a confirmation that came to the replaced callback address")));
+    expect(kept).toHaveLength(1);
+  });
+
+  /*
+   * A notice that came to the old token is placed by a person only, never by
+   * a prompt's result: not when the result came before its send was
+   * recorded, nor when it names a receipt already on file.
+   */
+  it("never place against a prompt a notice that came to the old token, when the result came early", async () => {
+    daraja();
+    await setUp();
+    await drainOutbox();
+    const old = token;
+    await rotate();
+    const patientId = await h.patient();
+    const request = await (await prompt({ patientId, phone: "0712345678", amountCents: 50_000 })).json();
+    await at(old, "/c2b/confirmation", confirmation({ TransID: "SKEARLY001", TransAmount: "500.00" }));
+    // The prompt's result, on the current token, before its send is recorded.
+    expect((await paidAt((await settingsRow()).callbackToken, "ws_CO_1", "SKEARLY001", 500)).status).toBe(200);
+
+    await drainOutbox();
+
+    expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).toMatchObject({ status: "sent" });
+    expect(await paymentOf("SKEARLY001")).toBeUndefined();
+    const [notice] = await db.select().from(mpesaTransactions).where(eq(mpesaTransactions.transactionId, "SKEARLY001"));
+    expect(notice).toMatchObject({ status: "unmatched", cameOnReplacedToken: true });
+  });
+
+  it("never place against a prompt a notice that came to the old token, when the result names its receipt", async () => {
+    daraja();
+    await setUp();
+    await drainOutbox();
+    const old = token;
+    await rotate();
+    const patientId = await h.patient();
+    const request = await (await prompt({ patientId, phone: "0712345678", amountCents: 50_000 })).json();
+    await drainOutbox();
+    await at(old, "/c2b/confirmation", confirmation({ TransID: "SKONFILE01", TransAmount: "500.00" }));
+
+    expect((await paidAt((await settingsRow()).callbackToken, "ws_CO_1", "SKONFILE01", 500)).status).toBe(200);
+
+    expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).toMatchObject({ status: "sent" });
+    expect(await paymentOf("SKONFILE01")).toBeUndefined();
+  });
+
   /*
    * A paybill can move between facilities: one gives it up while its own
    * registration of it is still with Safaricom, and another takes it. The
