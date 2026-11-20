@@ -1,9 +1,10 @@
 import { and, eq, gt, isNull, lt, or } from "drizzle-orm";
 
 import db from "@/db";
-import { mpesaSettings, mpesaStkRequests, mpesaTransactions } from "@/db/schema";
+import { gatewayExchanges, mpesaSettings, mpesaStkRequests, mpesaTransactions } from "@/db/schema";
 import { runAsFacility } from "@/db/tenant-transaction";
 
+import type { StkCallback } from "./daraja";
 import type { StkCallbackRecord } from "./mpesa-stk";
 
 import { recordAudit } from "./audit";
@@ -12,7 +13,7 @@ import { parseC2bConfirmation, parseStkCallback } from "./daraja";
 import { isUniqueViolation } from "./db-errors";
 import { errorLine } from "./error-summary";
 import { logger } from "./logger";
-import { matchTransaction, recordExchange } from "./mpesa";
+import { KEPT_ON_REPLACED_TOKEN, matchTransaction, recordExchange } from "./mpesa";
 import { NOT_RECORDED } from "./mpesa-replays";
 import { recordStkCallback, settleStkCallback } from "./mpesa-stk";
 import { normalizePhone } from "./phone";
@@ -67,16 +68,45 @@ async function facilityForToken(token: string): Promise<CallbackSettings | null>
   return null;
 }
 
-/** Whether a prompt with this checkout id was asked for before the token was replaced. */
-async function promptBefore(facilityId: string, checkoutRequestId: string | null, replacedAt: Date): Promise<boolean> {
+/**
+ * Whether the prompt with this checkout id was sent, with the old token in
+ * its URL, before the token was replaced. Judged by its recorded send, not
+ * by when it was asked for: a prompt asked for before but sent after carries
+ * the new token. A send still being recorded as the token changed is not
+ * counted, and its outcome is kept for a person instead.
+ */
+async function promptSentBefore(facilityId: string, checkoutRequestId: string | null, replacedAt: Date): Promise<boolean> {
   if (!checkoutRequestId)
     return false;
   const [prompt] = await runAsFacility(facilityId, tx => tx
     .select({ id: mpesaStkRequests.id })
     .from(mpesaStkRequests)
-    .where(and(eq(mpesaStkRequests.checkoutRequestId, checkoutRequestId), lt(mpesaStkRequests.requestedAt, replacedAt)))
+    .innerJoin(gatewayExchanges, and(eq(gatewayExchanges.stkRequestId, mpesaStkRequests.id), eq(gatewayExchanges.operation, "stk_push"), isNull(gatewayExchanges.error)))
+    .where(and(eq(mpesaStkRequests.checkoutRequestId, checkoutRequestId), lt(gatewayExchanges.createdAt, replacedAt)))
     .limit(1));
   return Boolean(prompt);
+}
+
+/**
+ * On a replaced token, whether to take a prompt callback. What is not taken
+ * is kept for a person to read (`KEPT_ON_REPLACED_TOKEN`), never applied or
+ * replayed by itself: it may be an outcome that came before its send was
+ * recorded, or something sent by whoever holds the old token. So is one
+ * whose prompt could not be looked up.
+ */
+async function takenOnReplacedToken(settings: CallbackSettings & { replacedAt: Date }, callback: StkCallback | null, payload: unknown): Promise<boolean> {
+  let taken = false;
+  try {
+    taken = callback !== null && await promptSentBefore(settings.facilityId, callback.checkoutRequestId, settings.replacedAt);
+  }
+  catch (err) {
+    logger.error({ error: errorLine(err), facilityId: settings.facilityId }, "Could not look up the prompt of an M-Pesa callback on a replaced callback token");
+  }
+  if (!taken) {
+    await keepUnparsed(settings.facilityId, "stk_callback", payload, KEPT_ON_REPLACED_TOKEN);
+    logger.error({ facilityId: settings.facilityId }, "M-Pesa prompt callback on a replaced callback token, for no prompt sent before it; kept for a person");
+  }
+  return taken;
 }
 
 /** A callback we could not read or record, kept exactly as sent (rule 18), for a person to recover by hand. */
@@ -197,11 +227,9 @@ export async function onStkCallback(token: string, payload: unknown): Promise<Ca
     return UNKNOWN;
   }
   const parsed = parseStkCallback(payload);
-  if (settings.replacedAt && !(parsed && await promptBefore(settings.facilityId, parsed.checkoutRequestId, settings.replacedAt))) {
-    // On a replaced token, only the outcome of a prompt sent before the replacement is taken.
-    logger.error({ facilityId: settings.facilityId }, "M-Pesa prompt callback on a replaced callback token for no prompt sent before it; refused");
+  // On a replaced token, only the outcome of a prompt sent before the replacement is taken.
+  if (settings.replacedAt && !await takenOnReplacedToken({ ...settings, replacedAt: settings.replacedAt }, parsed, payload))
     return UNKNOWN;
-  }
   if (!parsed) {
     await keepUnparsed(settings.facilityId, "stk_callback", payload);
     logger.error({ facilityId: settings.facilityId }, "Unparseable M-Pesa prompt callback");

@@ -84,6 +84,14 @@ export function credentialsOf(stored: string): DarajaCredentials {
 export const PREVIOUS_TOKEN_GRACE_MS = 60 * 60 * 1000;
 
 /**
+ * How a prompt callback that came to a replaced token, and was not taken,
+ * is kept (lib/mpesa-callbacks.ts): for a person to read, never applied to a
+ * prompt or replayed by itself, since anyone holding the token could have
+ * sent it.
+ */
+export const KEPT_ON_REPLACED_TOKEN = "Came to the replaced callback address, for no prompt sent before the replacement";
+
+/**
  * Saves the paybill and its credentials, encrypted, and queues the C2B URL
  * registration with Safaricom (rule 18: never from inside this transaction).
  * The callback token survives a change of credentials, so URLs already
@@ -140,7 +148,8 @@ export async function saveSettings(
  * A second replacement meanwhile ends the oldest token at once.
  */
 export async function rotateCallbackToken(tx: AppDb, facilityId: string, actor: PatientActor, at = new Date()): Promise<void> {
-  const [settings] = await tx.select({ callbackToken: mpesaSettings.callbackToken }).from(mpesaSettings).limit(1);
+  // Locked: a second replacement at once waits, then retires this one's token, and the oldest ends.
+  const [settings] = await tx.select({ callbackToken: mpesaSettings.callbackToken }).from(mpesaSettings).limit(1).for("update");
   if (!settings)
     throw new MpesaError("not_set_up");
   await tx.update(mpesaSettings).set({

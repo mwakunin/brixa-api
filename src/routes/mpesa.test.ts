@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { randomBytes } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -10,7 +10,7 @@ import { admissions, auditLog, documents, gatewayExchanges, mpesaSettings, mpesa
 import { runAsFacility } from "@/db/tenant-transaction";
 import { drainOutbox, MAX_ATTEMPTS } from "@/jobs/outbox-worker";
 import { darajaTimestamp, resetDarajaTokens } from "@/lib/daraja";
-import { PREVIOUS_TOKEN_GRACE_MS } from "@/lib/mpesa";
+import { KEPT_ON_REPLACED_TOKEN, PREVIOUS_TOKEN_GRACE_MS } from "@/lib/mpesa";
 import { recordSent } from "@/lib/mpesa-stk";
 import { backendPid, resetDb, waitForBlockedBackend } from "@/test/helpers";
 import { call, hospital, TODAY } from "@/test/hospital";
@@ -899,6 +899,98 @@ describe("m-Pesa hardening", () => {
     expect(await db.select().from(mpesaTransactions).where(eq(mpesaTransactions.transactionId, "SKAFTER001"))).toEqual([]);
     expect((await paidAt((await settingsRow()).callbackToken, "ws_CO_2", "SKAFTER001", 200)).status).toBe(200);
     expect(await paymentOf("SKAFTER001")).toMatchObject({ method: "mpesa_stk" });
+  });
+
+  // The prompt's URL carries the token current when it is sent, not when it is asked for.
+  it("refuse on the old token a prompt asked for before the replacement but sent after it", async () => {
+    daraja();
+    await setUp();
+    const patientId = await h.patient();
+    const request = await (await prompt({ patientId, phone: "0712345678", amountCents: 50_000 })).json();
+    const old = token;
+    await rotate();
+    await drainOutbox();
+
+    expect((await paidAt(old, "ws_CO_1", "SKQUEUED01", 500)).status).toBe(404);
+
+    expect(await paymentOf("SKQUEUED01")).toBeUndefined();
+    expect((await paidAt((await settingsRow()).callbackToken, "ws_CO_1", "SKQUEUED01", 500)).status).toBe(200);
+    expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).toMatchObject({ status: "completed" });
+  });
+
+  /*
+   * What comes to the old token and is not taken is kept, for a person to
+   * read, rather than lost: it may be a prompt's outcome that came before
+   * its send was recorded. Nothing applies or replays it by itself, since
+   * anyone holding the old token could have sent it.
+   */
+  it("keep what comes to the old token and is not taken, and never apply it to a prompt", async () => {
+    daraja();
+    await setUp();
+    await drainOutbox();
+    const old = token;
+    const patientId = await h.patient();
+    await rotate();
+    const request = await (await prompt({ patientId, phone: "0712345678", amountCents: 50_000 })).json();
+
+    const refused = await at(old, "/stk/callback", { Body: { stkCallback: { MerchantRequestID: "m-1", CheckoutRequestID: "ws_CO_1", ResultCode: 1032, ResultDesc: "Request cancelled by user" } } });
+    expect(refused.status).toBe(404);
+    const kept = await db.select().from(gatewayExchanges).where(and(eq(gatewayExchanges.operation, "stk_callback"), eq(gatewayExchanges.error, KEPT_ON_REPLACED_TOKEN)));
+    expect(kept).toHaveLength(1);
+
+    // Sent now: its send looks for a callback that came early, and must not take this one.
+    await drainOutbox();
+
+    expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).toMatchObject({ status: "sent" });
+    expect((await (await call("GET", "/mpesa/unrecorded-callbacks", h.facility.id, h.finance)).json()).callbacks).toEqual([]);
+  });
+
+  it("keep a callback on the old token whose prompt cannot be looked up", async () => {
+    daraja();
+    await setUp();
+    const patientId = await h.patient();
+    await prompt({ patientId, phone: "0712345678", amountCents: 50_000 });
+    await drainOutbox();
+    const old = token;
+    await rotate();
+    await pool.query("REVOKE SELECT ON mpesa_stk_requests FROM hospital_app");
+    let res: Response;
+    try {
+      res = await paidAt(old, "ws_CO_1", "SKLOOKUP01", 500);
+    }
+    finally {
+      await pool.query("GRANT SELECT ON mpesa_stk_requests TO hospital_app");
+    }
+
+    expect(res.status).toBe(404);
+    const kept = await db.select().from(gatewayExchanges).where(and(eq(gatewayExchanges.operation, "stk_callback"), eq(gatewayExchanges.error, KEPT_ON_REPLACED_TOKEN)));
+    expect(kept).toHaveLength(1);
+  });
+
+  // Two replacements at once: the second waits for the first, so it retires the first's token, and the oldest ends.
+  it("replace the token one replacement at a time", async () => {
+    await setUp();
+    const original = token;
+    const holder = await pool.connect();
+    let both: Promise<Response[]> | undefined;
+    try {
+      await holder.query("BEGIN");
+      await holder.query("SELECT 1 FROM mpesa_settings WHERE facility_id = $1 FOR UPDATE", [h.facility.id]);
+      both = Promise.all([rotate(), rotate()]);
+      expect(await waitForBlockedBackend(Number((await holder.query("SELECT pg_backend_pid() AS pid")).rows[0].pid), 5000, 2)).toBe(true);
+      await holder.query("COMMIT");
+      expect((await both).map(r => r.status)).toEqual([200, 200]);
+    }
+    finally {
+      await holder.query("ROLLBACK").catch(() => {});
+      holder.release();
+      await both?.catch(() => {});
+    }
+
+    const row = await settingsRow();
+    expect(row.previousCallbackToken).not.toBe(original);
+    expect(row.previousCallbackToken).not.toBe(row.callbackToken);
+    expect((await at(original, "/c2b/confirmation", confirmation())).status).toBe(404);
   });
 
   it("end the old token an hour after the new URLs are registered", async () => {

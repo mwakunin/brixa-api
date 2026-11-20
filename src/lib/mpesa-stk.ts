@@ -14,7 +14,7 @@ import { DarajaError, exchangeOf, neverSent, parseStkCallback, stkPush } from ".
 import { isUniqueViolation } from "./db-errors";
 import { errorLine } from "./error-summary";
 import { formatKes } from "./money";
-import { callbackUrls, credentialsOf, MpesaError, recordExchange, settleTransaction } from "./mpesa";
+import { callbackUrls, credentialsOf, KEPT_ON_REPLACED_TOKEN, MpesaError, recordExchange, settleTransaction } from "./mpesa";
 import { enqueue } from "./outbox";
 import { PaymentError } from "./payments";
 import { normalizePhone } from "./phone";
@@ -260,7 +260,8 @@ async function applyEarlyCallback(tx: AppDb, facilityId: string, requestId: stri
   const [kept] = await tx
     .select({ response: gatewayExchanges.response })
     .from(gatewayExchanges)
-    .where(and(eq(gatewayExchanges.operation, "stk_callback"), sql`${checkoutOf(gatewayExchanges.response)} = ${checkoutRequestId}`))
+    // Not one kept from a replaced token: anyone holding it could have sent it (lib/mpesa-callbacks.ts).
+    .where(and(eq(gatewayExchanges.operation, "stk_callback"), sql`${checkoutOf(gatewayExchanges.response)} = ${checkoutRequestId}`, sql`${gatewayExchanges.error} IS DISTINCT FROM ${KEPT_ON_REPLACED_TOKEN}`))
     .orderBy(desc(gatewayExchanges.createdAt))
     .limit(1);
   const callback = kept ? parseStkCallback(kept.response) : null;
