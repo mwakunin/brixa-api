@@ -45,6 +45,14 @@ Decided 2026-11-17, as recommended:
 
 The inpatient screens come with P5.
 
+**F2 was walked through with the pilot's staff on 2026-11-20.** Every screen survives, with changes (brixa-web's `docs/outpatient-journey.md`). The API gaps it found are fixed in two pull requests:
+1. **The front desk:** each search result's identity document, and a patient's contacts.
+2. **The other desks:**
+   - the consultation's one read for the patient;
+   - today's complaint at triage;
+   - the pharmacy's stock flag and its quote before preparing;
+   - the receipt's address, items and cashier.
+
 ---
 
 ## 2. Phases
@@ -163,7 +171,7 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
 
 **Decided 2026-11-11** (product owner, for 5b; recommendations accepted):
 - **A result** is one test's values on one specimen, entered together and verified together by another lab member. A correction is a new version; the one it corrects stays on record.
-- **One lab member on night duty** may release a result unverified, with a reason; it reaches the clinician marked unverified until the next lab member verifies it. (Proposed earlier; it changes "a result reaches the clinician only once verified".)
+- **One lab member working alone** (on night duty; at the pilot often by day too, found in the staff walkthrough on 2026-11-20) may release a result unverified, with a reason; it reaches the clinician marked unverified until the next lab member verifies it. (Proposed earlier; it changes "a result reaches the clinician only once verified".)
 - **A critical value** is not released or verified until who was told, how (in person or by phone) and when is recorded.
 - **The lab report** is one per order, from a yearly `LR-` series, issued once every test on it is resulted or cancelled; a change to a result voids it and a new one is issued.
 - **A visit closes itself** through a check every 15 minutes, once its patient is in no queue, every test is resulted or cancelled and every service done, nothing is owed, and the patient was seen or tested. Medicines are not waited for until dispensing exists (P4).
@@ -177,7 +185,7 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
 - **The reminder** is one SMS at 17:00 Kenyan time the day before, none for a booking made after that, and no message at booking. It gives the patient's given name, the facility, the date and time, and the facility's phone number to call to change it (the facility admin sets the number). It never names the clinic, the clinician or the reason, since phones are shared and a clinic's name can disclose an HIV or mental-health diagnosis. Kenyan numbers only.
 - **The reminder is an outbox job held back to its time** (`available_at`) and delivered by the minute's sweep, not a Cloud Task scheduled at booking: Cloud Tasks schedules at most 30 days ahead, and chronic clinics book months ahead. It re-reads the appointment when it runs and is skipped if it no longer fits.
 - **Africa's Talking** is one account for the platform, configured in the environment, with each message's cost recorded per facility; a facility may have its own sender ID. Delivery reports wait for a public callback.
-- **A review visit's fee** is still charged as today (the pilot is asked whether to waive it); the visit a follow-up was booked from is recorded, so a waiver can come later.
+- **A review visit's fee** is charged like any other. The pilot's doctors waive a fee case by case, through the cashier as a waiver (the staff walkthrough, 2026-11-20). The visit a follow-up was booked from is recorded.
 
 **Decided 2026-11-15** (product owner, for 7; recommendations accepted):
 - **Sensitive categories** are HIV, mental health and gender-based violence (rule 27). An item is sensitive when it is a diagnosis under a code on this system's list (HIV 1C60–1C62, mental health chapter 06, and the GBV codes a clinician names; the list is to be confirmed by a clinician), a result of a lab test the catalogue's keepers mark, a note its author marks, or anything recorded during a visit to a clinic the facility admin marks.
@@ -191,7 +199,7 @@ Service-point queues and appointments; triage and vitals; consultation notes; IC
 **Still open after P3** (2026-11-15), each for its owner:
 - **A clinician:** the age below which a weight is needed to prescribe (`CHILD_UNDER_YEARS = 12`); the injected-route rule; the list of sensitive ICD-11 codes, and the GBV codes to add to it.
 - **A pharmacist:** a review of the drug list before it is loaded, and the controlled schedules PPB's list does not carry.
-- **The pilot:** whether a review visit within a few days is charged a second consultation fee.
+- ~~**The pilot:** whether a review visit within a few days is charged a second consultation fee.~~ Answered on 2026-11-20: it is, and the doctor waives it case by case.
 - **Proposed, not decided:** abnormal vital-sign flags. (The results-to-review list was decided on 2026-11-17, below.)
 - ~~**The outbox's next change:** a claim token, so an attempt that outlived its lease cannot finish a job another attempt holds (found in review of PR #17).~~ Done in the chore PR after #17: `outbox.claim_token`, new on each claim and required by every outcome write (`src/jobs/outbox-worker.ts`).
 
@@ -354,9 +362,9 @@ Bed board; transfers; nursing notes; observation charts, with the NEWS2 early-wa
 Everything the pilot needs to leave its current system on one day. The pilot is outpatient only (reordered 2026-11-17, §1), so this follows the frontend's outpatient screens, not P5:
 
 - **The outpatient screens** (§1, steps F1–F3), which every item below is used through.
-- **Consumables on orders** (P4 question 11) were decided and not built: a dressing's bandage is charged today by manual posting, with a reason. Ask the pilot whether it bills outpatients for consumables item by item; build it before go-live only if it does.
+- **Consumables on orders** (P4 question 11) were decided and not built: a dressing's bandage is charged today by manual posting, with a reason. The pilot's staff asked for both, item by item or not (the staff walkthrough, 2026-11-20). The owner left it for later, so it is not built before go-live.
 
-- **Migration** from the pilot's current system: patients and legacy numbers (`SCHEMA.md` §6), open balances and deposits. The hospital is new, so the volume is small; the tooling is still built to be reused.
+- **Migration** from the pilot's current system: patients and legacy numbers (`SCHEMA.md` §6), open balances and deposits. The hospital is new, so the volume is small; the tooling is still built to be reused. The pilot's old records are on paper and it starts afresh, so the owner left the patient import for later (2026-11-20).
 - **Opening stock**, from a physical count on cutover day: per store and batch (batch number, expiry, quantity, cost), loaded as `opening_balance` movements (`SCHEMA.md` §8). Controlled drugs also get an opening entry in their register, matching the old register's closing balance. Without this, stock on hand would be zero on day one and nothing could be dispensed.
 - **Reports a facility must file or run daily:** MOH 705A/705B and 717, revenue and cashier summaries, stock status.
 - **PWA offline support** at the service points that need it.

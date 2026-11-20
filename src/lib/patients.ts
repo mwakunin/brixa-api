@@ -4,7 +4,7 @@ import { and, asc, eq, exists, inArray, or, sql } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 
-import { patientIdentifiers, patientNumbers, patients } from "@/db/schema";
+import { patientContacts, patientIdentifiers, patientNumbers, patients } from "@/db/schema";
 
 import { recordAudit } from "./audit";
 import { issueNumber } from "./number-series";
@@ -29,6 +29,7 @@ export interface PatientActor {
 
 /** The documents that satisfy "an ID" at registration. */
 export const IDENTITY_DOCUMENTS = ["national_id", "passport", "birth_certificate", "alien_id", "refugee_id"] as const;
+export type IdentityDocument = (typeof IDENTITY_DOCUMENTS)[number];
 
 export type DuplicateReason = "same_id" | "same_name_and_phone" | "same_name_and_birth_date";
 
@@ -41,6 +42,29 @@ export interface PatientSummary {
   sex: Sex | null;
   dateOfBirth: string;
   phone: string | null;
+  /**
+   * The identity document added most recently, which clerks check a match
+   * against (decided 2026-11-20). An SHA or registry number does not count.
+   */
+  idDocument: { type: IdentityDocument; value: string } | null;
+}
+
+/** Someone to reach about a patient, such as a child's guardian. */
+export interface ContactInput {
+  name: string;
+  relationship?: string | null;
+  /** E.164, already normalised. */
+  phone?: string | null;
+  idDocument?: { type: IdentityDocument; value: string } | null;
+}
+
+export interface PatientContact {
+  id: string;
+  name: string;
+  relationship: string | null;
+  phone: string | null;
+  idDocument: { type: IdentityDocument; value: string } | null;
+  addedAt: Date;
 }
 
 export class PatientError extends Error {
@@ -71,6 +95,14 @@ const summaryColumns = {
   sex: patients.sex,
   dateOfBirth: patients.dateOfBirth,
   phone: patients.phone,
+  idDocument: sql<PatientSummary["idDocument"]>`(
+    SELECT json_build_object('type', ${patientIdentifiers.type}, 'value', ${patientIdentifiers.value})
+    FROM ${patientIdentifiers}
+    WHERE ${patientIdentifiers.patientId} = ${patients.id}
+      AND ${patientIdentifiers.type} IN (${sql.join(IDENTITY_DOCUMENTS.map(type => sql`${type}`), sql`, `)})
+    ORDER BY ${patientIdentifiers.addedAt} DESC, ${patientIdentifiers.id} DESC
+    LIMIT 1
+  )`,
 };
 
 /** Patients with their OP number, filtered by `where`. */
@@ -159,6 +191,8 @@ export interface Registration {
   identifiers: { type: IdentifierType; value: string }[];
   noIdReason: PatientRow["noIdReason"];
   unidentified: boolean;
+  /** A child's guardian, for example. Never part of the duplicate check. */
+  contacts?: ContactInput[];
   /** The clerk has seen the likely duplicates and says this is someone else. */
   confirmNotDuplicate?: boolean;
 }
@@ -209,6 +243,16 @@ export async function registerPatient(
     })));
   }
 
+  const contacts = input.contacts ?? [];
+  if (contacts.length > 0) {
+    await tx.insert(patientContacts).values(contacts.map(contact => ({
+      facilityId,
+      patientId: patient.id,
+      ...contactColumns(contact),
+      addedBy: actor.membershipId,
+    })));
+  }
+
   await recordAudit(tx, {
     facilityId,
     actorId: actor.userId,
@@ -216,7 +260,7 @@ export async function registerPatient(
     entityType: "patient",
     entityId: patient.id,
     summary: `Registered ${opNumber}`,
-    detail: { opNumber, duplicateWarningOverridden: Boolean(input.confirmNotDuplicate) },
+    detail: { opNumber, duplicateWarningOverridden: Boolean(input.confirmNotDuplicate), contacts: contacts.length },
   });
 
   return { id: patient.id, opNumber };
@@ -288,6 +332,7 @@ export async function searchPatients(
 export interface PatientRecord extends Omit<PatientRow, "facilityId" | "registeredBy" | "updatedAt"> {
   numbers: { kind: "outpatient" | "inpatient"; number: string; issuedAt: Date }[];
   identifiers: { type: IdentifierType; value: string; addedAt: Date }[];
+  contacts: PatientContact[];
 }
 
 /**
@@ -313,9 +358,26 @@ async function load(tx: AppDb, id: string): Promise<PatientRecord | null> {
     .from(patientIdentifiers)
     .where(eq(patientIdentifiers.patientId, id))
     .orderBy(asc(patientIdentifiers.addedAt));
+  const contacts = await tx
+    .select()
+    .from(patientContacts)
+    .where(eq(patientContacts.patientId, id))
+    .orderBy(asc(patientContacts.addedAt), asc(patientContacts.id));
 
   const { facilityId: _f, registeredBy: _r, updatedAt: _u, ...rest } = patient;
-  return { ...rest, numbers, identifiers };
+  return {
+    ...rest,
+    numbers,
+    identifiers,
+    contacts: contacts.map(c => ({
+      id: c.id,
+      name: c.name,
+      relationship: c.relationship,
+      phone: c.phone,
+      idDocument: c.idType && c.idValue ? { type: c.idType, value: c.idValue } : null,
+      addedAt: c.addedAt,
+    })),
+  };
 }
 
 /** A patient's record, and an audit entry saying who opened it (rule 9). */
@@ -451,4 +513,113 @@ export async function addIdentifier(
   });
 
   return (await load(tx, id))!;
+}
+
+// ---------------------------------------------------------------------------
+// Contacts
+// ---------------------------------------------------------------------------
+
+type ContactRow = typeof patientContacts.$inferSelect;
+type ContactColumns = Pick<ContactRow, "name" | "relationship" | "phone" | "idType" | "idValue">;
+
+/** A contact as stored: an ID number normalised as identifiers are. */
+function contactColumns(contact: ContactInput): ContactColumns {
+  return {
+    name: contact.name,
+    relationship: contact.relationship || null,
+    phone: contact.phone ?? null,
+    idType: contact.idDocument?.type ?? null,
+    idValue: contact.idDocument ? normalizeIdentifier(contact.idDocument.value) : null,
+  };
+}
+
+/** Adds someone to reach about the patient, such as a child's guardian. */
+export async function addContact(
+  tx: AppDb,
+  facilityId: string,
+  patientId: string,
+  input: ContactInput,
+  actor: PatientActor,
+): Promise<PatientRecord> {
+  const [patient] = await tx.select({ id: patients.id }).from(patients).where(eq(patients.id, patientId)).limit(1);
+  if (!patient)
+    throw new PatientError("not_found");
+
+  const columns = contactColumns(input);
+  const [contact] = await tx.insert(patientContacts)
+    .values({ facilityId, patientId, ...columns, addedBy: actor.membershipId })
+    .returning({ id: patientContacts.id });
+
+  await recordAudit(tx, {
+    facilityId,
+    actorId: actor.userId,
+    action: "patient.contact_added",
+    entityType: "patient",
+    entityId: patientId,
+    summary: columns.relationship ? `Added a contact (${columns.relationship})` : "Added a contact",
+    detail: { contactId: contact.id, ...columns },
+  });
+
+  return (await load(tx, patientId))!;
+}
+
+export type ContactChanges = Partial<ContactInput>;
+
+/**
+ * Corrects one of the patient's contacts in place, auditing each changed
+ * field's old and new value. A contact of another patient is not found.
+ */
+export async function updateContact(
+  tx: AppDb,
+  facilityId: string,
+  patientId: string,
+  contactId: string,
+  changes: ContactChanges,
+  actor: PatientActor,
+): Promise<PatientRecord> {
+  const [current] = await tx
+    .select()
+    .from(patientContacts)
+    .where(and(eq(patientContacts.id, contactId), eq(patientContacts.patientId, patientId)))
+    .for("update")
+    .limit(1);
+  if (!current)
+    throw new PatientError("not_found");
+
+  const next: Partial<ContactColumns> = {};
+  if (changes.name !== undefined)
+    next.name = changes.name;
+  if (changes.relationship !== undefined)
+    next.relationship = changes.relationship || null;
+  if (changes.phone !== undefined)
+    next.phone = changes.phone;
+  if (changes.idDocument !== undefined) {
+    next.idType = changes.idDocument?.type ?? null;
+    next.idValue = changes.idDocument ? normalizeIdentifier(changes.idDocument.value) : null;
+  }
+
+  const changed = Object.fromEntries(
+    Object.entries(next).filter(([field, value]) => current[field as keyof ContactColumns] !== value),
+  ) as Partial<ContactColumns>;
+
+  if (Object.keys(changed).length > 0) {
+    await tx.update(patientContacts).set(changed).where(eq(patientContacts.id, contactId));
+    await recordAudit(tx, {
+      facilityId,
+      actorId: actor.userId,
+      action: "patient.contact_updated",
+      entityType: "patient",
+      entityId: patientId,
+      summary: `Corrected a contact's ${Object.keys(changed).join(", ")}`,
+      detail: {
+        contactId,
+        ...Object.fromEntries(Object.entries(changed).map(([field, to]) => [
+          field,
+          { from: current[field as keyof ContactColumns] ?? null, to: to ?? null },
+        ])),
+      },
+    });
+  }
+
+  return (await load(tx, patientId))!;
 }

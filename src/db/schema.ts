@@ -337,6 +337,8 @@ export const auditLog = pgTable("audit_log", {
     | "patient.registered"
     | "patient.updated"
     | "patient.identifier_added"
+    | "patient.contact_added"
+    | "patient.contact_updated"
     | "patient.viewed"
     | "patient.searched"
     | "encounter.opened"
@@ -956,6 +958,51 @@ export const patientIdentifiers = pgTable("patient_identifiers", {
     "other",
   ]),
   check("patient_identifiers_value_shape", sql`${t.value} ~ '^[A-Z0-9/-]{1,40}$'`),
+]);
+
+/**
+ * Someone to reach about a patient: a child's guardian, recorded at the front
+ * desk with their own phone and ID (decided 2026-11-20, after the staff
+ * walkthrough). Not the patient's own details: a contact's ID number is never
+ * an identifier of the patient, so it takes no part in duplicate warnings or
+ * search, where it would match the guardian's own record. Corrected in place,
+ * each change audited with its old and new values; never deleted.
+ */
+export const patientContacts = pgTable("patient_contacts", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  patientId: uuid().notNull(),
+  name: text().notNull(),
+  /** As told: mother, father, aunt. */
+  relationship: text(),
+  /** E.164 (rule 13). */
+  phone: text(),
+  idType: text().$type<"national_id" | "passport" | "birth_certificate" | "alien_id" | "refugee_id">(),
+  /** Stored as identifiers are: uppercase, no spaces or dots. */
+  idValue: text(),
+  addedAt: timestamp({ withTimezone: true }).defaultNow().notNull(),
+  addedBy: uuid().notNull(),
+  updatedAt: updatedAt(),
+}, t => [
+  unique("patient_contacts_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({
+    name: "patient_contacts_patient_fk",
+    columns: [t.facilityId, t.patientId],
+    foreignColumns: [patients.facilityId, patients.id],
+  }),
+  foreignKey({
+    name: "patient_contacts_added_by_fk",
+    columns: [t.facilityId, t.addedBy],
+    foreignColumns: [memberships.facilityId, memberships.id],
+  }),
+  index("patient_contacts_patient_index").on(t.facilityId, t.patientId),
+  oneOf("patient_contacts_id_type_known", t.idType, ["national_id", "passport", "birth_certificate", "alien_id", "refugee_id"]),
+  check("patient_contacts_name_present", sql`length(btrim(${t.name})) > 0`),
+  check("patient_contacts_relationship_present", sql`${t.relationship} IS NULL OR length(btrim(${t.relationship})) > 0`),
+  check("patient_contacts_phone_e164", sql`${t.phone} IS NULL OR ${t.phone} ~ '^\\+[1-9][0-9]{7,14}$'`),
+  // An ID is its type and its number together, or neither.
+  check("patient_contacts_id_complete", sql`(${t.idType} IS NULL) = (${t.idValue} IS NULL)`),
+  check("patient_contacts_id_value_shape", sql`${t.idValue} IS NULL OR ${t.idValue} ~ '^[A-Z0-9/-]{1,40}$'`),
 ]);
 
 // ---------------------------------------------------------------------------
@@ -3847,6 +3894,7 @@ export const TENANT_TABLES = [
   "patients",
   "patient_numbers",
   "patient_identifiers",
+  "patient_contacts",
   "wards",
   "beds",
   "encounters",

@@ -13,5 +13,7 @@ router.openapi(routes.searchPatients, handlers.searchPatients);
 router.openapi(routes.getPatient, handlers.getPatient);
 router.openapi(routes.updatePatient, handlers.updatePatient);
 router.openapi(routes.addIdentifier, handlers.addIdentifier);
+router.openapi(routes.addContact, handlers.addContact);
+router.openapi(routes.updateContact, handlers.updateContact);
 
 export default router;

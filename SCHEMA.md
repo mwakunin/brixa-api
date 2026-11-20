@@ -136,6 +136,15 @@ Decided 2026-11-04 with the product owner:
 - **Roles:** `records_clerk`, `nurse` and `facility_admin` register and correct; every member may search and open a record.
 - The runtime role holds `SELECT`, `INSERT` and a column-level `UPDATE` on demographics only; `patient_numbers` and `patient_identifiers` are insert-only.
 
+### 5.2 As built: what the staff walkthrough asked of the front desk (2026-11-20)
+
+- **Each search result carries an identity document** (`idDocument`): the patient's identity document added most recently, its type and number, or null. Clerks confirm a match by two or three names and the phone or the ID number, and opening each record to check would audit each opening. An SHA or registry number does not count. Duplicate candidates carry it too.
+- **`patient_contacts`:** someone to reach about a patient, such as a child's guardian. A contact has a name; a relationship as told (mother, aunt); a phone (E.164); and an identity document (type and number together, or neither, normalised as identifiers are).
+  - **Never the patient's identity.** A contact's ID number takes no part in duplicate warnings or search, where it would match the guardian's own record.
+  - **Who:** up to three are given at registration; `POST /patients/{id}/contacts` adds one and `PATCH /patients/{id}/contacts/{contactId}` corrects one, by the roles that register patients. A contact of another patient is not found. Every member who opens the record sees them.
+  - **Corrected in place, never deleted.** Each correction is audited with its fields' old and new values (`patient.contact_updated`), and each addition as `patient.contact_added`. The runtime role holds `SELECT`, `INSERT` and a column-level `UPDATE` on the contact's details; whose contact it is, who added it and when never change.
+  - Next of kin for adults uses the same table when a facility asks for it.
+
 ---
 
 ## 6. Issuing numbers
