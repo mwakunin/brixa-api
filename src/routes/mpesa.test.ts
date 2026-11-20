@@ -1023,6 +1023,65 @@ describe("m-Pesa hardening", () => {
     expect(await paymentOf("SKWAITED01")).toMatchObject({ method: "mpesa_stk" });
   });
 
+  /*
+   * A confirmation on the old token is never trusted by itself, so it must
+   * not take the receipt from the one Safaricom sends to the current URLs:
+   * the pair is flagged in the queue, and the current one kept for a person.
+   */
+  it("keep a current confirmation whose receipt came first to the old token, and flag the pair", async () => {
+    daraja();
+    await setUp();
+    await drainOutbox();
+    const old = token;
+    await rotate();
+    const number = await patientNumber(await h.patient());
+    await at(old, "/c2b/confirmation", confirmation({ TransID: "SKCOLLIDE1", TransAmount: "9000.00", BillRefNumber: number }));
+
+    const current = await at((await settingsRow()).callbackToken, "/c2b/confirmation", confirmation({ TransID: "SKCOLLIDE1", BillRefNumber: number }));
+
+    expect(current.status).toBe(200);
+    const [first] = await db.select().from(mpesaTransactions).where(eq(mpesaTransactions.transactionId, "SKCOLLIDE1"));
+    expect(first).toMatchObject({ status: "unmatched", statusReason: "The same receipt then came to the current M-Pesa callback address; check both against the M-Pesa statement before placing either" });
+    const kept = await db.select().from(gatewayExchanges).where(and(eq(gatewayExchanges.operation, "c2b_confirmation"), eq(gatewayExchanges.error, "Same receipt as a confirmation that came to the replaced callback address")));
+    expect(kept).toHaveLength(1);
+    expect(await paymentOf("SKCOLLIDE1")).toBeUndefined();
+  });
+
+  /*
+   * A paybill can move between facilities: one gives it up while its own
+   * registration of it is still with Safaricom, and another takes it. The
+   * later holder's registration waits for the earlier one, so it lands last.
+   */
+  it("register one paybill at a time, so its later holder's registration lands last", async () => {
+    const other = await hospital();
+    // In the order Safaricom's answers come back: the order the registrations land.
+    const registered: [string, string][] = [];
+    let moved = false;
+    daraja({
+      register: async (body) => {
+        const landing: [string, string] = [String(body.ShortCode), String(body.ConfirmationURL)];
+        if (!moved) {
+          moved = true;
+          // While this facility's registration of the paybill is with Safaricom, it moves to another, which takes this one.
+          expect((await call("PUT", "/mpesa/settings", h.facility.id, h.admin, settingsBody(2, "600777"))).status).toBe(200);
+          expect((await call("PUT", "/mpesa/settings", other.facility.id, other.admin, settingsBody(3))).status).toBe(200);
+          await drainOutbox();
+        }
+        registered.push(landing);
+        return Response.json({ ResponseCode: "0", ResponseDescription: "Success" });
+      },
+    });
+    await setUp();
+
+    await drainOutbox();
+    await pool.query("UPDATE outbox SET available_at = now() WHERE status = 'pending'");
+    await drainOutbox();
+
+    const [taker] = await db.select().from(mpesaSettings).where(eq(mpesaSettings.facilityId, other.facility.id));
+    const forPaybill = registered.filter(([shortcode]) => shortcode === PAYBILL);
+    expect(forPaybill.at(-1)![1]).toContain(taker.callbackToken);
+  });
+
   it("end the old token an hour after the new URLs are registered", async () => {
     daraja();
     await setUp();
@@ -1063,9 +1122,10 @@ describe("m-Pesa hardening", () => {
   });
 
   /*
-   * Registrations for one facility can overlap: the older one's settings
-   * replaced while Safaricom registered them, and the newer one landing
-   * first. The older then asks again, so the last to land is the current.
+   * The settings replaced while Safaricom registers the old ones: the
+   * replacement's own registration waits for this one (one registration of
+   * a paybill at a time), and this one, finding its settings gone, asks
+   * again, so the last to land is the current.
    */
   it("ask again when the settings changed while Safaricom registered the old ones", async () => {
     const registered: string[] = [];
@@ -1074,7 +1134,7 @@ describe("m-Pesa hardening", () => {
         registered.push(String(body.ConfirmationURL));
         if (registered.length === 1) {
           await rotate();
-          // The replacement's own registration runs, and lands, before this one answers.
+          // The replacement's own registration tries now, and waits its turn.
           await drainOutbox();
         }
         return Response.json({ ResponseCode: "0", ResponseDescription: "Success" });
@@ -1086,7 +1146,7 @@ describe("m-Pesa hardening", () => {
     await drainOutbox();
 
     const current = (await settingsRow()).callbackToken;
-    expect(registered.map(url => url.includes(old) ? "old" : url.includes(current) ? "current" : "other")).toEqual(["old", "current", "current"]);
+    expect(registered.map(url => url.includes(old) ? "old" : url.includes(current) ? "current" : "other")).toEqual(["old", "current"]);
     expect((await settingsRow()).urlsRegisteredAt).not.toBeNull();
   });
 

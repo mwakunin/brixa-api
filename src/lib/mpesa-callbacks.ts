@@ -122,6 +122,32 @@ export type CallbackAnswer = { status: 200; body: typeof ACCEPTED } | { status: 
 
 const UNKNOWN: CallbackAnswer = { status: 404, body: { ResultCode: 1, ResultDesc: "Unknown callback token" } };
 
+/** Why a paybill confirmation that came to a replaced token waits for a person. */
+const ON_REPLACED_TOKEN = "Came to the replaced M-Pesa callback address; check it against the M-Pesa statement before placing it";
+
+/** And why it still does, once the same receipt came to the current token too. */
+const SAME_RECEIPT_ON_CURRENT = "The same receipt then came to the current M-Pesa callback address; check both against the M-Pesa statement before placing either";
+
+/**
+ * A paybill confirmation on the current token whose receipt is on file
+ * already. Usually Safaricom repeating itself. But if the one on file came
+ * to a replaced token, which anyone holding it could have sent, this one is
+ * not dropped: it is kept as sent, and the one on file is flagged in the
+ * queue, so a person checks the two against the M-Pesa statement.
+ */
+async function receiptOnFile(facilityId: string, receiptNumber: string, payload: unknown): Promise<void> {
+  const flagged = await runAsFacility(facilityId, async (tx) => {
+    const [first] = await tx.select().from(mpesaTransactions).where(eq(mpesaTransactions.transactionId, receiptNumber)).for("update").limit(1);
+    if (first?.status !== "unmatched" || first.statusReason !== ON_REPLACED_TOKEN)
+      return false;
+    await recordExchange(tx, facilityId, { operation: "c2b_confirmation", response: payload as Record<string, unknown>, error: "Same receipt as a confirmation that came to the replaced callback address" });
+    await tx.update(mpesaTransactions).set({ statusReason: SAME_RECEIPT_ON_CURRENT }).where(eq(mpesaTransactions.id, first.id));
+    return true;
+  });
+  if (flagged)
+    logger.error({ facilityId, transactionId: receiptNumber }, "M-Pesa confirmation whose receipt came first to a replaced callback token; both kept for a person");
+}
+
 /**
  * A paybill confirmation: stored exactly as sent, then matched in a second
  * transaction, so a failure to match never loses the record of money that
@@ -162,7 +188,7 @@ export async function onC2bConfirmation(token: string, payload: unknown): Promis
         rawPayload: payload as Record<string, unknown>,
         statusReason: foreign
           ? `Paid to paybill ${parsed.shortcode}, not this facility's current one; check before placing it`
-          : replaced ? "Came to the replaced M-Pesa callback address; check it against the M-Pesa statement before placing it" : null,
+          : replaced ? ON_REPLACED_TOKEN : null,
       }).returning({ id: mpesaTransactions.id });
       await recordAudit(tx, {
         facilityId: settings.facilityId,
@@ -177,8 +203,11 @@ export async function onC2bConfirmation(token: string, payload: unknown): Promis
     });
   }
   catch (err) {
-    if (isUniqueViolation(err))
+    if (isUniqueViolation(err)) {
+      if (!replaced)
+        await receiptOnFile(settings.facilityId, parsed.transactionId, payload);
       return { status: 200, body: ACCEPTED };
+    }
     logger.error({ error: errorLine(err), facilityId: settings.facilityId, transactionId: parsed.transactionId }, "Failed to store an M-Pesa confirmation");
     throw err;
   }

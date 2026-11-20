@@ -4,6 +4,7 @@ import { and, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 
+import { withAdvisoryLock } from "@/db";
 import { accounts, admissions, documents, encounters, gatewayExchanges, invoices, mpesaSettings, mpesaTransactions, normalisedNumber, patientNumbers, payments } from "@/db/schema";
 import { runAsFacility } from "@/db/tenant-transaction";
 import env from "@/env";
@@ -241,8 +242,27 @@ export async function recordExchange(
  * Once registered, a replaced token works for an hour more.
  */
 export async function registerUrls(job: { facilityId: string; subjectId: string }): Promise<"done" | "skipped"> {
+  const first = await runAsFacility(job.facilityId, async tx => (await tx.select().from(mpesaSettings).limit(1))[0]);
+  if (!first)
+    return "skipped";
+  /*
+   * One registration of a paybill at a time, whichever facility it is for,
+   * from reading the settings to Safaricom's answer: a paybill can move to
+   * another facility while this one's registration of it is with Safaricom,
+   * and the later holder's must land last. One that finds the paybill's
+   * under way is retried later.
+   */
+  const registered = await withAdvisoryLock(`mpesa-register:${first.shortcode}`, () => registerHeld(job, first.shortcode));
+  if (!registered.held)
+    throw new Error(`Another registration of paybill ${first.shortcode} is under way`);
+  return registered.value;
+}
+
+/** The registration itself, under the paybill's lock. */
+async function registerHeld(job: { facilityId: string; subjectId: string }, shortcode: string): Promise<"done" | "skipped"> {
   const settings = await runAsFacility(job.facilityId, async tx => (await tx.select().from(mpesaSettings).limit(1))[0]);
-  if (!settings)
+  // Moved to another paybill while this waited: the change queued its own registration.
+  if (!settings || settings.shortcode !== shortcode)
     return "skipped";
   const urls = callbackUrls(settings.callbackToken);
   try {
