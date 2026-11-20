@@ -993,6 +993,36 @@ describe("m-Pesa hardening", () => {
     expect((await at(original, "/c2b/confirmation", confirmation())).status).toBe(404);
   });
 
+  // The replacement counts from when it takes the token, not from when it was asked for and waited.
+  it("take on the old token a prompt sent while a replacement waited its turn", async () => {
+    daraja();
+    await setUp();
+    await drainOutbox();
+    const old = token;
+    const patientId = await h.patient();
+    const holder = await pool.connect();
+    let replacing: Promise<Response> | undefined;
+    try {
+      await holder.query("BEGIN");
+      await holder.query("SELECT 1 FROM mpesa_settings WHERE facility_id = $1 FOR UPDATE", [h.facility.id]);
+      replacing = rotate();
+      expect(await waitForBlockedBackend(Number((await holder.query("SELECT pg_backend_pid() AS pid")).rows[0].pid), 5000, 1)).toBe(true);
+      // Sent with the old token while the replacement waits.
+      await prompt({ patientId, phone: "0712345678", amountCents: 50_000 });
+      await drainOutbox();
+      await holder.query("COMMIT");
+      expect((await replacing).status).toBe(200);
+    }
+    finally {
+      await holder.query("ROLLBACK").catch(() => {});
+      holder.release();
+      await replacing?.catch(() => {});
+    }
+
+    expect((await paidAt(old, "ws_CO_1", "SKWAITED01", 500)).status).toBe(200);
+    expect(await paymentOf("SKWAITED01")).toMatchObject({ method: "mpesa_stk" });
+  });
+
   it("end the old token an hour after the new URLs are registered", async () => {
     daraja();
     await setUp();
@@ -1101,6 +1131,34 @@ describe("m-Pesa hardening", () => {
     expect(await db.select({ actorId: auditLog.actorId }).from(auditLog).where(eq(auditLog.action, "mpesa.callback_replayed"))).toEqual([{ actorId: h.finance.actor.userId }]);
     expect((await call("POST", `/mpesa/unrecorded-callbacks/${request.id}/replay`, h.facility.id, h.finance)).status).toBe(404);
   });
+
+  // The facility may change its paybill while a callback waits: the payment stays under the one the prompt went to.
+  it("replay a payment under the paybill its prompt was sent to", async () => {
+    daraja();
+    await setUp();
+    const patientId = await h.patient();
+    await prompt({ patientId, phone: "0712345678", amountCents: 50_000 });
+    await drainOutbox();
+    await pool.query(`
+      CREATE FUNCTION fail_mpesa_transactions() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'simulated failure'; END; $$;
+      CREATE TRIGGER fail_mpesa_transactions BEFORE INSERT ON mpesa_transactions
+        FOR EACH ROW EXECUTE FUNCTION fail_mpesa_transactions();
+    `);
+    try {
+      await paidAt(token, "ws_CO_1", "SKPAYBILL1", 500);
+    }
+    finally {
+      await pool.query("DROP TRIGGER fail_mpesa_transactions ON mpesa_transactions; DROP FUNCTION fail_mpesa_transactions();");
+    }
+    expect((await call("PUT", "/mpesa/settings", h.facility.id, h.admin, settingsBody(2, "600777"))).status).toBe(200);
+    const { callbacks } = await (await call("GET", "/mpesa/unrecorded-callbacks", h.facility.id, h.finance)).json();
+
+    expect(await (await call("POST", `/mpesa/unrecorded-callbacks/${callbacks[0].id}/replay`, h.facility.id, h.finance)).json()).toEqual({ outcome: "paid" });
+
+    const [recorded] = await db.select().from(mpesaTransactions).where(eq(mpesaTransactions.transactionId, "SKPAYBILL1"));
+    expect(recorded.shortcode).toBe(PAYBILL);
+  });
 });
 
 describe("in the database", () => {
@@ -1109,9 +1167,11 @@ describe("in the database", () => {
       ["documents_normalised_invoice_number_index", db.select({ id: documents.id }).from(documents).where(sql`${documents.facilityId} = ${h.facility.id} AND ${documents.kind} = 'invoice' AND ${normalisedNumber(documents.number)} = ${"INV2026000001"}`)],
       ["admissions_normalised_number_index", db.select({ id: admissions.id }).from(admissions).where(sql`${admissions.facilityId} = ${h.facility.id} AND ${normalisedNumber(admissions.admissionNumber)} = ${"ADM20260001"}`)],
       ["patient_numbers_normalised_number_index", db.select({ id: patientNumbers.id }).from(patientNumbers).where(sql`${patientNumbers.facilityId} = ${h.facility.id} AND ${normalisedNumber(patientNumbers.number)} = ${"OPD1201"}`)],
-      // The early-callback lookups by checkout id, likewise.
-      ["mpesa_transactions_stk_checkout_index", db.select({ id: mpesaTransactions.id }).from(mpesaTransactions).where(sql`${mpesaTransactions.facilityId} = ${h.facility.id} AND ${mpesaTransactions.source} = 'stk' AND ${stkCheckoutId(mpesaTransactions.rawPayload)} = ${"ws_CO_1"}`)],
-      ["gateway_exchanges_stk_checkout_index", db.select({ id: gatewayExchanges.id }).from(gatewayExchanges).where(sql`${gatewayExchanges.facilityId} = ${h.facility.id} AND ${gatewayExchanges.operation} = 'stk_callback' AND ${stkCheckoutId(gatewayExchanges.response)} = ${"ws_CO_1"}`)],
+      // The early-callback lookups by checkout id, likewise. Without the facility: every row of one facility
+      // shares it, so an index led by it never narrows these, but a planner holding statistics of near-empty
+      // tables may still pick one, and the plan would then say nothing about the shared expression.
+      ["mpesa_transactions_stk_checkout_index", db.select({ id: mpesaTransactions.id }).from(mpesaTransactions).where(sql`${mpesaTransactions.source} = 'stk' AND ${stkCheckoutId(mpesaTransactions.rawPayload)} = ${"ws_CO_1"}`)],
+      ["gateway_exchanges_stk_checkout_index", db.select({ id: gatewayExchanges.id }).from(gatewayExchanges).where(sql`${gatewayExchanges.operation} = 'stk_callback' AND ${stkCheckoutId(gatewayExchanges.response)} = ${"ws_CO_1"}`)],
     ] as const;
 
     const client = await pool.connect();

@@ -147,16 +147,18 @@ export async function saveSettings(
  * recorded, and a paybill confirmation is kept but never placed by itself.
  * A second replacement meanwhile ends the oldest token at once.
  */
-export async function rotateCallbackToken(tx: AppDb, facilityId: string, actor: PatientActor, at = new Date()): Promise<void> {
+export async function rotateCallbackToken(tx: AppDb, facilityId: string, actor: PatientActor): Promise<void> {
   // Locked: a second replacement at once waits, then retires this one's token, and the oldest ends.
   const [settings] = await tx.select({ callbackToken: mpesaSettings.callbackToken }).from(mpesaSettings).limit(1).for("update");
   if (!settings)
     throw new MpesaError("not_set_up");
+  // Taken once the lock is held: a prompt sent while this waited carried the old token, and counts as sent before.
+  const rotatedAt = new Date();
   await tx.update(mpesaSettings).set({
     callbackToken: generateCallbackToken(),
     previousCallbackToken: settings.callbackToken,
     previousTokenUntil: null,
-    callbackTokenRotatedAt: at,
+    callbackTokenRotatedAt: rotatedAt,
     urlsRegisteredAt: null,
   }).where(eq(mpesaSettings.facilityId, facilityId));
   await enqueue(tx, { facilityId, operation: "mpesa.register_urls", subjectId: facilityId });
