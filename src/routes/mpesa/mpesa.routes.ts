@@ -34,6 +34,10 @@ const SettingsSchema = z.object({
   lastRegistrationError: z.string().nullable(),
   /** Contain this facility's secret callback token. */
   callbackUrls: z.object({ confirmation: z.string(), validation: z.string(), stk: z.string() }),
+  /** When the callback token was last replaced, if ever. */
+  callbackTokenRotatedAt: z.string().nullable(),
+  /** The replaced token while it still works: `until` is null while the new URLs wait to be registered. */
+  previousToken: z.object({ until: z.string().nullable() }).nullable(),
 });
 
 const SettingsBodySchema = z.object({
@@ -62,12 +66,48 @@ export const putSettings = createRoute({
   method: "put",
   path: "/mpesa/settings",
   summary: "Set the M-Pesa paybill and its Daraja credentials",
-  description: "Stored encrypted. The callback URLs are then registered with Safaricom in the background.",
+  description: "Stored encrypted. The callback URLs are then registered with Safaricom in the background. A paybill another facility has is refused (`paybill_taken`): Safaricom sends a paybill's payments to one set of URLs.",
   middleware: [adminOnly] as const,
   request: { headers: facilityHeaders, body: jsonContentRequired(SettingsBodySchema, "The paybill") },
   responses: {
     [HttpStatusCodes.OK]: jsonContent(z.object({ settings: SettingsSchema }), "Saved"),
+    [HttpStatusCodes.CONFLICT]: jsonContent(RefusalSchema, "The paybill is another facility's"),
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(SettingsBodySchema), "Invalid settings"),
+    ...tenantResponses,
+  },
+});
+
+export const rotateCallbackToken = createRoute({
+  tags,
+  method: "post",
+  path: "/mpesa/settings/callback-token",
+  summary: "Replace the secret in the M-Pesa callback URLs",
+  description:
+    "For a callback token that may have leaked. Prompts sent from now carry the new one, and the new URLs are "
+    + "registered with Safaricom in the background. In production Safaricom takes a paybill's URLs once: delete "
+    + "the old registration on the Daraja portal, then ask again (`POST /mpesa/settings/registration`). Until the "
+    + "new URLs are registered, and an hour after, the old token still takes the outcome of a prompt sent before "
+    + "the replacement, and keeps a paybill payment for a person to check, never placing it by itself.",
+  middleware: [adminOnly] as const,
+  request: { headers: facilityHeaders },
+  responses: {
+    [HttpStatusCodes.OK]: jsonContent(z.object({ settings: SettingsSchema }), "Replaced"),
+    [HttpStatusCodes.CONFLICT]: jsonContent(RefusalSchema, "M-Pesa is not set up"),
+    ...tenantResponses,
+  },
+});
+
+export const requestRegistration = createRoute({
+  tags,
+  method: "post",
+  path: "/mpesa/settings/registration",
+  summary: "Register the M-Pesa callback URLs with Safaricom again",
+  description: "In the background, for a registration Safaricom refused: for example once the old one is deleted on the Daraja portal.",
+  middleware: [adminOnly] as const,
+  request: { headers: facilityHeaders },
+  responses: {
+    [HttpStatusCodes.OK]: jsonContent(z.object({ settings: SettingsSchema }), "Asked"),
+    [HttpStatusCodes.CONFLICT]: jsonContent(RefusalSchema, "M-Pesa is not set up"),
     ...tenantResponses,
   },
 });
@@ -214,7 +254,53 @@ export const getStk = createRoute({
   },
 });
 
+const UnrecordedCallbackSchema = z.object({
+  id: z.uuid(),
+  receivedAt: z.string(),
+  /** Whether Safaricom said the payer paid. */
+  paid: z.boolean(),
+  receiptNumber: z.string().nullable(),
+  amountCents: z.number().int().nullable(),
+});
+
+export const listUnrecordedCallbacks = createRoute({
+  tags,
+  method: "get",
+  path: "/mpesa/unrecorded-callbacks",
+  summary: "M-Pesa prompt callbacks that could not be recorded",
+  description: "Safaricom does not call back again, so each is kept for finance to replay. Oldest first, up to 200. Receipt numbers and amounts only.",
+  middleware: [financeOnly] as const,
+  request: { headers: facilityHeaders },
+  responses: {
+    [HttpStatusCodes.OK]: jsonContent(z.object({ callbacks: z.array(UnrecordedCallbackSchema) }), "Waiting to be replayed"),
+    ...tenantResponses,
+  },
+});
+
+export const replayCallback = createRoute({
+  tags,
+  method: "post",
+  path: "/mpesa/unrecorded-callbacks/{id}/replay",
+  summary: "Replay an M-Pesa prompt callback that could not be recorded",
+  description:
+    "Through the same steps as when it came, once: a receipt already on file is never booked twice. `paid`: "
+    + "placed towards its prompt; `queued`: waiting in the queue for a person; `failed`: the payer did not pay, "
+    + "and the prompt is closed; `unusable`: Safaricom sent nothing that could be booked.",
+  middleware: [financeOnly] as const,
+  request: { headers: facilityHeaders, params: IdParamsSchema },
+  responses: {
+    [HttpStatusCodes.OK]: jsonContent(z.object({ outcome: z.enum(["paid", "queued", "failed", "unusable"]) }), "Replayed"),
+    [HttpStatusCodes.CONFLICT]: jsonContent(RefusalSchema, "Replayed already"),
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(IdParamsSchema), "Not an id"),
+    ...tenantResponses,
+  },
+});
+
 export type GetSettingsRoute = typeof getSettings;
+export type RotateCallbackTokenRoute = typeof rotateCallbackToken;
+export type RequestRegistrationRoute = typeof requestRegistration;
+export type ListUnrecordedCallbacksRoute = typeof listUnrecordedCallbacks;
+export type ReplayCallbackRoute = typeof replayCallback;
 export type PutSettingsRoute = typeof putSettings;
 export type ListTransactionsRoute = typeof listTransactions;
 export type AssignTransactionRoute = typeof assignTransaction;

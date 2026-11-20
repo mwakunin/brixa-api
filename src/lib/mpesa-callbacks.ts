@@ -1,9 +1,10 @@
-import { eq } from "drizzle-orm";
+import { and, eq, gt, isNull, lt, or } from "drizzle-orm";
 
 import db from "@/db";
-import { mpesaSettings, mpesaTransactions } from "@/db/schema";
+import { gatewayExchanges, mpesaSettings, mpesaStkRequests, mpesaTransactions } from "@/db/schema";
 import { runAsFacility } from "@/db/tenant-transaction";
 
+import type { StkCallback } from "./daraja";
 import type { StkCallbackRecord } from "./mpesa-stk";
 
 import { recordAudit } from "./audit";
@@ -12,7 +13,8 @@ import { parseC2bConfirmation, parseStkCallback } from "./daraja";
 import { isUniqueViolation } from "./db-errors";
 import { errorLine } from "./error-summary";
 import { logger } from "./logger";
-import { matchTransaction, recordExchange } from "./mpesa";
+import { KEPT_ON_REPLACED_TOKEN, matchTransaction, recordExchange } from "./mpesa";
+import { NOT_RECORDED } from "./mpesa-replays";
 import { recordStkCallback, settleStkCallback } from "./mpesa-stk";
 import { normalizePhone } from "./phone";
 
@@ -24,17 +26,87 @@ import { normalizePhone } from "./phone";
  *
  * Logs carry receipt numbers and amounts, never a payer's name, phone or
  * account reference (rule 10); the raw payload is in the database.
+ *
+ * A token replaced for one that may have leaked (lib/mpesa.ts) keeps working
+ * for a while, but only so far as a leaked token can do no harm on its own:
+ * a prompt sent before the replacement has its outcome recorded, and a
+ * paybill confirmation is kept but never placed by itself, since anyone
+ * holding the token could have sent it.
  */
 
-async function facilityForToken(token: string) {
+interface CallbackSettings {
+  facilityId: string;
+  shortcode: string;
+  /** Set when the call came on a replaced token: when it was replaced. */
+  replacedAt: Date | null;
+}
+
+async function facilityForToken(token: string): Promise<CallbackSettings | null> {
   if (token.length !== 43)
     return null;
   const [settings] = await db
-    .select({ facilityId: mpesaSettings.facilityId, shortcode: mpesaSettings.shortcode, callbackToken: mpesaSettings.callbackToken })
+    .select({
+      facilityId: mpesaSettings.facilityId,
+      shortcode: mpesaSettings.shortcode,
+      callbackToken: mpesaSettings.callbackToken,
+      previousCallbackToken: mpesaSettings.previousCallbackToken,
+      rotatedAt: mpesaSettings.callbackTokenRotatedAt,
+    })
     .from(mpesaSettings)
-    .where(eq(mpesaSettings.callbackToken, token))
+    .where(or(
+      eq(mpesaSettings.callbackToken, token),
+      and(eq(mpesaSettings.previousCallbackToken, token), or(isNull(mpesaSettings.previousTokenUntil), gt(mpesaSettings.previousTokenUntil, new Date()))),
+    ))
     .limit(1);
-  return settings && secretEquals(settings.callbackToken, token) ? settings : null;
+  if (!settings)
+    return null;
+  const base = { facilityId: settings.facilityId, shortcode: settings.shortcode };
+  if (secretEquals(settings.callbackToken, token))
+    return { ...base, replacedAt: null };
+  if (settings.previousCallbackToken && settings.rotatedAt && secretEquals(settings.previousCallbackToken, token))
+    return { ...base, replacedAt: settings.rotatedAt };
+  return null;
+}
+
+/**
+ * Whether the prompt with this checkout id was sent, with the old token in
+ * its URL, before the token was replaced. Judged by its recorded send, not
+ * by when it was asked for: a prompt asked for before but sent after carries
+ * the new token. A send still being recorded as the token changed is not
+ * counted, and its outcome is kept for a person instead.
+ */
+async function promptSentBefore(facilityId: string, checkoutRequestId: string | null, replacedAt: Date): Promise<boolean> {
+  if (!checkoutRequestId)
+    return false;
+  const [prompt] = await runAsFacility(facilityId, tx => tx
+    .select({ id: mpesaStkRequests.id })
+    .from(mpesaStkRequests)
+    .innerJoin(gatewayExchanges, and(eq(gatewayExchanges.stkRequestId, mpesaStkRequests.id), eq(gatewayExchanges.operation, "stk_push"), isNull(gatewayExchanges.error)))
+    .where(and(eq(mpesaStkRequests.checkoutRequestId, checkoutRequestId), lt(gatewayExchanges.createdAt, replacedAt)))
+    .limit(1));
+  return Boolean(prompt);
+}
+
+/**
+ * On a replaced token, whether to take a prompt callback. What is not taken
+ * is kept for a person to read (`KEPT_ON_REPLACED_TOKEN`), never applied or
+ * replayed by itself: it may be an outcome that came before its send was
+ * recorded, or something sent by whoever holds the old token. So is one
+ * whose prompt could not be looked up.
+ */
+async function takenOnReplacedToken(settings: CallbackSettings & { replacedAt: Date }, callback: StkCallback | null, payload: unknown): Promise<boolean> {
+  let taken = false;
+  try {
+    taken = callback !== null && await promptSentBefore(settings.facilityId, callback.checkoutRequestId, settings.replacedAt);
+  }
+  catch (err) {
+    logger.error({ error: errorLine(err), facilityId: settings.facilityId }, "Could not look up the prompt of an M-Pesa callback on a replaced callback token");
+  }
+  if (!taken) {
+    await keepUnparsed(settings.facilityId, "stk_callback", payload, KEPT_ON_REPLACED_TOKEN);
+    logger.error({ facilityId: settings.facilityId }, "M-Pesa prompt callback on a replaced callback token, for no prompt sent before it; kept for a person");
+  }
+  return taken;
 }
 
 /** A callback we could not read or record, kept exactly as sent (rule 18), for a person to recover by hand. */
@@ -49,6 +121,33 @@ export const ACCEPTED = { ResultCode: 0, ResultDesc: "Accepted" } as const;
 export type CallbackAnswer = { status: 200; body: typeof ACCEPTED } | { status: 404; body: { ResultCode: 1; ResultDesc: string } };
 
 const UNKNOWN: CallbackAnswer = { status: 404, body: { ResultCode: 1, ResultDesc: "Unknown callback token" } };
+
+/** Why a paybill confirmation that came to a replaced token waits for a person. */
+const ON_REPLACED_TOKEN = "Came to the replaced M-Pesa callback address; check it against the M-Pesa statement before placing it";
+
+/** And why it still does, once the same receipt came to the current token too. */
+const SAME_RECEIPT_ON_CURRENT = "The same receipt then came to the current M-Pesa callback address; check both against the M-Pesa statement before placing either";
+
+/**
+ * A paybill confirmation on the current token whose receipt is on file
+ * already. Usually Safaricom repeating itself. But if the one on file came
+ * to a replaced token, which anyone holding it could have sent, this one is
+ * not dropped: it is kept as sent, and the one on file is flagged in the
+ * queue, so a person checks the two against the M-Pesa statement.
+ */
+async function receiptOnFile(facilityId: string, receiptNumber: string, payload: unknown): Promise<void> {
+  const flagged = await runAsFacility(facilityId, async (tx) => {
+    const [first] = await tx.select().from(mpesaTransactions).where(eq(mpesaTransactions.transactionId, receiptNumber)).for("update").limit(1);
+    // Came to the replaced token, whatever paybill it named, and not flagged already.
+    if (!first?.cameOnReplacedToken || first.status !== "unmatched" || first.statusReason === SAME_RECEIPT_ON_CURRENT)
+      return false;
+    await recordExchange(tx, facilityId, { operation: "c2b_confirmation", response: payload as Record<string, unknown>, error: "Same receipt as a confirmation that came to the replaced callback address" });
+    await tx.update(mpesaTransactions).set({ statusReason: SAME_RECEIPT_ON_CURRENT }).where(eq(mpesaTransactions.id, first.id));
+    return true;
+  });
+  if (flagged)
+    logger.error({ facilityId, transactionId: receiptNumber }, "M-Pesa confirmation whose receipt came first to a replaced callback token; both kept for a person");
+}
 
 /**
  * A paybill confirmation: stored exactly as sent, then matched in a second
@@ -71,8 +170,9 @@ export async function onC2bConfirmation(token: string, payload: unknown): Promis
     return { status: 200, body: ACCEPTED };
   }
 
-  // Another paybill, e.g. the old one while a change settles: never matched by itself, but a person may place it.
+  // Another paybill, e.g. the old one while a change settles, or a replaced token: never matched by itself, but a person may place it.
   const foreign = parsed.shortcode !== settings.shortcode;
+  const replaced = settings.replacedAt !== null;
   let id: string;
   try {
     id = await runAsFacility(settings.facilityId, async (tx) => {
@@ -87,7 +187,10 @@ export async function onC2bConfirmation(token: string, payload: unknown): Promis
         amountCents: parsed.amountCents,
         transactedAt: parsed.transactedAt,
         rawPayload: payload as Record<string, unknown>,
-        statusReason: foreign ? `Paid to paybill ${parsed.shortcode}, not this facility's current one; check before placing it` : null,
+        cameOnReplacedToken: replaced,
+        statusReason: replaced
+          ? ON_REPLACED_TOKEN
+          : foreign ? `Paid to paybill ${parsed.shortcode}, not this facility's current one; check before placing it` : null,
       }).returning({ id: mpesaTransactions.id });
       await recordAudit(tx, {
         facilityId: settings.facilityId,
@@ -102,13 +205,20 @@ export async function onC2bConfirmation(token: string, payload: unknown): Promis
     });
   }
   catch (err) {
-    if (isUniqueViolation(err))
+    if (isUniqueViolation(err)) {
+      if (!replaced)
+        await receiptOnFile(settings.facilityId, parsed.transactionId, payload);
       return { status: 200, body: ACCEPTED };
+    }
     logger.error({ error: errorLine(err), facilityId: settings.facilityId, transactionId: parsed.transactionId }, "Failed to store an M-Pesa confirmation");
     throw err;
   }
   if (foreign) {
     logger.error({ facilityId: settings.facilityId, transactionId: parsed.transactionId }, "M-Pesa confirmation for another paybill");
+    return { status: 200, body: ACCEPTED };
+  }
+  if (replaced) {
+    logger.error({ facilityId: settings.facilityId, transactionId: parsed.transactionId }, "M-Pesa confirmation on a replaced callback token; kept for a person to check");
     return { status: 200, body: ACCEPTED };
   }
 
@@ -133,6 +243,8 @@ export async function onC2bValidation(token: string): Promise<CallbackAnswer> {
     .then((settings) => {
       if (!settings)
         logger.warn({ tokenPrefix: token.slice(0, 6) }, "M-Pesa validation for an unknown callback token; accepted");
+      else if (settings.replacedAt)
+        logger.warn({ facilityId: settings.facilityId }, "M-Pesa validation on a replaced callback token; accepted");
     })
     .catch((err: unknown) => logger.warn({ error: errorLine(err) }, "M-Pesa validation lookup failed; accepted"));
   return { status: 200, body: ACCEPTED };
@@ -146,6 +258,9 @@ export async function onStkCallback(token: string, payload: unknown): Promise<Ca
     return UNKNOWN;
   }
   const parsed = parseStkCallback(payload);
+  // On a replaced token, only the outcome of a prompt sent before the replacement is taken.
+  if (settings.replacedAt && !await takenOnReplacedToken({ ...settings, replacedAt: settings.replacedAt }, parsed, payload))
+    return UNKNOWN;
   if (!parsed) {
     await keepUnparsed(settings.facilityId, "stk_callback", payload);
     logger.error({ facilityId: settings.facilityId }, "Unparseable M-Pesa prompt callback");
@@ -159,7 +274,7 @@ export async function onStkCallback(token: string, payload: unknown): Promise<Ca
   catch (err) {
     // Safaricom does not call back again, so what it said is kept by itself for a
     // person to place. If even that fails, the error stands and nothing is acknowledged.
-    await keepUnparsed(settings.facilityId, "stk_callback", payload, "Could not be recorded");
+    await keepUnparsed(settings.facilityId, "stk_callback", payload, NOT_RECORDED);
     logger.error({ error: errorLine(err), facilityId: settings.facilityId, transactionId: parsed.receiptNumber }, "Failed to record an M-Pesa prompt callback; kept for a person to place");
     return { status: 200, body: ACCEPTED };
   }

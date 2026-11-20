@@ -813,6 +813,27 @@
       "when": 1795128656456,
       "tag": "0115_append_only_no_truncate",
       "breakpoints": true
+    },
+    {
+      "idx": 116,
+      "version": "7",
+      "when": 1795149754582,
+      "tag": "0116_mpesa_hardening",
+      "breakpoints": true
+    },
+    {
+      "idx": 117,
+      "version": "7",
+      "when": 1795149775875,
+      "tag": "0117_mpesa_hardening_rls",
+      "breakpoints": true
+    },
+    {
+      "idx": 118,
+      "version": "7",
+      "when": 1795183063981,
+      "tag": "0118_mpesa_replaced_token_provenance",
+      "breakpoints": true
     }
   ]
 }

@@ -14,7 +14,7 @@ import { DarajaError, exchangeOf, neverSent, parseStkCallback, stkPush } from ".
 import { isUniqueViolation } from "./db-errors";
 import { errorLine } from "./error-summary";
 import { formatKes } from "./money";
-import { callbackUrls, credentialsOf, MpesaError, recordExchange, settleTransaction } from "./mpesa";
+import { callbackUrls, credentialsOf, KEPT_ON_REPLACED_TOKEN, MpesaError, recordExchange, settleTransaction } from "./mpesa";
 import { enqueue } from "./outbox";
 import { PaymentError } from "./payments";
 import { normalizePhone } from "./phone";
@@ -260,7 +260,8 @@ async function applyEarlyCallback(tx: AppDb, facilityId: string, requestId: stri
   const [kept] = await tx
     .select({ response: gatewayExchanges.response })
     .from(gatewayExchanges)
-    .where(and(eq(gatewayExchanges.operation, "stk_callback"), sql`${checkoutOf(gatewayExchanges.response)} = ${checkoutRequestId}`))
+    // Not one kept from a replaced token: anyone holding it could have sent it (lib/mpesa-callbacks.ts).
+    .where(and(eq(gatewayExchanges.operation, "stk_callback"), sql`${checkoutOf(gatewayExchanges.response)} = ${checkoutRequestId}`, sql`${gatewayExchanges.error} IS DISTINCT FROM ${KEPT_ON_REPLACED_TOKEN}`))
     .orderBy(desc(gatewayExchanges.createdAt))
     .limit(1);
   const callback = kept ? parseStkCallback(kept.response) : null;
@@ -293,6 +294,9 @@ async function actorOf(tx: AppDb, membershipId: string): Promise<PatientActor> {
  */
 async function settleForRequest(tx: AppDb, facilityId: string, request: StkRow, transaction: TransactionRow): Promise<"paid" | "queued"> {
   if (request.status === "completed")
+    return "queued";
+  // Came to a replaced callback token, which anyone holding it could have used: a person places it, never a prompt's result.
+  if (transaction.cameOnReplacedToken)
     return "queued";
   if (transaction.amountCents !== request.amountCents) {
     await tx.update(mpesaTransactions)
@@ -390,6 +394,8 @@ export async function recordStkCallback(
     ? await tx.select().from(mpesaStkRequests).where(eq(mpesaStkRequests.checkoutRequestId, callback.checkoutRequestId)).for("update").limit(1)
     : [];
   await recordExchange(tx, facilityId, { operation: "stk_callback", stkRequestId: request?.id ?? null, response: payload as Record<string, unknown> });
+  // The paybill the prompt went to, as its send recorded it: the facility's may have changed since (a replayed callback waits).
+  const paybill = (request && await sentToPaybill(tx, request.id)) ?? shortcode;
 
   if (callback.resultCode !== 0) {
     if (request?.status === "sent")
@@ -407,7 +413,7 @@ export async function recordStkCallback(
       facilityId,
       source: "stk",
       transactionId: callback.receiptNumber!,
-      shortcode,
+      shortcode: paybill,
       msisdn: (callback.phone && normalizePhone(callback.phone)) ?? callback.phone ?? request?.phone ?? "unknown",
       amountCents,
       transactedAt: callback.transactedAt ?? new Date(),
@@ -442,6 +448,18 @@ export async function recordStkCallback(
   if (!request || request.status === "completed")
     return { outcome: "queued" };
   return { outcome: "settle", requestId: request.id, transactionId: transaction.id };
+}
+
+/** The paybill a prompt was sent to, from its successful send's recorded request. */
+async function sentToPaybill(tx: AppDb, requestId: string): Promise<string | null> {
+  const [send] = await tx
+    .select({ request: gatewayExchanges.request })
+    .from(gatewayExchanges)
+    .where(and(eq(gatewayExchanges.stkRequestId, requestId), eq(gatewayExchanges.operation, "stk_push"), isNull(gatewayExchanges.error)))
+    .orderBy(desc(gatewayExchanges.createdAt))
+    .limit(1);
+  const paybill = (send?.request as { BusinessShortCode?: unknown } | null | undefined)?.BusinessShortCode;
+  return typeof paybill === "string" ? paybill : null;
 }
 
 /** The second step: places a kept STK payment towards its prompt. Safe to repeat. */

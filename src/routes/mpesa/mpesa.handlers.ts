@@ -9,6 +9,7 @@ import type { TenantBindings, TenantRouteHandler } from "@/lib/types";
 
 import { recordAudit } from "@/lib/audit";
 import * as mpesa from "@/lib/mpesa";
+import { replayCallback as replay, listUnrecordedCallbacks as unrecordedCallbacks } from "@/lib/mpesa-replays";
 import { requestStkPush, stkRequestView } from "@/lib/mpesa-stk";
 import { PaymentError } from "@/lib/payments";
 
@@ -17,9 +18,13 @@ import type {
   GetSettingsRoute,
   GetStkRoute,
   ListTransactionsRoute,
+  ListUnrecordedCallbacksRoute,
   PutSettingsRoute,
   RejectTransactionRoute,
+  ReplayCallbackRoute,
+  RequestRegistrationRoute,
   RequestStkRoute,
+  RotateCallbackTokenRoute,
 } from "./mpesa.routes";
 
 function actorOf(c: Context<TenantBindings>): PatientActor {
@@ -27,14 +32,19 @@ function actorOf(c: Context<TenantBindings>): PatientActor {
 }
 
 function settingsJson(settings: NonNullable<Awaited<ReturnType<typeof mpesa.settingsView>>>) {
-  return { ...settings, urlsRegisteredAt: settings.urlsRegisteredAt?.toISOString() ?? null };
+  return {
+    ...settings,
+    urlsRegisteredAt: settings.urlsRegisteredAt?.toISOString() ?? null,
+    callbackTokenRotatedAt: settings.callbackTokenRotatedAt?.toISOString() ?? null,
+    previousToken: settings.previousToken && { until: settings.previousToken.until?.toISOString() ?? null },
+  };
 }
 
 function transactionJson(row: ListedTransaction) {
   return { ...row, transactedAt: row.transactedAt.toISOString() };
 }
 
-const NOT_FOUND = new Set(["not_found", "patient_not_found", "invoice_not_found", "encounter_not_found"]);
+const NOT_FOUND = new Set(["not_found", "patient_not_found", "invoice_not_found", "encounter_not_found", "callback_not_found"]);
 
 function refusal(c: Context<TenantBindings>, err: unknown) {
   if (!(err instanceof mpesa.MpesaError) && !(err instanceof PaymentError))
@@ -49,9 +59,43 @@ export const getSettings: TenantRouteHandler<GetSettingsRoute> = async (c) => {
   return c.json({ settings: settings ? settingsJson(settings) : null }, HttpStatusCodes.OK);
 };
 
-export const putSettings: TenantRouteHandler<PutSettingsRoute> = async (c) => {
-  await mpesa.saveSettings(c.var.db, c.var.facility.id, c.req.valid("json"), actorOf(c));
+/** Does `write`, then answers with the settings as they now are. */
+async function settingsAnswer(c: Context<TenantBindings>, write: () => Promise<void>) {
+  try {
+    await write();
+  }
+  catch (err) {
+    return refusal(c, err);
+  }
   return c.json({ settings: settingsJson((await mpesa.settingsView(c.var.db))!) }, HttpStatusCodes.OK);
+}
+
+export const putSettings: TenantRouteHandler<PutSettingsRoute> = async (c) => {
+  const body = c.req.valid("json");
+  return settingsAnswer(c, () => mpesa.saveSettings(c.var.db, c.var.facility.id, body, actorOf(c))) as never;
+};
+
+export const rotateCallbackToken: TenantRouteHandler<RotateCallbackTokenRoute> = async (c) => {
+  return settingsAnswer(c, () => mpesa.rotateCallbackToken(c.var.db, c.var.facility.id, actorOf(c))) as never;
+};
+
+export const requestRegistration: TenantRouteHandler<RequestRegistrationRoute> = async (c) => {
+  return settingsAnswer(c, () => mpesa.requestRegistration(c.var.db, c.var.facility.id)) as never;
+};
+
+export const listUnrecordedCallbacks: TenantRouteHandler<ListUnrecordedCallbacksRoute> = async (c) => {
+  const callbacks = await unrecordedCallbacks(c.var.db);
+  return c.json({ callbacks: callbacks.map(cb => ({ ...cb, receivedAt: cb.receivedAt.toISOString() })) }, HttpStatusCodes.OK);
+};
+
+export const replayCallback: TenantRouteHandler<ReplayCallbackRoute> = async (c) => {
+  try {
+    const outcome = await replay(c.var.db, c.var.facility.id, c.req.valid("param").id, actorOf(c));
+    return c.json({ outcome }, HttpStatusCodes.OK);
+  }
+  catch (err) {
+    return refusal(c, err) as never;
+  }
 };
 
 export const listTransactions: TenantRouteHandler<ListTransactionsRoute> = async (c) => {

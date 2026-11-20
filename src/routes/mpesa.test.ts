@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { randomBytes } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -10,6 +10,7 @@ import { admissions, auditLog, documents, gatewayExchanges, mpesaSettings, mpesa
 import { runAsFacility } from "@/db/tenant-transaction";
 import { drainOutbox, MAX_ATTEMPTS } from "@/jobs/outbox-worker";
 import { darajaTimestamp, resetDarajaTokens } from "@/lib/daraja";
+import { KEPT_ON_REPLACED_TOKEN, PREVIOUS_TOKEN_GRACE_MS } from "@/lib/mpesa";
 import { recordSent } from "@/lib/mpesa-stk";
 import { backendPid, resetDb, waitForBlockedBackend } from "@/test/helpers";
 import { call, hospital, TODAY } from "@/test/hospital";
@@ -36,13 +37,13 @@ async function refusal(res: Response) {
 }
 
 /** A stand-in for Safaricom: tokens always, the rest as each test says. */
-function daraja(answers: { register?: () => Response; stk?: () => Response } = {}) {
-  return vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+function daraja(answers: { register?: (body: Record<string, unknown>) => Response | Promise<Response>; stk?: () => Response } = {}) {
+  return vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
     const url = String(input instanceof Request ? input.url : input);
     if (url.includes("/oauth/v1/generate"))
       return Response.json({ access_token: "daraja-token", expires_in: "3599" });
     if (url.includes("/mpesa/c2b/v1/registerurl"))
-      return answers.register?.() ?? Response.json({ ResponseCode: "0", ResponseDescription: "Success" });
+      return await answers.register?.(JSON.parse(String(init?.body))) ?? Response.json({ ResponseCode: "0", ResponseDescription: "Success" });
     if (url.includes("/mpesa/stkpush/v1/processrequest"))
       return answers.stk?.() ?? Response.json({ ResponseCode: "0", MerchantRequestID: "m-1", CheckoutRequestID: "ws_CO_1", CustomerMessage: "Success" });
     throw new Error(`Unexpected call to ${url}`);
@@ -812,15 +813,484 @@ describe("m-Pesa prompts", () => {
   });
 });
 
+describe("m-Pesa hardening", () => {
+  const settingsBody = (n: number, shortcode = PAYBILL) => ({ shortcode, consumerKey: `consumer-key-${n}`, consumerSecret: `consumer-secret-${n}`, passkey: `stk-passkey-${n}` });
+  const rotate = () => call("POST", "/mpesa/settings/callback-token", h.facility.id, h.admin);
+  const prompt = (body: Record<string, unknown>) => call("POST", "/mpesa/stk", h.facility.id, h.cashier, body);
+  const at = (callbackToken: string, path: string, body: unknown) =>
+    app.request(`/webhooks/mpesa/${callbackToken}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const paidAt = (callbackToken: string, checkout: string, receipt: string, amount: number) => at(callbackToken, "/stk/callback", { Body: { stkCallback: {
+    MerchantRequestID: "m-1",
+    CheckoutRequestID: checkout,
+    ResultCode: 0,
+    ResultDesc: "The service request is processed successfully.",
+    CallbackMetadata: { Item: [
+      { Name: "Amount", Value: amount },
+      { Name: "MpesaReceiptNumber", Value: receipt },
+      { Name: "TransactionDate", Value: Number(darajaTimestamp()) },
+      { Name: "PhoneNumber", Value: 254712345678 },
+    ] },
+  } } });
+  async function settingsRow() {
+    const [row] = await db.select().from(mpesaSettings).where(eq(mpesaSettings.facilityId, h.facility.id));
+    return row;
+  }
+  /** A patient's outpatient number, as a payer types it. */
+  async function patientNumber(patientId: string): Promise<string> {
+    return (await pool.query("SELECT number FROM patient_numbers WHERE patient_id = $1 AND kind = 'outpatient'", [patientId])).rows[0].number;
+  }
+
+  it("refuses a paybill another facility has", async () => {
+    await setUp();
+    const other = await hospital();
+
+    expect(await refusal(await call("PUT", "/mpesa/settings", other.facility.id, other.admin, settingsBody(2)))).toEqual([409, "paybill_taken"]);
+    expect((await call("PUT", "/mpesa/settings", other.facility.id, other.admin, settingsBody(2, "600999"))).status).toBe(200);
+    // Its own paybill, saved again, stays its own.
+    expect((await call("PUT", "/mpesa/settings", h.facility.id, h.admin, settingsBody(3))).status).toBe(200);
+  });
+
+  it("replace the callback token: the new URLs place payments, the old token only keeps them for a person", async () => {
+    daraja();
+    await setUp();
+    await drainOutbox();
+    const old = token;
+    const patientId = await h.patient();
+    const number = await patientNumber(patientId);
+    expect((await call("POST", "/mpesa/settings/callback-token", h.facility.id, h.finance)).status).toBe(403);
+
+    const replaced = await rotate();
+
+    expect(replaced.status).toBe(200);
+    const { settings } = await replaced.json();
+    const row = await settingsRow();
+    expect(row.callbackToken).not.toBe(old);
+    expect(settings).toMatchObject({ urlsRegisteredAt: null, callbackTokenRotatedAt: expect.any(String), previousToken: { until: null } });
+    expect(settings.callbackUrls.confirmation).toContain(row.callbackToken);
+    expect(await db.select().from(auditLog).where(eq(auditLog.action, "mpesa.callback_token_rotated"))).toHaveLength(1);
+
+    expect((await at(old, "/c2b/confirmation", confirmation({ TransID: "SKOLDTOKEN", BillRefNumber: number }))).status).toBe(200);
+    expect((await at(row.callbackToken, "/c2b/confirmation", confirmation({ TransID: "SKNEWTOKEN", BillRefNumber: number }))).status).toBe(200);
+
+    const [kept] = await db.select().from(mpesaTransactions).where(eq(mpesaTransactions.transactionId, "SKOLDTOKEN"));
+    expect(kept).toMatchObject({ status: "unmatched", statusReason: "Came to the replaced M-Pesa callback address; check it against the M-Pesa statement before placing it" });
+    expect(await paymentOf("SKOLDTOKEN")).toBeUndefined();
+    expect(await paymentOf("SKNEWTOKEN")).toMatchObject({ method: "mpesa_c2b" });
+  });
+
+  it("keep the old token for a prompt sent before the replacement, and for none sent after", async () => {
+    const fetch = daraja();
+    await setUp();
+    const patientId = await h.patient();
+    await prompt({ patientId, phone: "0712345678", amountCents: 50_000 });
+    await drainOutbox();
+    const old = token;
+    await rotate();
+    fetch.mockRestore();
+    daraja({ stk: () => Response.json({ ResponseCode: "0", MerchantRequestID: "m-2", CheckoutRequestID: "ws_CO_2", CustomerMessage: "Success" }) });
+    await prompt({ patientId, phone: "0712345678", amountCents: 20_000 });
+    await drainOutbox();
+
+    expect((await paidAt(old, "ws_CO_1", "SKBEFORE01", 500)).status).toBe(200);
+    expect((await paidAt(old, "ws_CO_2", "SKAFTER001", 200)).status).toBe(404);
+    expect((await paidAt(old, "ws_CO_9", "SKNOPROMPT", 100)).status).toBe(404);
+
+    expect(await paymentOf("SKBEFORE01")).toMatchObject({ method: "mpesa_stk" });
+    expect(await db.select().from(mpesaTransactions).where(eq(mpesaTransactions.transactionId, "SKAFTER001"))).toEqual([]);
+    expect((await paidAt((await settingsRow()).callbackToken, "ws_CO_2", "SKAFTER001", 200)).status).toBe(200);
+    expect(await paymentOf("SKAFTER001")).toMatchObject({ method: "mpesa_stk" });
+  });
+
+  // The prompt's URL carries the token current when it is sent, not when it is asked for.
+  it("refuse on the old token a prompt asked for before the replacement but sent after it", async () => {
+    daraja();
+    await setUp();
+    const patientId = await h.patient();
+    const request = await (await prompt({ patientId, phone: "0712345678", amountCents: 50_000 })).json();
+    const old = token;
+    await rotate();
+    await drainOutbox();
+
+    expect((await paidAt(old, "ws_CO_1", "SKQUEUED01", 500)).status).toBe(404);
+
+    expect(await paymentOf("SKQUEUED01")).toBeUndefined();
+    expect((await paidAt((await settingsRow()).callbackToken, "ws_CO_1", "SKQUEUED01", 500)).status).toBe(200);
+    expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).toMatchObject({ status: "completed" });
+  });
+
+  /*
+   * What comes to the old token and is not taken is kept, for a person to
+   * read, rather than lost: it may be a prompt's outcome that came before
+   * its send was recorded. Nothing applies or replays it by itself, since
+   * anyone holding the old token could have sent it.
+   */
+  it("keep what comes to the old token and is not taken, and never apply it to a prompt", async () => {
+    daraja();
+    await setUp();
+    await drainOutbox();
+    const old = token;
+    const patientId = await h.patient();
+    await rotate();
+    const request = await (await prompt({ patientId, phone: "0712345678", amountCents: 50_000 })).json();
+
+    const refused = await at(old, "/stk/callback", { Body: { stkCallback: { MerchantRequestID: "m-1", CheckoutRequestID: "ws_CO_1", ResultCode: 1032, ResultDesc: "Request cancelled by user" } } });
+    expect(refused.status).toBe(404);
+    const kept = await db.select().from(gatewayExchanges).where(and(eq(gatewayExchanges.operation, "stk_callback"), eq(gatewayExchanges.error, KEPT_ON_REPLACED_TOKEN)));
+    expect(kept).toHaveLength(1);
+
+    // Sent now: its send looks for a callback that came early, and must not take this one.
+    await drainOutbox();
+
+    expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).toMatchObject({ status: "sent" });
+    expect((await (await call("GET", "/mpesa/unrecorded-callbacks", h.facility.id, h.finance)).json()).callbacks).toEqual([]);
+  });
+
+  it("keep a callback on the old token whose prompt cannot be looked up", async () => {
+    daraja();
+    await setUp();
+    const patientId = await h.patient();
+    await prompt({ patientId, phone: "0712345678", amountCents: 50_000 });
+    await drainOutbox();
+    const old = token;
+    await rotate();
+    await pool.query("REVOKE SELECT ON mpesa_stk_requests FROM hospital_app");
+    let res: Response;
+    try {
+      res = await paidAt(old, "ws_CO_1", "SKLOOKUP01", 500);
+    }
+    finally {
+      await pool.query("GRANT SELECT ON mpesa_stk_requests TO hospital_app");
+    }
+
+    expect(res.status).toBe(404);
+    const kept = await db.select().from(gatewayExchanges).where(and(eq(gatewayExchanges.operation, "stk_callback"), eq(gatewayExchanges.error, KEPT_ON_REPLACED_TOKEN)));
+    expect(kept).toHaveLength(1);
+  });
+
+  // Two replacements at once: the second waits for the first, so it retires the first's token, and the oldest ends.
+  it("replace the token one replacement at a time", async () => {
+    await setUp();
+    const original = token;
+    const holder = await pool.connect();
+    let both: Promise<Response[]> | undefined;
+    try {
+      await holder.query("BEGIN");
+      await holder.query("SELECT 1 FROM mpesa_settings WHERE facility_id = $1 FOR UPDATE", [h.facility.id]);
+      both = Promise.all([rotate(), rotate()]);
+      expect(await waitForBlockedBackend(Number((await holder.query("SELECT pg_backend_pid() AS pid")).rows[0].pid), 5000, 2)).toBe(true);
+      await holder.query("COMMIT");
+      expect((await both).map(r => r.status)).toEqual([200, 200]);
+    }
+    finally {
+      await holder.query("ROLLBACK").catch(() => {});
+      holder.release();
+      await both?.catch(() => {});
+    }
+
+    const row = await settingsRow();
+    expect(row.previousCallbackToken).not.toBe(original);
+    expect(row.previousCallbackToken).not.toBe(row.callbackToken);
+    expect((await at(original, "/c2b/confirmation", confirmation())).status).toBe(404);
+  });
+
+  // The replacement counts from when it takes the token, not from when it was asked for and waited.
+  it("take on the old token a prompt sent while a replacement waited its turn", async () => {
+    daraja();
+    await setUp();
+    await drainOutbox();
+    const old = token;
+    const patientId = await h.patient();
+    const holder = await pool.connect();
+    let replacing: Promise<Response> | undefined;
+    try {
+      await holder.query("BEGIN");
+      await holder.query("SELECT 1 FROM mpesa_settings WHERE facility_id = $1 FOR UPDATE", [h.facility.id]);
+      replacing = rotate();
+      expect(await waitForBlockedBackend(Number((await holder.query("SELECT pg_backend_pid() AS pid")).rows[0].pid), 5000, 1)).toBe(true);
+      // Sent with the old token while the replacement waits.
+      await prompt({ patientId, phone: "0712345678", amountCents: 50_000 });
+      await drainOutbox();
+      await holder.query("COMMIT");
+      expect((await replacing).status).toBe(200);
+    }
+    finally {
+      await holder.query("ROLLBACK").catch(() => {});
+      holder.release();
+      await replacing?.catch(() => {});
+    }
+
+    expect((await paidAt(old, "ws_CO_1", "SKWAITED01", 500)).status).toBe(200);
+    expect(await paymentOf("SKWAITED01")).toMatchObject({ method: "mpesa_stk" });
+  });
+
+  /*
+   * A confirmation on the old token is never trusted by itself, so it must
+   * not take the receipt from the one Safaricom sends to the current URLs:
+   * the pair is flagged in the queue, and the current one kept for a person.
+   */
+  it("keep a current confirmation whose receipt came first to the old token, and flag the pair", async () => {
+    daraja();
+    await setUp();
+    await drainOutbox();
+    const old = token;
+    await rotate();
+    const number = await patientNumber(await h.patient());
+    await at(old, "/c2b/confirmation", confirmation({ TransID: "SKCOLLIDE1", TransAmount: "9000.00", BillRefNumber: number }));
+
+    const current = await at((await settingsRow()).callbackToken, "/c2b/confirmation", confirmation({ TransID: "SKCOLLIDE1", BillRefNumber: number }));
+
+    expect(current.status).toBe(200);
+    const [first] = await db.select().from(mpesaTransactions).where(eq(mpesaTransactions.transactionId, "SKCOLLIDE1"));
+    expect(first).toMatchObject({ status: "unmatched", statusReason: "The same receipt then came to the current M-Pesa callback address; check both against the M-Pesa statement before placing either" });
+    const kept = await db.select().from(gatewayExchanges).where(and(eq(gatewayExchanges.operation, "c2b_confirmation"), eq(gatewayExchanges.error, "Same receipt as a confirmation that came to the replaced callback address")));
+    expect(kept).toHaveLength(1);
+    expect(await paymentOf("SKCOLLIDE1")).toBeUndefined();
+  });
+
+  // Came to the old token naming another paybill too: still known to have come there.
+  it("flag a receipt the old token took first even when it named another paybill", async () => {
+    daraja();
+    await setUp();
+    await drainOutbox();
+    const old = token;
+    await rotate();
+    await at(old, "/c2b/confirmation", confirmation({ TransID: "SKCOLLIDE2", BusinessShortCode: "999999" }));
+
+    expect((await at((await settingsRow()).callbackToken, "/c2b/confirmation", confirmation({ TransID: "SKCOLLIDE2" }))).status).toBe(200);
+
+    const [first] = await db.select().from(mpesaTransactions).where(eq(mpesaTransactions.transactionId, "SKCOLLIDE2"));
+    expect(first).toMatchObject({ status: "unmatched", cameOnReplacedToken: true });
+    const kept = await db.select().from(gatewayExchanges).where(and(eq(gatewayExchanges.operation, "c2b_confirmation"), eq(gatewayExchanges.error, "Same receipt as a confirmation that came to the replaced callback address")));
+    expect(kept).toHaveLength(1);
+  });
+
+  /*
+   * A notice that came to the old token is placed by a person only, never by
+   * a prompt's result: not when the result came before its send was
+   * recorded, nor when it names a receipt already on file.
+   */
+  it("never place against a prompt a notice that came to the old token, when the result came early", async () => {
+    daraja();
+    await setUp();
+    await drainOutbox();
+    const old = token;
+    await rotate();
+    const patientId = await h.patient();
+    const request = await (await prompt({ patientId, phone: "0712345678", amountCents: 50_000 })).json();
+    await at(old, "/c2b/confirmation", confirmation({ TransID: "SKEARLY001", TransAmount: "500.00" }));
+    // The prompt's result, on the current token, before its send is recorded.
+    expect((await paidAt((await settingsRow()).callbackToken, "ws_CO_1", "SKEARLY001", 500)).status).toBe(200);
+
+    await drainOutbox();
+
+    expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).toMatchObject({ status: "sent" });
+    expect(await paymentOf("SKEARLY001")).toBeUndefined();
+    const [notice] = await db.select().from(mpesaTransactions).where(eq(mpesaTransactions.transactionId, "SKEARLY001"));
+    expect(notice).toMatchObject({ status: "unmatched", cameOnReplacedToken: true });
+  });
+
+  it("never place against a prompt a notice that came to the old token, when the result names its receipt", async () => {
+    daraja();
+    await setUp();
+    await drainOutbox();
+    const old = token;
+    await rotate();
+    const patientId = await h.patient();
+    const request = await (await prompt({ patientId, phone: "0712345678", amountCents: 50_000 })).json();
+    await drainOutbox();
+    await at(old, "/c2b/confirmation", confirmation({ TransID: "SKONFILE01", TransAmount: "500.00" }));
+
+    expect((await paidAt((await settingsRow()).callbackToken, "ws_CO_1", "SKONFILE01", 500)).status).toBe(200);
+
+    expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).toMatchObject({ status: "sent" });
+    expect(await paymentOf("SKONFILE01")).toBeUndefined();
+  });
+
+  /*
+   * A paybill can move between facilities: one gives it up while its own
+   * registration of it is still with Safaricom, and another takes it. The
+   * later holder's registration waits for the earlier one, so it lands last.
+   */
+  it("register one paybill at a time, so its later holder's registration lands last", async () => {
+    const other = await hospital();
+    // In the order Safaricom's answers come back: the order the registrations land.
+    const registered: [string, string][] = [];
+    let moved = false;
+    daraja({
+      register: async (body) => {
+        const landing: [string, string] = [String(body.ShortCode), String(body.ConfirmationURL)];
+        if (!moved) {
+          moved = true;
+          // While this facility's registration of the paybill is with Safaricom, it moves to another, which takes this one.
+          expect((await call("PUT", "/mpesa/settings", h.facility.id, h.admin, settingsBody(2, "600777"))).status).toBe(200);
+          expect((await call("PUT", "/mpesa/settings", other.facility.id, other.admin, settingsBody(3))).status).toBe(200);
+          await drainOutbox();
+        }
+        registered.push(landing);
+        return Response.json({ ResponseCode: "0", ResponseDescription: "Success" });
+      },
+    });
+    await setUp();
+
+    await drainOutbox();
+    await pool.query("UPDATE outbox SET available_at = now() WHERE status = 'pending'");
+    await drainOutbox();
+
+    const [taker] = await db.select().from(mpesaSettings).where(eq(mpesaSettings.facilityId, other.facility.id));
+    const forPaybill = registered.filter(([shortcode]) => shortcode === PAYBILL);
+    expect(forPaybill.at(-1)![1]).toContain(taker.callbackToken);
+  });
+
+  it("end the old token an hour after the new URLs are registered", async () => {
+    daraja();
+    await setUp();
+    await drainOutbox();
+    const old = token;
+    await rotate();
+    const before = Date.now();
+
+    await drainOutbox();
+
+    const row = await settingsRow();
+    expect(row.urlsRegisteredAt).not.toBeNull();
+    expect(row.previousTokenUntil!.getTime()).toBeGreaterThanOrEqual(before + PREVIOUS_TOKEN_GRACE_MS - 1000);
+    expect((await at(old, "/c2b/confirmation", confirmation())).status).toBe(200);
+    await pool.query("UPDATE mpesa_settings SET previous_token_until = now() - interval '1 second' WHERE facility_id = $1", [h.facility.id]);
+    expect((await at(old, "/c2b/confirmation", confirmation())).status).toBe(404);
+    expect((await (await call("GET", "/mpesa/settings", h.facility.id, h.admin)).json()).settings.previousToken).toBeNull();
+  });
+
+  /*
+   * In production Safaricom takes a paybill's URLs once: after a replacement
+   * the registration is refused until the old one is deleted on the Daraja
+   * portal, and then the admin asks again.
+   */
+  it("register the URLs again when the admin asks", async () => {
+    daraja({ register: () => Response.json({ errorMessage: "URLs already registered" }, { status: 400 }) });
+    await setUp();
+    await drainOutbox();
+    expect((await settingsRow()).urlsRegisteredAt).toBeNull();
+    vi.restoreAllMocks();
+    daraja();
+
+    const asked = await call("POST", "/mpesa/settings/registration", h.facility.id, h.admin);
+
+    expect(asked.status).toBe(200);
+    expect(await drainOutbox()).toMatchObject({ done: 1 });
+    expect((await settingsRow()).urlsRegisteredAt).not.toBeNull();
+  });
+
+  /*
+   * The settings replaced while Safaricom registers the old ones: the
+   * replacement's own registration waits for this one (one registration of
+   * a paybill at a time), and this one, finding its settings gone, asks
+   * again, so the last to land is the current.
+   */
+  it("ask again when the settings changed while Safaricom registered the old ones", async () => {
+    const registered: string[] = [];
+    daraja({
+      register: async (body) => {
+        registered.push(String(body.ConfirmationURL));
+        if (registered.length === 1) {
+          await rotate();
+          // The replacement's own registration tries now, and waits its turn.
+          await drainOutbox();
+        }
+        return Response.json({ ResponseCode: "0", ResponseDescription: "Success" });
+      },
+    });
+    await setUp();
+    const old = token;
+
+    await drainOutbox();
+
+    const current = (await settingsRow()).callbackToken;
+    expect(registered.map(url => url.includes(old) ? "old" : url.includes(current) ? "current" : "other")).toEqual(["old", "current"]);
+    expect((await settingsRow()).urlsRegisteredAt).not.toBeNull();
+  });
+
+  /*
+   * Safaricom does not call back again, so a prompt's callback that could
+   * not be recorded is kept for finance, who replays it once, through the
+   * same steps.
+   */
+  it("replay a prompt callback that could not be recorded, once", async () => {
+    daraja();
+    await setUp();
+    const patientId = await h.patient();
+    const request = await (await prompt({ patientId, phone: "0712345678", amountCents: 50_000 })).json();
+    await drainOutbox();
+    await pool.query(`
+      CREATE FUNCTION fail_mpesa_transactions() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'simulated failure'; END; $$;
+      CREATE TRIGGER fail_mpesa_transactions BEFORE INSERT ON mpesa_transactions
+        FOR EACH ROW EXECUTE FUNCTION fail_mpesa_transactions();
+    `);
+    try {
+      expect((await paidAt(token, "ws_CO_1", "SKREPLAY01", 500)).status).toBe(200);
+    }
+    finally {
+      await pool.query("DROP TRIGGER fail_mpesa_transactions ON mpesa_transactions; DROP FUNCTION fail_mpesa_transactions();");
+    }
+    const list = () => call("GET", "/mpesa/unrecorded-callbacks", h.facility.id, h.finance);
+    expect((await call("GET", "/mpesa/unrecorded-callbacks", h.facility.id, h.cashier)).status).toBe(403);
+    const { callbacks } = await (await list()).json();
+    expect(callbacks).toEqual([{ id: expect.any(String), receivedAt: expect.any(String), paid: true, receiptNumber: "SKREPLAY01", amountCents: 50_000 }]);
+
+    const replay = () => call("POST", `/mpesa/unrecorded-callbacks/${callbacks[0].id}/replay`, h.facility.id, h.finance);
+    const replayed = await replay();
+
+    expect(replayed.status).toBe(200);
+    expect(await replayed.json()).toEqual({ outcome: "paid" });
+    expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).toMatchObject({ status: "completed", receiptNumber: "SKREPLAY01" });
+    expect(await paymentOf("SKREPLAY01")).toMatchObject({ method: "mpesa_stk", receivedBy: h.cashier.actor.membershipId });
+    expect(await refusal(await replay())).toEqual([409, "already_replayed"]);
+    expect((await (await list()).json()).callbacks).toEqual([]);
+    expect(await db.select().from(payments)).toHaveLength(1);
+    expect(await db.select({ actorId: auditLog.actorId }).from(auditLog).where(eq(auditLog.action, "mpesa.callback_replayed"))).toEqual([{ actorId: h.finance.actor.userId }]);
+    expect((await call("POST", `/mpesa/unrecorded-callbacks/${request.id}/replay`, h.facility.id, h.finance)).status).toBe(404);
+  });
+
+  // The facility may change its paybill while a callback waits: the payment stays under the one the prompt went to.
+  it("replay a payment under the paybill its prompt was sent to", async () => {
+    daraja();
+    await setUp();
+    const patientId = await h.patient();
+    await prompt({ patientId, phone: "0712345678", amountCents: 50_000 });
+    await drainOutbox();
+    await pool.query(`
+      CREATE FUNCTION fail_mpesa_transactions() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN RAISE EXCEPTION 'simulated failure'; END; $$;
+      CREATE TRIGGER fail_mpesa_transactions BEFORE INSERT ON mpesa_transactions
+        FOR EACH ROW EXECUTE FUNCTION fail_mpesa_transactions();
+    `);
+    try {
+      await paidAt(token, "ws_CO_1", "SKPAYBILL1", 500);
+    }
+    finally {
+      await pool.query("DROP TRIGGER fail_mpesa_transactions ON mpesa_transactions; DROP FUNCTION fail_mpesa_transactions();");
+    }
+    expect((await call("PUT", "/mpesa/settings", h.facility.id, h.admin, settingsBody(2, "600777"))).status).toBe(200);
+    const { callbacks } = await (await call("GET", "/mpesa/unrecorded-callbacks", h.facility.id, h.finance)).json();
+
+    expect(await (await call("POST", `/mpesa/unrecorded-callbacks/${callbacks[0].id}/replay`, h.facility.id, h.finance)).json()).toEqual({ outcome: "paid" });
+
+    const [recorded] = await db.select().from(mpesaTransactions).where(eq(mpesaTransactions.transactionId, "SKPAYBILL1"));
+    expect(recorded.shortcode).toBe(PAYBILL);
+  });
+});
+
 describe("in the database", () => {
   it("matching a typed number uses its index, query and index sharing one expression", async () => {
     const lookups = [
       ["documents_normalised_invoice_number_index", db.select({ id: documents.id }).from(documents).where(sql`${documents.facilityId} = ${h.facility.id} AND ${documents.kind} = 'invoice' AND ${normalisedNumber(documents.number)} = ${"INV2026000001"}`)],
       ["admissions_normalised_number_index", db.select({ id: admissions.id }).from(admissions).where(sql`${admissions.facilityId} = ${h.facility.id} AND ${normalisedNumber(admissions.admissionNumber)} = ${"ADM20260001"}`)],
       ["patient_numbers_normalised_number_index", db.select({ id: patientNumbers.id }).from(patientNumbers).where(sql`${patientNumbers.facilityId} = ${h.facility.id} AND ${normalisedNumber(patientNumbers.number)} = ${"OPD1201"}`)],
-      // The early-callback lookups by checkout id, likewise.
-      ["mpesa_transactions_stk_checkout_index", db.select({ id: mpesaTransactions.id }).from(mpesaTransactions).where(sql`${mpesaTransactions.facilityId} = ${h.facility.id} AND ${mpesaTransactions.source} = 'stk' AND ${stkCheckoutId(mpesaTransactions.rawPayload)} = ${"ws_CO_1"}`)],
-      ["gateway_exchanges_stk_checkout_index", db.select({ id: gatewayExchanges.id }).from(gatewayExchanges).where(sql`${gatewayExchanges.facilityId} = ${h.facility.id} AND ${gatewayExchanges.operation} = 'stk_callback' AND ${stkCheckoutId(gatewayExchanges.response)} = ${"ws_CO_1"}`)],
+      // The early-callback lookups by checkout id, likewise. Without the facility: every row of one facility
+      // shares it, so an index led by it never narrows these, but a planner holding statistics of near-empty
+      // tables may still pick one, and the plan would then say nothing about the shared expression.
+      ["mpesa_transactions_stk_checkout_index", db.select({ id: mpesaTransactions.id }).from(mpesaTransactions).where(sql`${mpesaTransactions.source} = 'stk' AND ${stkCheckoutId(mpesaTransactions.rawPayload)} = ${"ws_CO_1"}`)],
+      ["gateway_exchanges_stk_checkout_index", db.select({ id: gatewayExchanges.id }).from(gatewayExchanges).where(sql`${gatewayExchanges.operation} = 'stk_callback' AND ${stkCheckoutId(gatewayExchanges.response)} = ${"ws_CO_1"}`)],
     ] as const;
 
     const client = await pool.connect();
