@@ -80,10 +80,39 @@ const WorklistSchema = z.object({
       givenOtherUnits: z.boolean(),
       prepared: z.boolean(),
       controlledSchedule: z.string().nullable(),
+      /**
+       * `out`: the pharmacy holds nothing in date that fills it. `low`: less than is still owed,
+       * told only when all it holds is in the prescription's dose unit. Null flags nothing.
+       */
+      stockFlag: z.enum(["low", "out"]).nullable(),
     })),
   })),
   /** Prepared, not yet collected: handed over, or cancelled to put the stock back. */
   prepared: z.array(DispenseSchema),
+  /** The pharmacy whose shelf the flags measure; null when the facility has several and none was named, so nothing is flagged. */
+  stockIn: z.object({ id: z.uuid(), name: z.string() }).nullable(),
+});
+
+const WorklistQuerySchema = z.object({
+  /** The pharmacy to flag stock against; the facility's only one unless given. */
+  storeId: z.uuid().optional(),
+});
+
+const QuoteSchema = z.object({
+  lines: z.array(z.object({
+    orderItemId: z.uuid(),
+    stockItemId: z.uuid(),
+    code: z.string(),
+    name: z.string(),
+    baseUnit: z.string(),
+    quantity: z.number(),
+    completes: z.boolean(),
+    /** Per base unit, on the cash price list today. */
+    unitPriceCents: z.number(),
+    /** The charge preparing it would raise: the unit price times the quantity, rounded to whole shillings once. */
+    amountCents: z.number(),
+  })),
+  totalCents: z.number(),
 });
 
 const PrepareLineSchema = z.strictObject({
@@ -128,11 +157,15 @@ export const worklist = createRoute({
   method: "get",
   path: "/pharmacy/worklist",
   summary: "The pharmacy's list",
-  description: "Prescriptions on open visits with a medicine still to give, oldest first, and dispenses prepared and not collected. Audited.",
+  description:
+    "Prescriptions on open visits with a medicine still to give, oldest first, and dispenses prepared and not collected. "
+    + "Each medicine is flagged when the pharmacy is low on it or out of it, measured against that medicine alone. Audited.",
   middleware: [dispensers] as const,
-  request: { headers: facilityHeaders },
+  request: { headers: facilityHeaders, query: WorklistQuerySchema },
   responses: {
     [HttpStatusCodes.OK]: jsonContent(WorklistSchema, "The list"),
+    [HttpStatusCodes.CONFLICT]: jsonContent(RefusalSchema, "The store named is not an open pharmacy of this facility (`not_a_pharmacy`)"),
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(WorklistQuerySchema), "Not a store id"),
     ...clinicalResponses,
   },
 });
@@ -164,6 +197,25 @@ export const prepare = createRoute({
   request: { headers: facilityHeaders, body: jsonContentRequired(PrepareBodySchema, "What to give") },
   responses: {
     [HttpStatusCodes.CREATED]: jsonContent(DispenseSchema, "Prepared"),
+    ...refusals,
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(PrepareBodySchema), "Invalid dispense"),
+    ...clinicalResponses,
+    ...forbidden,
+  },
+});
+
+export const quote = createRoute({
+  tags,
+  method: "post",
+  path: "/dispenses/quote",
+  summary: "Quote a prescription before preparing it",
+  description:
+    "Each line's charge and the total, for the items and quantities given, so the patient can decide how much to buy. "
+    + "Checked and refused exactly as preparing would be, with the same body; nothing is taken, charged or recorded.",
+  middleware: [dispensers] as const,
+  request: { headers: facilityHeaders, body: jsonContentRequired(PrepareBodySchema, "What would be given") },
+  responses: {
+    [HttpStatusCodes.OK]: jsonContent(QuoteSchema, "The quote"),
     ...refusals,
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(PrepareBodySchema), "Invalid dispense"),
     ...clinicalResponses,
@@ -223,6 +275,7 @@ export const notSupplied = createRoute({
 export type WorklistRoute = typeof worklist;
 export type GetDispenseRoute = typeof getDispense;
 export type PrepareRoute = typeof prepare;
+export type QuoteRoute = typeof quote;
 export type HandOverRoute = typeof handOver;
 export type CancelRoute = typeof cancel;
 export type NotSuppliedRoute = typeof notSupplied;

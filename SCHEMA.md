@@ -957,6 +957,18 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - the pharmacy's outcome on the clinicians' order view;
   - dispensing labels.
 
+**As built (after the staff walkthrough, 2026-11-20): the pharmacy's stock flag and its quote.** Staff asked for a flag on the list, not the products that could fill each medicine, which are read once a prescription is opened. Patients ask the price first, then decide how much to buy.
+
+- **The stock flag:** each medicine on `GET /pharmacy/worklist` carries `stockFlag`, measured against that medicine alone, since the question at the counter is "can I fill this one?". The reorder level plays no part.
+  - `out`: the pharmacy holds nothing in date that fills it, from items not retired.
+  - `low`: it holds less than is still owed, the prescribed quantity less what was handed over. This is told only when all it holds is in the prescription's dose unit and nothing has gone out in another, since one unit is never counted as another.
+  - Null flags nothing: enough on the shelf, a shortfall that cannot be measured, or a medicine already prepared, whose stock is taken.
+- **Which pharmacy:** `?storeId=` names it, as preparing does; otherwise the facility's only open one. With several and none named, nothing is flagged. `stockIn` names the pharmacy measured, or is null. A store that is not an open pharmacy is refused (`not_a_pharmacy`).
+- **`POST /dispenses/quote`** takes the body of `POST /dispenses`. It answers each line's quantity, whether it completes the medicine, its unit price and its charge, and the total.
+  - It runs the same checks as preparing (`planDispense`, shared by both), so it is priced and refused exactly as preparing would be, naming the line.
+  - Nothing is taken, charged or recorded. It holds the visit, the medicines and the batches only for its own transaction, as preparing does.
+  - Not audited: it answers prices and names no patient.
+
 **As built (P4, slice 3b): returns and stock adjustments.** Decided 2026-11-15 (`ROADMAP.md` P4, slice 3b). `dispense_returns`, `stock_adjustments` and `stock_adjustment_lines`; `src/lib/dispense-returns.ts` and `src/lib/stock-adjustments.ts`.
 
 - **`POST /dispense-lines/{id}/returns`** takes back what a patient returns of a medicine handed over: at most what was given, less what has come back or is waiting to.

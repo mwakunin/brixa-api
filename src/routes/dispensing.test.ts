@@ -12,6 +12,7 @@ import { runAsFacility } from "@/db/tenant-transaction";
 import { addDays, businessDate } from "@/lib/dates";
 import { pgErrorCode } from "@/lib/db-errors";
 import { handOver } from "@/lib/dispensing";
+import { pharmacyWorklist } from "@/lib/dispensing-views";
 import { loadDrugCatalogue } from "@/lib/drug-catalogue-load";
 import { addMembership, backendPid, resetDb, signedInUser, waitForBlockedBackend } from "@/test/helpers";
 import { call, hospital, TODAY } from "@/test/hospital";
@@ -316,5 +317,121 @@ describe("a medicine not supplied", () => {
     expect(await refusal(await notSupplied(pcm, { reason: "patient_declined" }))).toBe("already_prepared");
     const charged = await db.select().from(charges).where(and(eq(charges.encounterId, rx.encounterId)));
     expect(charged).toHaveLength(1);
+  });
+});
+
+describe("the stock flag on the pharmacy's list", () => {
+  const course = (drugCode: string) => ({ drugCode, doseAmount: "1", frequency: "tds", durationDays: 5 });
+
+  async function listed(query = "") {
+    const res = await call("GET", `/pharmacy/worklist${query}`, h.facility.id, pharmacist);
+    expect(res.status).toBe(200);
+    const list = await res.json();
+    const medicines = list.waiting.flatMap((w: { medicines: { drugCode: string; stockFlag: string | null }[] }) => w.medicines);
+    return { stockIn: list.stockIn, flags: Object.fromEntries(medicines.map((m: { drugCode: string; stockFlag: string | null }) => [m.drugCode, m.stockFlag])) };
+  }
+
+  it("flags a medicine the pharmacy is out of, or holds less of than is still owed", async () => {
+    await stocked("AMX-500", "AMX-500-CAP", "capsule", 500, 10);
+    // 15 of each: 3,000 paracetamol on the shelf, 10 amoxicillin, no ibuprofen.
+    await prescribed([course("PCM-500-TAB"), course("AMX-500-CAP"), course("IBU-400-TAB")]);
+
+    expect(await listed()).toEqual({
+      stockIn: { id: pharmacy, name: "Pharmacy" },
+      flags: { "PCM-500-TAB": null, "AMX-500-CAP": "low", "IBU-400-TAB": "out" },
+    });
+  });
+
+  it("measures what is still owed, and flags nothing once a medicine is prepared", async () => {
+    const amoxil = await stocked("AMX-500", "AMX-500-CAP", "capsule", 500, 20);
+    const rx = await prescribed([course("AMX-500-CAP")]);
+    const first = await created(await prepare({ orderId: rx.orderId, lines: [{ orderItemId: rx.medicines[0], stockItemId: amoxil, quantity: 12 }] }));
+
+    // Its stock is taken: 8 are left, but nothing is to be told until it is handed over or cancelled.
+    expect((await listed()).flags).toEqual({ "AMX-500-CAP": null });
+    await post(`/dispenses/${first.id}/hand-over`, pharmacist);
+
+    // 8 on the shelf, 3 still owed of the 15.
+    expect((await listed()).flags).toEqual({ "AMX-500-CAP": null });
+  });
+
+  it("never counts one unit as another, so stock held in bottles is not low on mL", async () => {
+    await stocked("PCM-SYR", "PCM-120-SUSP", "bottle", 15_000, 2);
+    // 75 mL prescribed: two bottles may well fill it.
+    await prescribed([{ drugCode: "PCM-120-SUSP", doseAmount: "5", frequency: "tds", durationDays: 5 }]);
+
+    expect((await listed()).flags).toEqual({ "PCM-120-SUSP": null });
+  });
+
+  it("counts only stock in date", async () => {
+    await prescribed([course("PCM-500-TAB")]);
+    const actor = { ...pharmacist.actor, roles: ["pharmacist" as const], licenceProfession: "pharmacy" };
+
+    // Batch P1 expires in 300 days: a year on, it has.
+    const later = await runAsFacility(h.facility.id, tx => pharmacyWorklist(tx, h.facility.id, actor, { today: addDays(businessDate(), 365) }));
+
+    expect(later.waiting[0].medicines[0].stockFlag).toBe("out");
+  });
+
+  it("is measured in the pharmacy named, or the facility's only one, and refuses a store that is not a pharmacy", async () => {
+    await prescribed([course("PCM-500-TAB")]);
+    const main = (await created(await post("/stores", h.admin, { name: "Main store", kind: "main" }))).id;
+    const ipd = (await created(await post("/stores", h.admin, { name: "IPD pharmacy", kind: "pharmacy" }))).id;
+
+    // Two pharmacies, and neither named: nothing is flagged.
+    expect(await listed()).toEqual({ stockIn: null, flags: { "PCM-500-TAB": null } });
+    expect(await listed(`?storeId=${pharmacy}`)).toEqual({ stockIn: { id: pharmacy, name: "Pharmacy" }, flags: { "PCM-500-TAB": null } });
+    expect(await listed(`?storeId=${ipd}`)).toEqual({ stockIn: { id: ipd, name: "IPD pharmacy" }, flags: { "PCM-500-TAB": "out" } });
+    expect(await refusal(await call("GET", `/pharmacy/worklist?storeId=${main}`, h.facility.id, pharmacist))).toBe("not_a_pharmacy");
+  });
+});
+
+describe("a quote before preparing", () => {
+  const course = (drugCode: string) => ({ drugCode, doseAmount: "1", frequency: "tds", durationDays: 5 });
+  const quote = (body: Record<string, unknown>, who: StaffMember = pharmacist) => post("/dispenses/quote", who, body);
+
+  it("prices each line and the total as preparing would charge them, taking and recording nothing", async () => {
+    const amoxil = await stocked("AMX-500", "AMX-500-CAP", "capsule", 500, 100);
+    const rx = await prescribed([course("PCM-500-TAB"), course("AMX-500-CAP")]);
+    const [pcm, amx] = ["PCM-500-TAB", "AMX-500-CAP"].map(code => rx.byDrug.get(code)!);
+    const body = { orderId: rx.orderId, lines: [{ orderItemId: pcm, stockItemId: paracetamol }, { orderItemId: amx, stockItemId: amoxil, quantity: 10 }] };
+    const audited = (await db.select({ id: auditLog.id }).from(auditLog)).length;
+
+    const res = await quote(body, pharmTech);
+
+    expect(res.status).toBe(200);
+    // 15 tablets at KES 2.50 is KES 37.50, charged as KES 38; 10 of the 15 capsules at KES 5 is KES 50.
+    expect(await res.json()).toEqual({
+      lines: [
+        { orderItemId: pcm, stockItemId: paracetamol, code: "PCM-500", name: "PCM-500", baseUnit: "tablet", quantity: 15, completes: true, unitPriceCents: 250, amountCents: 3800 },
+        { orderItemId: amx, stockItemId: amoxil, code: "AMX-500", name: "AMX-500", baseUnit: "capsule", quantity: 10, completes: false, unitPriceCents: 500, amountCents: 5000 },
+      ],
+      totalCents: 8800,
+    });
+    expect(await shelf()).toBe(3000);
+    expect(await db.select().from(charges).where(eq(charges.encounterId, rx.encounterId))).toEqual([]);
+    expect((await db.select({ id: auditLog.id }).from(auditLog)).length).toBe(audited);
+
+    // Preparing it charges what was quoted.
+    const dispense = await created(await prepare(body));
+    expect(Object.fromEntries(dispense.lines.map((l: { orderItemId: string; amountCents: number }) => [l.orderItemId, l.amountCents]))).toEqual({ [pcm]: 3800, [amx]: 5000 });
+  });
+
+  it("refuses as preparing refuses, naming the line", async () => {
+    const unpriced = await stocked("PCM-B", "PCM-500-TAB", "tablet", null, 100);
+    const few = await stocked("AMX-500", "AMX-500-CAP", "capsule", 500, 10);
+    const morphine = await stocked("MOR-10", "MOR-10-INJ", "mL", 10_000, 50);
+    const rx = await prescribed([course("PCM-500-TAB"), course("AMX-500-CAP"), { drugCode: "MOR-10-INJ", doseAmount: "1", frequency: "stat" }]);
+    const [pcm, amx, mor] = ["PCM-500-TAB", "AMX-500-CAP", "MOR-10-INJ"].map(code => rx.byDrug.get(code)!);
+    const lines = (...l: [string, string][]) => ({ orderId: rx.orderId, lines: l.map(([orderItemId, stockItemId]) => ({ orderItemId, stockItemId })) });
+
+    expect(await (await quote(lines([pcm, unpriced]))).json()).toMatchObject({ code: "not_priced", line: 1 });
+    expect(await (await quote(lines([pcm, paracetamol], [amx, few]))).json()).toMatchObject({ code: "not_enough_stock", line: 2 });
+    expect(await refusal(await quote(lines([mor, morphine]), pharmTech), 403)).toBe("controlled_dispenser");
+    expect((await quote(lines([mor, morphine]))).status).toBe(200);
+    await created(await prepare(lines([pcm, paracetamol])));
+    expect(await refusal(await quote(lines([pcm, paracetamol])))).toBe("already_prepared");
+    expect((await quote(lines([amx, few]), doctor)).status).toBe(403);
+    expect((await quote({ orderId: randomUUID(), lines: [{ orderItemId: amx, stockItemId: few }] })).status).toBe(404);
   });
 });

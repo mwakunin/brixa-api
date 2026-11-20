@@ -47,7 +47,7 @@ The inpatient screens come with P5.
 
 **F2 was walked through with the pilot's staff on 2026-11-20.** Every screen survives, with changes (brixa-web's `docs/outpatient-journey.md`). The API gaps it found are being fixed in two pull requests:
 1. **The front desk** (#35, in review): each search result's identity document, and a patient's contacts.
-2. **The other desks** (to follow; until it merges, none of these exist):
+2. **The other desks** (#36, in progress; until it merges, none of these exist):
    - the consultation's one read for the patient;
    - today's complaint at triage;
    - the pharmacy's stock flag and its quote before preparing;

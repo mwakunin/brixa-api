@@ -11,7 +11,7 @@ import * as dispensing from "@/lib/dispensing";
 import { dispenseShown, pharmacyWorklist, viewDispense } from "@/lib/dispensing-views";
 import { AllocationError } from "@/lib/stock-allocation";
 
-import type { CancelRoute, GetDispenseRoute, HandOverRoute, NotSuppliedRoute, PrepareRoute, WorklistRoute } from "./dispensing.routes";
+import type { CancelRoute, GetDispenseRoute, HandOverRoute, NotSuppliedRoute, PrepareRoute, QuoteRoute, WorklistRoute } from "./dispensing.routes";
 
 function actorOf(c: Context<TenantBindings>): DispenseActor {
   const m = c.var.membership;
@@ -57,11 +57,34 @@ async function answer(c: Context<TenantBindings>, act: () => Promise<{ id: strin
 }
 
 export const worklist: TenantRouteHandler<WorklistRoute> = async (c) => {
-  const { waiting, prepared } = await pharmacyWorklist(c.var.db, c.var.facility.id, actorOf(c));
-  return c.json({
-    waiting: waiting.map(w => ({ ...w, orderedAt: w.orderedAt.toISOString() })),
-    prepared: prepared.map(dispenseJson),
-  }, HttpStatusCodes.OK);
+  const { storeId } = c.req.valid("query");
+  try {
+    const { stockIn, waiting, prepared } = await pharmacyWorklist(c.var.db, c.var.facility.id, actorOf(c), { storeId });
+    return c.json({
+      waiting: waiting.map(w => ({ ...w, orderedAt: w.orderedAt.toISOString() })),
+      prepared: prepared.map(dispenseJson),
+      stockIn,
+    }, HttpStatusCodes.OK);
+  }
+  catch (err) {
+    const refused = refusal(c, err);
+    if (refused)
+      return refused as never;
+    throw err;
+  }
+};
+
+export const quote: TenantRouteHandler<QuoteRoute> = async (c) => {
+  const body = c.req.valid("json");
+  try {
+    return c.json(await dispensing.quoteDispense(c.var.db, c.var.facility.id, body, actorOf(c)), HttpStatusCodes.OK);
+  }
+  catch (err) {
+    const refused = refusal(c, err);
+    if (refused)
+      return refused as never;
+    throw err;
+  }
 };
 
 export const getDispense: TenantRouteHandler<GetDispenseRoute> = async (c) => {
