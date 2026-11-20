@@ -806,6 +806,13 @@
       "when": 1795098825927,
       "tag": "0114_sign_in_events_no_truncate",
       "breakpoints": true
+    },
+    {
+      "idx": 115,
+      "version": "7",
+      "when": 1795128656456,
+      "tag": "0115_append_only_no_truncate",
+      "breakpoints": true
     }
   ]
 }

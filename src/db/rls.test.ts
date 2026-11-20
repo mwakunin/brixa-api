@@ -500,6 +500,20 @@ describe("row-level security", () => {
       expect(rows).toEqual([{ summary: "Created" }]);
     });
 
+    // TRUNCATE fires no row trigger, so each append-only record has a statement trigger of its own (migration 0115).
+    it("refuses TRUNCATE on every append-only record, the owner included", async () => {
+      const alpha = await makeFacility();
+      const id = await auditEntry(alpha.id);
+
+      for (const table of ["audit_log", "mpesa_transactions", "gateway_exchanges", "stock_movements", "controlled_drug_register", "lab_result_reviews", "sign_in_events"]) {
+        const truncate = await errorFrom(() => pool.query(`TRUNCATE TABLE ${table} CASCADE`));
+        expect(pgErrorCode(truncate), table).toBe(RESTRICT_VIOLATION);
+      }
+
+      const { rows } = await pool.query("SELECT 1 FROM audit_log WHERE id = $1", [id]);
+      expect(rows).toHaveLength(1);
+    });
+
     it("lets the runtime role append within its own facility", async () => {
       const alpha = await makeFacility();
 

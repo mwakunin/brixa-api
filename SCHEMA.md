@@ -835,7 +835,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - The line's `total_cost_cents` may be zero (donated). The unit cost is derived, never stored.
   - An expired batch is refused. One expiring within 90 days (`EXPIRY_WARNING_DAYS`) is taken, and the response lists a warning for it.
   - A refused line refuses the whole note, naming the line, and the series number it would have taken is still the next one.
-- **`stock_movements`**: append-only. The app role has `INSERT` and `SELECT`, and a trigger refuses `UPDATE` and `DELETE` for every role.
+- **`stock_movements`**: append-only. The app role has `INSERT` and `SELECT`, and triggers refuse `UPDATE`, `DELETE` and `TRUNCATE` for every role.
   - Each row is a signed quantity in base units per store and batch. The kinds so far are `receipt` and `receipt_reversed`, each with its note as a typed source. `stock_movements_shape` holds each kind's sign, source and reason.
   - **On hand per store and batch is the sum of the movements, never stored and never negative.** `stock_movements_never_negative`, an after-insert trigger, holds this for any writer. The services also check it under the batch's lock.
 - **The lock order for stock** (`src/lib/stock-levels.ts`): store, then stock items by id, then batches by id.
@@ -1030,7 +1030,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 
 ## 10. Append-only and immutable data
 
-**Append-only** (enforced by a trigger; the app role holds `INSERT` and `SELECT` only): `audit_log`, `mpesa_transactions`, `gateway_exchanges`, `eligibility_checks`, `stock_movements`, `controlled_drug_register`. Also `sign_in_events`, the sign-in log, which is global rather than a tenant table: Better Auth's role holds `INSERT` alone, the app role nothing, and Brixa support exports it on the owner connection.
+**Append-only** (enforced by a trigger; the app role holds `INSERT` and `SELECT` only): `audit_log`, `mpesa_transactions`, `gateway_exchanges`, `eligibility_checks`, `stock_movements`, `controlled_drug_register`, `lab_result_reviews`. A second trigger refuses `TRUNCATE` on each, the owner included, since row triggers do not fire for it (migration 0115; `eligibility_checks` gets its own with the table). Also `sign_in_events`, the sign-in log, which is global rather than a tenant table: Better Auth's role holds `INSERT` alone, the app role nothing, and Brixa support exports it on the owner connection.
 
 **Immutable once finalised** (a trigger refuses updates to frozen columns; corrections are a credit note, a new version or an addendum):
 

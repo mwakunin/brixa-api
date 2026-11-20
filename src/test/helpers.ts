@@ -72,13 +72,20 @@ export async function resetDb(): Promise<void> {
     return;
 
   const tables = rows.map(r => `"${r.tablename}"`).join(", ");
-  // The sign-in log refuses TRUNCATE (migration 0114): off for this one, in the same transaction.
+  // The append-only records refuse TRUNCATE (migrations 0114, 0115): off for this one, in the same transaction.
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    await client.query("ALTER TABLE sign_in_events DISABLE TRIGGER sign_in_events_no_truncate");
+    const { rows: refusing } = await client.query<{ name: string; tablename: string }>(`
+      SELECT t.tgname AS name, c.relname AS tablename
+      FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = 'public' AND NOT t.tgisinternal AND (t.tgtype & 32) <> 0
+    `);
+    for (const t of refusing)
+      await client.query(`ALTER TABLE "${t.tablename}" DISABLE TRIGGER "${t.name}"`);
     await client.query(`TRUNCATE TABLE ${tables} RESTART IDENTITY CASCADE`);
-    await client.query("ALTER TABLE sign_in_events ENABLE TRIGGER sign_in_events_no_truncate");
+    for (const t of refusing)
+      await client.query(`ALTER TABLE "${t.tablename}" ENABLE TRIGGER "${t.name}"`);
     await client.query("COMMIT");
   }
   catch (err) {

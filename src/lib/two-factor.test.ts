@@ -57,7 +57,36 @@ async function get(path: string, headers: Record<string, string>): Promise<Respo
   return app.request(path, { headers: { "x-forwarded-for": nextIp(), ...headers } });
 }
 
-/** Holds the next request just after the API's session guard has looked at its session, until released. */
+/** Waits for a held request to reach its hold, failing within `ms` rather than at the test's own timeout. */
+async function within(step: Promise<void>, what: string, ms = 5_000): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} did not happen within ${ms} ms`)), ms);
+  });
+  try {
+    await Promise.race([step, late]);
+  }
+  finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * A request sent while another is held: its failure is observed at once, so
+ * nothing goes unhandled while the test waits elsewhere, and cleanup awaits
+ * it with `Promise.allSettled` once the hold is released, so no request
+ * outlives its test.
+ */
+function sent(request: Promise<Response>): Promise<Response> {
+  request.catch(() => {});
+  return request;
+}
+
+/**
+ * Holds the next request just after the API's session guard has looked at
+ * its session, until released. `restore` releases it too: call it in a
+ * `finally`, so a failing test leaves no request held and no spy behind.
+ */
 function holdAfterGuard() {
   const look = auth.api.getSession;
   let passed!: () => void;
@@ -74,10 +103,21 @@ function holdAfterGuard() {
     await released;
     return found;
   }) as unknown as typeof look);
-  return { hasPassed, release, restore: () => spy.mockRestore() };
+  return {
+    passed: () => within(hasPassed, "The request passing the session guard"),
+    release,
+    restore: () => {
+      release();
+      spy.mockRestore();
+    },
+  };
 }
 
-/** Holds a confirmation of a new authenticator just after it has read the authenticator it is about to confirm. */
+/**
+ * Holds a confirmation of a new authenticator just after it has read the
+ * authenticator it is about to confirm, until released. `restore` releases
+ * it too, as above.
+ */
 async function holdConfirmation() {
   const { adapter } = await auth.$context;
   const read = adapter.findOne.bind(adapter);
@@ -99,7 +139,14 @@ async function holdConfirmation() {
     }
     return found;
   }) as unknown as typeof adapter.findOne);
-  return { reading, release, restore: () => spy.mockRestore() };
+  return {
+    read: () => within(reading, "The confirmation reading its authenticator"),
+    release,
+    restore: () => {
+      release();
+      spy.mockRestore();
+    },
+  };
 }
 
 /** Someone new, half way through setting up: the authenticator shown, and a right first code for it. */
@@ -442,12 +489,18 @@ describe("before an authenticator is set up", () => {
       const person = await createTestAccount(email, "New Starter", "user", { twoFactor: false });
       const { cookie } = await signIn(email);
       const held = holdAfterGuard();
-      const answer = postJson(route, body, { cookie, origin: appOrigin });
-      await held.hasPassed;
-      await enrolForDevelopment(person.id);
-      held.release();
-      const res = await answer;
-      held.restore();
+      const answer = sent(postJson(route, body, { cookie, origin: appOrigin }));
+      let res: Response;
+      try {
+        await held.passed();
+        await enrolForDevelopment(person.id);
+        held.release();
+        res = await answer;
+      }
+      finally {
+        held.restore();
+        await Promise.allSettled([answer]);
+      }
 
       expect(res.status, route).toBe(401);
       expect((await res.json()).code, route).toBe("TWO_FACTOR_CODE_REQUIRED");
@@ -465,14 +518,20 @@ describe("before an authenticator is set up", () => {
     const email = nextEmail();
     const { headers, secret, code } = await halfSetUp(email);
     const held = await holdConfirmation();
-
-    const confirming = postJson("/api/auth/two-factor/verify-totp", { code }, headers);
-    await held.reading;
-    // Free to run, the second setup would finish now and swap its secret in.
-    const second = await postJson("/api/auth/two-factor/enable", { password: TEST_PASSWORD }, headers);
-    held.release();
-    const confirmed = await confirming;
-    held.restore();
+    const confirming = sent(postJson("/api/auth/two-factor/verify-totp", { code }, headers));
+    let second: Response;
+    let confirmed: Response;
+    try {
+      await held.read();
+      // Free to run, the second setup would finish now and swap its secret in.
+      second = await postJson("/api/auth/two-factor/enable", { password: TEST_PASSWORD }, headers);
+      held.release();
+      confirmed = await confirming;
+    }
+    finally {
+      held.restore();
+      await Promise.allSettled([confirming]);
+    }
 
     expect(second.status).toBe(409);
     expect((await second.json()).code).toBe("TWO_FACTOR_CHANGE_UNDER_WAY");
@@ -493,14 +552,21 @@ describe("before an authenticator is set up", () => {
     const someoneElse = nextEmail();
     await createTestAccount(someoneElse);
     const held = await holdConfirmation();
-
-    const confirming = postJson("/api/auth/two-factor/verify-totp", { code }, headers);
-    await held.reading;
-    const burst = await Promise.all(Array.from({ length: 12 }, () => postJson("/api/auth/two-factor/enable", { password: TEST_PASSWORD }, headers)));
-    const elsewhere = await signIn(someoneElse);
-    held.release();
-    const confirmed = await confirming;
-    held.restore();
+    const confirming = sent(postJson("/api/auth/two-factor/verify-totp", { code }, headers));
+    let burst: Response[];
+    let elsewhere: Awaited<ReturnType<typeof signIn>>;
+    let confirmed: Response;
+    try {
+      await held.read();
+      burst = await Promise.all(Array.from({ length: 12 }, () => postJson("/api/auth/two-factor/enable", { password: TEST_PASSWORD }, headers)));
+      elsewhere = await signIn(someoneElse);
+      held.release();
+      confirmed = await confirming;
+    }
+    finally {
+      held.restore();
+      await Promise.allSettled([confirming]);
+    }
 
     expect(burst.every(res => res.status === 409)).toBe(true);
     expect(await sessionOf(elsewhere.cookie)).not.toBeNull();
