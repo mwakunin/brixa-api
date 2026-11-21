@@ -138,7 +138,7 @@ Decided 2026-11-04 with the product owner:
 
 ### 5.2 As built: what the staff walkthrough asked of the front desk (2026-11-20)
 
-- **Each search result carries an identity document** (`idDocument`): the patient's identity document added most recently, its type and number, or null. Clerks confirm a match by two or three names and the phone or the ID number, and opening each record to check would audit each opening. An SHA or registry number does not count. Duplicate candidates carry it too.
+- **Each search result carries an identity document** (`idDocument`): the patient's identity document added most recently, its type and number, or null. Documents added together, as at one registration, share a moment: of those, the first of national ID, passport, birth certificate, alien ID and refugee ID is shown. Clerks confirm a match by two or three names and the phone or the ID number, and opening each record to check would audit each opening. An SHA or registry number does not count. Duplicate candidates carry it too.
 - **`patient_contacts`:** someone to reach about a patient, such as a child's guardian.
   - **Only the name is required.** A relationship as told (mother, aunt), a phone (E.164) and an identity document may each be left out at first, and later added or cleared. The identity document's type and number go together, or neither, normalised as identifiers are.
   - Staff said a guardian's ID is recorded "sometimes", so nothing more is required.
