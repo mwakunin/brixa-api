@@ -13,6 +13,7 @@ import { isUniqueViolation, pgConstraintName } from "./db-errors";
 import { DRUG_CODE_SHAPE, searchDrugs } from "./drug-catalogue";
 import { DrugFileError, parseCsv } from "./drug-catalogue-load";
 import { cashPriceList, listBillableItems, PriceError, requestPriceChange } from "./prices";
+import { ONE_LINE } from "./validation";
 
 /**
  * A facility's drug and consumable list, loaded from a CSV (SPEC.md §7.4,
@@ -97,7 +98,7 @@ function parseRow(fields: string[], row: number): ParsedRow {
     problem(`has ${fields.length} fields, not ${IMPORT_HEADER.length}`);
   if (!ITEM_CODE_SHAPE.test(parsed.code))
     problem("code: letters, digits and . / - only, up to 24");
-  if (name.length < 2 || name.length > 120 || /\p{C}/u.test(name))
+  if (name.length < 2 || name.length > 120 || !ONE_LINE.test(name))
     problem("name: 2 to 120 characters on one line");
   if (category !== "drug" && category !== "consumable")
     problem("category: drug or consumable");
@@ -105,7 +106,7 @@ function parseRow(fields: string[], row: number): ParsedRow {
     problem("drug_code: a consumable names no catalogue drug");
   if (parsed.drugCode && !DRUG_CODE_SHAPE.test(parsed.drugCode))
     problem("drug_code: not a catalogue code");
-  if (baseUnit.length < 1 || baseUnit.length > 20 || /\p{C}/u.test(baseUnit))
+  if (baseUnit.length < 1 || baseUnit.length > 20 || !ONE_LINE.test(baseUnit))
     problem("base_unit: 1 to 20 characters, e.g. tablet, mL, vial, pair");
   if (parsed.packSize === null || parsed.packSize < 1 || parsed.packSize > MAX_PACK_SIZE)
     problem(`pack_size: a whole number from 1 to ${MAX_PACK_SIZE.toLocaleString("en")}`);
