@@ -5,6 +5,7 @@ import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { badRequestSchema, forbiddenSchema, notFoundSchema, unauthorizedSchema } from "@/lib/constants";
 import { normalizePhone } from "@/lib/phone";
+import { ONE_LINE } from "@/lib/validation";
 import { requireMembershipRole } from "@/middlewares/auth";
 import { MyFacilitySchema } from "@/routes/me/me.routes";
 
@@ -49,7 +50,7 @@ const FacilitySchema = MyFacilitySchema.extend({
 
 const UpdateBodySchema = z.strictObject({
   phone: z.string().trim().max(30).refine(v => normalizePhone(v) !== null, "Not a phone number we recognise").nullable().optional(),
-  address: z.string().trim().min(1).max(200).regex(/^\P{C}+$/u, "One line").nullable().optional(),
+  address: z.string().trim().min(1).max(200).regex(ONE_LINE, "One line").nullable().optional(),
 }).refine(b => b.phone !== undefined || b.address !== undefined, "Give the phone, the address, or both");
 
 export const getFacility = createRoute({

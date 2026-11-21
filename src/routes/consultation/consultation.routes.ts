@@ -4,7 +4,7 @@ import { jsonContent, jsonContentRequired } from "stoker/openapi/helpers";
 import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { CLINICAL_ROLES } from "@/lib/professions";
-import { restrictedSchema } from "@/lib/validation";
+import { ONE_LINE, restrictedSchema } from "@/lib/validation";
 import { requireClinicalRole, requireMembershipRole } from "@/middlewares/auth";
 import { AllergySchema } from "@/routes/allergies/allergies.routes";
 import { DiagnosisSchema } from "@/routes/diagnoses/diagnoses.routes";
@@ -38,7 +38,7 @@ const ComplaintSchema = z.object({
 
 const ComplaintBodySchema = z.strictObject({
   /** In a few words, as the patient tells it. */
-  text: z.string().trim().min(2).max(200).regex(/^\P{C}+$/u, "One line"),
+  text: z.string().trim().min(2).max(200).regex(ONE_LINE, "One line"),
 });
 
 const ConsultationSchema = z.object({

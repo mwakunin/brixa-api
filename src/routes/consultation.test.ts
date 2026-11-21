@@ -100,6 +100,10 @@ describe("today's complaint", () => {
     expect((await corrected.json()).complaint.recordedBy.membershipId).toBe(c.doctor.actor.membershipId);
     expect((await c.complain(encounterId, "Fever and joint pains for three days", c.doctor)).status).toBe(200);
 
+    // One line: a line or paragraph separator breaks it as a newline does.
+    for (const text of ["Fever\nand cough", "Fever\u2028and cough", "Fever\u2029and cough"])
+      expect((await c.complain(encounterId, text)).status).toBe(422);
+
     const entries = await audits(c, "encounter.complaint_recorded");
     expect(entries.map(e => e.detail)).toEqual(expect.arrayContaining([
       { from: null, to: "Fever and headache for three days" },
@@ -213,6 +217,20 @@ describe("the consultation", () => {
     expect(toAssigned.complaint.text).toBe("Here for a refill");
     expect(toAssigned.lastVisit).toMatchObject({ restricted: false, clinic: "Comprehensive Care Clinic", diagnoses: [expect.any(String)] });
   }, 60_000);
+
+  it("alerts whoever recorded a sensitive clinic's complaint when the glass is broken, though nothing else was recorded there", async () => {
+    const c = await clinic();
+    const { encounterId, patientId } = await c.visit(c.ccc);
+    await c.complain(encounterId, "Here for a refill", c.doctor);
+
+    const res = await call("POST", `/patients/${patientId}/break-glass`, c.facility.id, c.other, { reason: "Collapsed in casualty; needs regimen" });
+
+    expect(res.status).toBe(201);
+    const grant = await res.json();
+    expect((await audits(c, "patient.break_glass"))[0].detail).toMatchObject({ breakGlassId: grant.id, alerted: 1 });
+    const listed = (await (await call("GET", "/break-glass", c.facility.id, c.doctor)).json()).breakGlass;
+    expect(listed.map((g: { id: string }) => g.id)).toEqual([grant.id]);
+  });
 
   it("is for clinical staff only", async () => {
     const c = await clinic();

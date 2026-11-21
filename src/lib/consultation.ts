@@ -150,6 +150,20 @@ interface Seen {
   viaGrantRecorders: readonly (string | null)[];
 }
 
+/** Today's complaint as `reader` may see it: like a note, hidden with the rest of a sensitive clinic's visit. */
+async function complaintSeen(tx: AppDb, encounterId: string, reader: Reader): Promise<Seen & { shown: Complaint | null }> {
+  const complaint = await complaintOf(tx, encounterId);
+  if (!complaint)
+    return { shown: null, restricted: [], viaGrant: null, viaGrantRecorders: [] };
+  const clinics = (await clinicCategoriesOf(tx, [encounterId])).get(encounterId);
+  const seen = sight(reader, { categories: categoriesOf(clinics), recordedBy: [complaint.recordedBy.membershipId] });
+  if (seen === "restricted")
+    return { shown: null, restricted: [{ recordedAt: complaint.recordedAt }], viaGrant: null, viaGrantRecorders: [] };
+  if (seen === "via_grant")
+    return { shown: complaint, restricted: [], viaGrant: reader.grantId, viaGrantRecorders: [complaint.recordedBy.membershipId] };
+  return { shown: complaint, restricted: [], viaGrant: null, viaGrantRecorders: [] };
+}
+
 async function lastVisitOf(
   tx: AppDb,
   encounter: { id: string; patientId: string; startedAt: Date },
@@ -243,21 +257,8 @@ export async function viewConsultation(tx: AppDb, facilityId: string, encounterI
   const orders = await ordersSeen(tx, encounterId, reader);
   const results = await resultsSeen(tx, encounterId, reader);
   const last = await lastVisitOf(tx, encounter, reader);
-  const parts: Seen[] = [notes, diagnoses, orders, results, ...(last ? [last.seen] : [])];
-
-  // Like a note, the complaint is hidden with the rest of a sensitive clinic's visit.
-  let complaint = await complaintOf(tx, encounterId);
-  if (complaint) {
-    const clinics = (await clinicCategoriesOf(tx, [encounterId])).get(encounterId);
-    const seen = sight(reader, { categories: categoriesOf(clinics), recordedBy: [complaint.recordedBy.membershipId] });
-    if (seen === "restricted") {
-      parts.push({ restricted: [{ recordedAt: complaint.recordedAt }], viaGrant: null, viaGrantRecorders: [] });
-      complaint = null;
-    }
-    else if (seen === "via_grant") {
-      parts.push({ restricted: [], viaGrant: reader.grantId, viaGrantRecorders: [complaint.recordedBy.membershipId] });
-    }
-  }
+  const complaint = await complaintSeen(tx, encounterId, reader);
+  const parts: Seen[] = [notes, diagnoses, orders, results, complaint, ...(last ? [last.seen] : [])];
 
   const restricted = parts.flatMap(p => p.restricted).sort((a, b) => a.recordedAt.getTime() - b.recordedAt.getTime());
   const viaGrant = parts.find(p => p.viaGrant)?.viaGrant ?? null;
@@ -275,7 +276,7 @@ export async function viewConsultation(tx: AppDb, facilityId: string, encounterI
   return {
     encounter: { id: encounter.id, kind: encounter.kind, status: encounter.status, startedAt: encounter.startedAt },
     patient,
-    complaint,
+    complaint: complaint.shown,
     vitals: await observationsOf(tx, encounterId),
     allergies: await allergiesOf(tx, encounter.patientId),
     notes: notes.shown,

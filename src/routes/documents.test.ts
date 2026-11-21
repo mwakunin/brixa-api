@@ -211,7 +211,8 @@ describe("the facility's address", () => {
     const { facility } = await receiptAt();
     const admin = await signedInUserAt(facility.id, ["facility_admin"]);
 
-    for (const address of ["P.O. Box 120\nNakuru", "x".repeat(201), "  "])
+    // A line or paragraph separator breaks a line as a newline does.
+    for (const address of ["P.O. Box 120\nNakuru", "P.O. Box 120\u2028Nakuru", "P.O. Box 120\u2029Nakuru", "x".repeat(201), "  "])
       expect((await change(facility.id, admin, { address })).status).toBe(422);
     expect((await change(facility.id, admin, {})).status).toBe(422);
 

@@ -648,7 +648,8 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - Doctors look first at "the complaint and vitals from triage", so the triage nurse records it in a few words (at most 200 characters, one line).
   - `PUT /encounters/{id}/complaint` records it, by nurses, doctors and clinical officers under a current licence, while the visit is open (`not_open`). Sending it again corrects it.
   - Each change is audited as `encounter.complaint_recorded`, with the old and new text. The same text sent again is no change.
-  - It is clinical content: hidden with the rest of a sensitive clinic's visit (rule 27), seen by whoever recorded it and the staff assigned the category. Only someone who may see it changes it.
+  - It is clinical content: hidden with the rest of a sensitive clinic's visit (rule 27), seen by whoever recorded it and the staff assigned the category. Only someone who may see it changes it. Breaking the glass on the patient alerts whoever recorded it, as it alerts the recorders of other restricted records.
+  - It is one line: no control character and no line or paragraph separator (`ONE_LINE`, `src/lib/validation.ts`), which the facility's address also uses.
 - **`GET /encounters/{id}/consultation`** (clinical roles), audited once as `encounter.viewed` ("Viewed the consultation"). It answers SPEC §7.9's one or two calls for a screen, where the doctor's screen needed seven reads. It returns:
   - the patient (names, OP number, sex, age);
   - this visit's vital signs, the standing allergies and today's complaint;
