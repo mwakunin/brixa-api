@@ -5,7 +5,7 @@ import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { CLINICAL_ROLES } from "@/lib/professions";
 import { COLLECTING_STAFF, LAB_STAFF } from "@/lib/specimens";
-import { restrictedSchema } from "@/lib/validation";
+import { ONE_LINE, restrictedSchema } from "@/lib/validation";
 import { requireClinicalRole, requireMembershipRole } from "@/middlewares/auth";
 import { clinicalResponses, facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 import { LabNumberSchema } from "@/routes/lab-tests/lab-tests.routes";
@@ -86,7 +86,7 @@ const CollectBodySchema = z.strictObject({
 const RejectBodySchema = z.strictObject({
   reason: z.enum(REJECTION_REASONS),
   /** Required for `other`. */
-  note: z.string().trim().min(1).max(200).regex(/^\P{C}+$/u, "One line").optional(),
+  note: z.string().trim().min(1).max(200).regex(ONE_LINE, "One line").optional(),
 }).refine(b => b.reason !== "other" || b.note !== undefined, { message: "Say what was wrong", path: ["note"] });
 
 const PersonSchema = z.object({ membershipId: z.uuid(), name: z.string() });
@@ -131,7 +131,7 @@ export const ResultSchema = z.object({
 
 const ToldSchema = z.strictObject({
   /** Who was told: the clinician, or the ward. */
-  name: z.string().trim().min(1).max(120).regex(/^\P{C}+$/u, "One line"),
+  name: z.string().trim().min(1).max(120).regex(ONE_LINE, "One line"),
   how: z.enum(["in_person", "phone"]),
   /** Now unless given. */
   at: z.iso.datetime({ offset: true }).optional(),
@@ -141,12 +141,12 @@ const EnterBodySchema = z.strictObject({
   orderItemId: z.uuid(),
   values: z.array(z.strictObject({ analyteId: z.uuid(), value: z.union([LabNumberSchema, z.string().trim().min(1).max(2000)]) })).min(1).max(60),
   /** Why, when the test already has a result: this one corrects it. */
-  correctionReason: z.string().trim().min(1).max(200).regex(/^\P{C}+$/u, "One line").optional(),
+  correctionReason: z.string().trim().min(1).max(200).regex(ONE_LINE, "One line").optional(),
 });
 
 const ReleaseBodySchema = z.strictObject({
   /** Why it goes out unverified, e.g. "Only lab member on night duty". */
-  reason: z.string().trim().min(1).max(200).regex(/^\P{C}+$/u, "One line"),
+  reason: z.string().trim().min(1).max(200).regex(ONE_LINE, "One line"),
   told: ToldSchema.optional(),
 });
 

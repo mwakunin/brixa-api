@@ -5,7 +5,7 @@ import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { ORDERING_STAFF, PERFORMING_STAFF, WALK_IN_STAFF } from "@/lib/orders";
 import { CLINICAL_ROLES } from "@/lib/professions";
-import { restrictedSchema } from "@/lib/validation";
+import { ONE_LINE, restrictedSchema } from "@/lib/validation";
 import { requireClinicalRole, requireMembershipRole } from "@/middlewares/auth";
 import { clinicalResponses, facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
@@ -28,7 +28,7 @@ const cancellingStaff = requireMembershipRole(...ORDERING_STAFF, ...WALK_IN_STAF
 
 const RefusalSchema = z.object({ message: z.string(), code: z.string() });
 const IdParamsSchema = z.object({ id: z.uuid() });
-const oneLine = (max: number) => z.string().trim().min(1).max(max).regex(/^\P{C}+$/u, "One line");
+const oneLine = (max: number) => z.string().trim().min(1).max(max).regex(ONE_LINE, "One line");
 
 const ItemBodySchema = z.union([
   z.strictObject({ labTestId: z.uuid() }),

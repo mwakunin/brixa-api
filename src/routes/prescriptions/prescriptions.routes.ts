@@ -7,6 +7,7 @@ import { DRUG_ROUTES } from "@/lib/drug-catalogue";
 import { ORDERING_STAFF } from "@/lib/orders";
 import { FREQUENCIES } from "@/lib/prescriptions";
 import { CLINICAL_ROLES } from "@/lib/professions";
+import { ONE_LINE } from "@/lib/validation";
 import { requireClinicalRole, requireMembershipRole } from "@/middlewares/auth";
 import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 import { OrderSchema } from "@/routes/orders/order-schemas";
@@ -27,7 +28,7 @@ const drugReaders = requireMembershipRole(...CLINICAL_ROLES, "facility_admin", "
 
 const RefusalSchema = z.object({ message: z.string(), code: z.string() });
 const IdParamsSchema = z.object({ id: z.uuid() });
-const oneLine = (max: number) => z.string().trim().min(1).max(max).regex(/^\P{C}+$/u, "One line");
+const oneLine = (max: number) => z.string().trim().min(1).max(max).regex(ONE_LINE, "One line");
 const DecimalSchema = z.string().trim().regex(/^\d{1,8}(?:\.\d{1,3})?$/, "A positive number, at most 3 decimals").refine(v => Number(v) > 0, "More than zero");
 
 const DrugSchema = z.object({

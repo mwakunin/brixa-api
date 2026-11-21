@@ -5,6 +5,7 @@ import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { DISPENSERS } from "@/lib/dispensing";
 import { SHORTFALL_APPROVERS } from "@/lib/transfers";
+import { ONE_LINE } from "@/lib/validation";
 import { requireClinicalRole, requireMembershipRole } from "@/middlewares/auth";
 import { clinicalResponses, facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
@@ -44,7 +45,7 @@ const ReturnSchema = z.object({
 const ReturnBodySchema = z.strictObject({
   /** In the line's base unit. */
   quantity: z.number().int().min(1).max(100_000),
-  reason: z.string().trim().min(3).max(200).regex(/^\P{C}+$/u, "One line"),
+  reason: z.string().trim().min(3).max(200).regex(ONE_LINE, "One line"),
   /** False: it cannot be sold again, so it is a write-off a second person approves. */
   fitForResale: z.boolean(),
 });

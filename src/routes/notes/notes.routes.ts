@@ -4,7 +4,7 @@ import { jsonContent, jsonContentRequired } from "stoker/openapi/helpers";
 import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { CLINICAL_ROLES } from "@/lib/professions";
-import { restrictedSchema, sensitiveCategorySchema } from "@/lib/validation";
+import { ONE_LINE, restrictedSchema, sensitiveCategorySchema } from "@/lib/validation";
 import { requireClinicalRole, requireMembershipRole } from "@/middlewares/auth";
 import { clinicalResponses, facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
@@ -45,7 +45,7 @@ const StartBodySchema = ContentSchema.extend({
 });
 const SensitiveBodySchema = z.strictObject({ category: sensitiveCategorySchema });
 const AddendumBodySchema = z.object({ text: noteText });
-const ReasonBodySchema = z.object({ reason: z.string().trim().min(3).max(200).regex(/^\P{C}+$/u, "One line") });
+const ReasonBodySchema = z.object({ reason: z.string().trim().min(3).max(200).regex(ONE_LINE, "One line") });
 
 const AuthorSchema = z.object({ membershipId: z.uuid(), name: z.string() });
 

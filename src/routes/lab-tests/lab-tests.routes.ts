@@ -3,7 +3,7 @@ import * as HttpStatusCodes from "stoker/http-status-codes";
 import { jsonContent, jsonContentRequired } from "stoker/openapi/helpers";
 import { createErrorSchema } from "stoker/openapi/schemas";
 
-import { sensitiveCategorySchema } from "@/lib/validation";
+import { ONE_LINE, sensitiveCategorySchema } from "@/lib/validation";
 import { requireMembershipRole } from "@/middlewares/auth";
 import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
@@ -19,7 +19,7 @@ const RefusalSchema = z.object({ message: z.string(), code: z.string() });
 const IdParamsSchema = z.object({ id: z.uuid() });
 
 const SPECIMEN_TYPES = ["blood", "urine", "stool", "sputum", "swab", "csf", "body_fluid", "other"] as const;
-const oneLine = (max: number) => z.string().trim().min(1).max(max).regex(/^\P{C}+$/u, "One line");
+const oneLine = (max: number) => z.string().trim().min(1).max(max).regex(ONE_LINE, "One line");
 
 const AnalyteCodeSchema = z.string().trim().toUpperCase().regex(/^[A-Z0-9][A-Z0-9._%#-]{0,15}$/, "Letters, digits and . _ % # - only, at most 16");
 /**

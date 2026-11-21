@@ -5,6 +5,7 @@ import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { STOCK_READERS } from "@/lib/goods-received";
 import { TRANSFER_STAFF, WARD_STAFF } from "@/lib/transfers";
+import { ONE_LINE } from "@/lib/validation";
 import { requireMembershipRole } from "@/middlewares/auth";
 import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
@@ -56,7 +57,7 @@ const OpenBodySchema = z.strictObject({
 const CountsBodySchema = z.strictObject({
   counts: z.array(z.strictObject({ batchId: z.uuid(), quantity: z.number().int().min(0).max(2_147_483_647) })).min(1).max(1000).refine(c => new Set(c.map(x => x.batchId.toLowerCase())).size === c.length, "Each batch once"),
 });
-const CancelBodySchema = z.strictObject({ reason: z.string().trim().min(3).max(200).regex(/^\P{C}+$/u, "One line") });
+const CancelBodySchema = z.strictObject({ reason: z.string().trim().min(3).max(200).regex(ONE_LINE, "One line") });
 const ListQuerySchema = z.object({
   storeId: z.uuid().optional(),
   status: z.enum(STATUSES).optional(),

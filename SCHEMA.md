@@ -649,7 +649,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - `PUT /encounters/{id}/complaint` records it, by nurses, doctors and clinical officers under a current licence, while the visit is open (`not_open`). Sending it again corrects it.
   - Each change is audited as `encounter.complaint_recorded`, with the old and new text. The same text sent again is no change.
   - It is clinical content: hidden with the rest of a sensitive clinic's visit (rule 27), seen by whoever recorded it and the staff assigned the category. Only someone who may see it changes it. Breaking the glass on the patient alerts whoever recorded it, as it alerts the recorders of other restricted records.
-  - It is one line: no control character and no line or paragraph separator (`ONE_LINE`, `src/lib/validation.ts`), which the facility's address also uses.
+  - It is one line: no control character and no line or paragraph separator (`ONE_LINE`, `src/lib/validation.ts`), the check every one-line field uses since 2026-11-21.
 - **`GET /encounters/{id}/consultation`** (clinical roles), audited once as `encounter.viewed` ("Viewed the consultation"). It answers SPEC §7.9's one or two calls for a screen, where the doctor's screen needed seven reads. It returns:
   - the patient (names, OP number, sex, age);
   - this visit's vital signs, the standing allergies and today's complaint;
@@ -968,6 +968,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - `out`: the pharmacy holds nothing in date that fills it, from items not retired.
   - `low`: it holds less than is still owed, the prescribed quantity less what was handed over. This is told only when all it holds is in the prescription's dose unit and nothing has gone out in another, since one unit is never counted as another.
   - Null flags nothing: enough on the shelf, a shortfall that cannot be measured, or a medicine already prepared, whose stock is taken.
+  - **Known limit:** what is prepared and what is on the shelf are read in two statements under READ COMMITTED, which every tenant request uses. A medicine prepared by someone else between the two can be flagged `out` on that one load while it still shows as not prepared; the next load is right. Nothing acts on the flag: a quote and preparing check the stock again under the batch locks (`not_enough_stock`). Declined on brixa-api #36, since one snapshot would need both reads folded into one hand-written statement.
 - **Which pharmacy:** `?storeId=` names it, as preparing does; otherwise the facility's only open one. With several and none named, nothing is flagged. `stockIn` names the pharmacy measured, or is null. A store that is not an open pharmacy is refused (`not_a_pharmacy`).
 - **`POST /dispenses/quote`** takes the body of `POST /dispenses`. It answers each line's quantity, whether it completes the medicine, its unit price and its charge, and the total.
   - It runs the same checks as preparing (`planDispense`, shared by both), so it is priced and refused exactly as preparing would be, naming the line.

@@ -4,6 +4,7 @@ import { jsonContent, jsonContentRequired } from "stoker/openapi/helpers";
 import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { QUANTITY_PATTERN } from "@/lib/money";
+import { ONE_LINE } from "@/lib/validation";
 import { requireMembershipRole } from "@/middlewares/auth";
 import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
@@ -42,12 +43,12 @@ const PostBodySchema = z.object({
   billableItemId: z.uuid(),
   /** Up to 3 decimals: `1`, `1.5`, `0.25`. */
   quantity: z.string().regex(QUANTITY_PATTERN, "A positive number with up to 3 decimals").refine(q => Number(q) > 0, "Must be more than zero"),
-  reason: z.string().trim().min(3).max(200).regex(/^\P{C}+$/u, "One line"),
+  reason: z.string().trim().min(3).max(200).regex(ONE_LINE, "One line"),
   /** Defaults to today. */
   serviceDate: z.iso.date().optional(),
 });
 
-const CancelBodySchema = z.object({ reason: z.string().trim().min(3).max(200).regex(/^\P{C}+$/u, "One line") });
+const CancelBodySchema = z.object({ reason: z.string().trim().min(3).max(200).regex(ONE_LINE, "One line") });
 
 export const postCharge = createRoute({
   tags,

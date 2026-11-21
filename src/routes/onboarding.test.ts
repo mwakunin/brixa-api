@@ -493,7 +493,8 @@ describe("a facility admin inviting staff", () => {
     const facility = await makeFacility();
     const admin = await signedInUserAt(facility.id, ["facility_admin"]);
 
-    for (const name of ["Otieno\n\nYour account is locked, call 0700 000 000", "A‮reversed", "x".repeat(101)]) {
+    // A line or paragraph separator breaks the email's line as a newline does.
+    for (const name of ["Otieno\n\nYour account is locked, call 0700 000 000", "Otieno\u2028Your account is locked", "Otieno\u2029Your account is locked", "A‮reversed", "x".repeat(101)]) {
       const res = await invite(facility.id, admin, { email: nextEmail(), name, roles: ["nurse"] });
       expect(res.status, JSON.stringify(name)).toBe(422);
     }

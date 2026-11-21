@@ -4,6 +4,7 @@ import { jsonContent, jsonContentRequired } from "stoker/openapi/helpers";
 import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { DOCUMENT_READERS } from "@/lib/documents";
+import { ONE_LINE } from "@/lib/validation";
 import { requireMembershipRole } from "@/middlewares/auth";
 import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 import { BILLERS, FINANCE } from "@/routes/invoices/invoices.routes";
@@ -25,7 +26,7 @@ const RefusalSchema = z.object({ message: z.string(), code: z.string() });
 const IdParamsSchema = z.object({ id: z.uuid() });
 const StatusSchema = z.enum(["pending", "approved", "rejected", "withdrawn"]);
 const MethodSchema = z.enum(["cash", "card", "bank", "mpesa"]);
-const ReasonSchema = z.object({ reason: z.string().trim().min(3).max(200).regex(/^\P{C}+$/u, "One line") });
+const ReasonSchema = z.object({ reason: z.string().trim().min(3).max(200).regex(ONE_LINE, "One line") });
 
 const RefundSchema = z.object({
   id: z.uuid(),

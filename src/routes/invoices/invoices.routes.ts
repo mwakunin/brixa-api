@@ -4,6 +4,7 @@ import { jsonContent, jsonContentRequired } from "stoker/openapi/helpers";
 import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { DOCUMENT_READERS } from "@/lib/documents";
+import { ONE_LINE } from "@/lib/validation";
 import { requireMembershipRole } from "@/middlewares/auth";
 import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
@@ -89,7 +90,7 @@ const DraftBodySchema = z.object({
   kind: z.enum(["interim", "final", "supplementary"]),
 });
 
-const VoidBodySchema = z.object({ reason: z.string().trim().min(3).max(200).regex(/^\P{C}+$/u, "One line") });
+const VoidBodySchema = z.object({ reason: z.string().trim().min(3).max(200).regex(ONE_LINE, "One line") });
 
 export const draftInvoice = createRoute({
   tags,

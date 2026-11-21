@@ -3,6 +3,7 @@ import * as HttpStatusCodes from "stoker/http-status-codes";
 import { jsonContent, jsonContentRequired } from "stoker/openapi/helpers";
 import { createErrorSchema } from "stoker/openapi/schemas";
 
+import { ONE_LINE } from "@/lib/validation";
 import { requireMembershipRole } from "@/middlewares/auth";
 import { VISIT_STAFF } from "@/routes/encounters/encounters.routes";
 import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
@@ -22,7 +23,7 @@ const visitStaff = requireMembershipRole(...VISIT_STAFF);
 
 const RefusalSchema = z.object({ message: z.string(), code: z.string() });
 const IdParamsSchema = z.object({ id: z.uuid() });
-const oneLine = (max: number) => z.string().trim().min(1).max(max).regex(/^\P{C}+$/u, "One line");
+const oneLine = (max: number) => z.string().trim().min(1).max(max).regex(ONE_LINE, "One line");
 const DateSchema = z.iso.date();
 const TimeSchema = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/, "HH:MM, 24-hour, Kenyan time");
 const StatusSchema = z.enum(["booked", "checked_in", "cancelled"]);

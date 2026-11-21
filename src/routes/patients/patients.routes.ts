@@ -6,7 +6,7 @@ import { createErrorSchema } from "stoker/openapi/schemas";
 import { businessDate } from "@/lib/dates";
 import { IDENTITY_DOCUMENTS, normalizeIdentifier } from "@/lib/patients";
 import { normalizePhone } from "@/lib/phone";
-import { personNameSchema } from "@/lib/validation";
+import { ONE_LINE, personNameSchema } from "@/lib/validation";
 import { requireMembershipRole } from "@/middlewares/auth";
 import { rateLimits } from "@/middlewares/rate-limit";
 import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
@@ -53,7 +53,7 @@ const IdentifierSchema = z.object({
 const IdDocumentSchema = z.object({ type: z.enum(IDENTITY_DOCUMENTS), value: IdentifierValueSchema });
 
 /** How a contact is related to the patient, as told: mother, father, aunt. */
-const RelationshipSchema = z.string().trim().min(2).max(40).regex(/^\P{C}+$/u, "One line, without control characters");
+const RelationshipSchema = z.string().trim().min(2).max(40).regex(ONE_LINE, "One line, without control characters");
 
 /** Someone to reach about the patient, such as a child's guardian. */
 const ContactSchema = z.object({

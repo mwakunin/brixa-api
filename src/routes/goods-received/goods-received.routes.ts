@@ -4,6 +4,7 @@ import { jsonContent, jsonContentRequired } from "stoker/openapi/helpers";
 import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { MAX_LINE_QUANTITY, RECEIVERS, STOCK_READERS } from "@/lib/goods-received";
+import { ONE_LINE } from "@/lib/validation";
 import { requireMembershipRole } from "@/middlewares/auth";
 import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
@@ -18,7 +19,7 @@ const readers = requireMembershipRole(...STOCK_READERS);
 
 const RefusalSchema = z.object({ message: z.string(), code: z.string(), line: z.number().optional() });
 const IdParamsSchema = z.object({ id: z.uuid() });
-const oneLine = (max: number) => z.string().trim().min(1).max(max).regex(/^\P{C}+$/u, "One line");
+const oneLine = (max: number) => z.string().trim().min(1).max(max).regex(ONE_LINE, "One line");
 
 const LineBodySchema = z.strictObject({
   stockItemId: z.uuid(),
@@ -45,7 +46,7 @@ const ReceiveBodySchema = z.strictObject({
   lines: z.array(LineBodySchema).min(1).max(100),
 });
 
-const ReverseBodySchema = z.strictObject({ reason: z.string().trim().min(3).max(200).regex(/^\P{C}+$/u, "One line") });
+const ReverseBodySchema = z.strictObject({ reason: z.string().trim().min(3).max(200).regex(ONE_LINE, "One line") });
 
 const ListQuerySchema = z.object({
   storeId: z.uuid().optional(),
