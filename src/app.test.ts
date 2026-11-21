@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import app from "@/app";
 import { appOrigin } from "@/lib/auth";
+import { ONE_LINE } from "@/lib/validation";
 import { resetDb, signedInUser } from "@/test/helpers";
 
 /**
@@ -80,5 +81,35 @@ describe("the API description", () => {
         .map(([method]) => `${method.toUpperCase()} ${path}`));
 
     expect(undeclared).toEqual([]);
+  });
+
+  // JSON Schema's `pattern` is the regular expression alone. zod-to-openapi 9.1.0 writes a flagged
+  // one's source with "/u" or "/i" left on its end, which no text can match.
+  it("writes every pattern as JSON Schema reads it, with no regex flags left on its end", async () => {
+    const doc = await (await app.request("/doc")).json();
+    const patterns: string[] = [];
+    const walk = (node: unknown): void => {
+      if (Array.isArray(node))
+        return node.forEach(walk);
+      if (node && typeof node === "object") {
+        for (const [key, value] of Object.entries(node)) {
+          if (key === "pattern" && typeof value === "string")
+            patterns.push(value);
+          else
+            walk(value);
+        }
+      }
+    };
+    walk(doc);
+
+    expect(patterns.length).toBeGreaterThan(50);
+    expect(patterns.filter(p => /\/[a-z]+$/.test(p))).toEqual([]);
+    expect(patterns).toContain(ONE_LINE.source);
+  });
+
+  it("says a tenant route's 404 can be what the path names, not only the facility", async () => {
+    const doc = await (await app.request("/doc")).json() as { paths: Record<string, Record<string, Operation & { responses: Record<string, { description: string }> }>> };
+
+    expect(doc.paths["/patients/{id}/contacts/{contactId}"].patch.responses["404"].description).toMatch(/what the path names/);
   });
 });
