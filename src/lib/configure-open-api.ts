@@ -5,6 +5,23 @@ import type { AppOpenAPI } from "./types";
 import packageJSON from "../../package.json" with { type: "json" };
 
 /**
+ * The flags zod-to-openapi left on a pattern, if any. It writes a flagged
+ * regex as `source/flags`. A source writes every slash it matches as `\/`
+ * outside a character class, and a class ends with `]`, so a slash with an
+ * even run of backslashes before it, followed only by flags, is the one it
+ * left: anchored or not.
+ */
+function flagsOf(pattern: string): { source: string; flags: string } | null {
+  const found = /\/([dgimsuvy]+)$/.exec(pattern);
+  if (!found)
+    return null;
+  let backslashes = 0;
+  for (let i = found.index - 1; i >= 0 && pattern[i] === "\\"; i--)
+    backslashes += 1;
+  return backslashes % 2 === 0 ? { source: pattern.slice(0, found.index), flags: found[1] } : null;
+}
+
+/**
  * A JSON Schema `pattern` is the regular expression alone, read with Unicode
  * semantics. zod-to-openapi 9.1.0 writes a flagged regex's source with its
  * flags left on (`…$/u`), which no text matches. `/u` is dropped, being how a
@@ -23,11 +40,11 @@ export function withPlainPatterns<T>(node: T): T {
       plain[key] = withPlainPatterns(value);
       continue;
     }
-    const flags = /\$\/([a-z]+)$/.exec(value)?.[1];
-    if (flags === undefined)
+    const flagged = flagsOf(value);
+    if (!flagged)
       plain[key] = value;
-    else if (flags === "u")
-      plain[key] = value.slice(0, -2);
+    else if (flagged.flags === "u")
+      plain[key] = flagged.source;
   }
   return plain as T;
 }

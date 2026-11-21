@@ -22,4 +22,15 @@ describe("patterns in the API description", () => {
       required: ["address"],
     });
   });
+
+  it("finds the flags whether or not the pattern is anchored, and never takes an escaped slash for them", () => {
+    const flagged = (pattern: string) => withPlainPatterns({ pattern });
+
+    // As zod-to-openapi writes /\p{L}+/u, /\p{L}+/i and /\\/u (one backslash).
+    expect(flagged("\\p{L}+/u")).toEqual({ pattern: "\\p{L}+" });
+    expect(flagged("[a-z]+/i")).toEqual({});
+    expect(flagged("\\\\/u")).toEqual({ pattern: "\\\\" });
+    // A source writes a slash it matches as \/, so this is "a/u" itself, with no flags.
+    expect(flagged("a\\/u")).toEqual({ pattern: "a\\/u" });
+  });
 });
