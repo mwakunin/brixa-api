@@ -43,8 +43,8 @@ export function entryJson(e: typeof queueEntries.$inferSelect): z.infer<typeof Q
   };
 }
 
-function pointJson(p: { id: string; name: string; kind: "triage" | "consultation"; consultationItemId: string | null; sensitiveCategory: "hiv" | "mental_health" | "gbv" | null; isActive: boolean }) {
-  return { id: p.id, name: p.name, kind: p.kind, consultationItemId: p.consultationItemId, sensitiveCategory: p.sensitiveCategory, isActive: p.isActive };
+function pointJson(p: { id: string; name: string; kind: "triage" | "consultation"; consultationItemId: string | null; sensitiveCategory: "hiv" | "mental_health" | "gbv" | null; isEmergencyArea: boolean; isActive: boolean }) {
+  return { id: p.id, name: p.name, kind: p.kind, consultationItemId: p.consultationItemId, sensitiveCategory: p.sensitiveCategory, emergencyArea: p.isEmergencyArea, isActive: p.isActive };
 }
 
 /** A queue refusal, or null to let the error through. Shared with the encounters handlers, whose opening joins a queue. */
@@ -79,8 +79,9 @@ export const createServicePoint: TenantRouteHandler<CreateServicePointRoute> = a
 
 export const updateServicePoint: TenantRouteHandler<UpdateServicePointRoute> = async (c) => {
   const { id } = c.req.valid("param");
-  const body = c.req.valid("json");
-  return answer(c, () => queues.updateServicePoint(c.var.db, c.var.facility.id, id, body, actorOf(c)), pointJson) as never;
+  const { emergencyArea, ...body } = c.req.valid("json");
+  const input = { ...body, ...(emergencyArea === undefined ? {} : { isEmergencyArea: emergencyArea }) };
+  return answer(c, () => queues.updateServicePoint(c.var.db, c.var.facility.id, id, input, actorOf(c)), pointJson) as never;
 };
 
 export const viewQueue: TenantRouteHandler<ViewQueueRoute> = async (c) => {

@@ -511,7 +511,9 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - an ended entry never changes, and no entry is deleted.
 - **Opening a visit joins a queue in the same step:**
   - `queueAt` names the point, and `null` joins none (a walk-in for the lab);
-  - left out, the patient joins the facility's triage point when it has exactly one.
+  - left out, the patient joins the facility's triage point when it has exactly one;
+  - **an emergency attendance** left out joins the emergency area instead, while one is marked and in use, so the front desk's Emergency button skips triage (the staff walkthrough, 2026-11-20). Without one, it joins triage as before.
+- **The emergency area** (`service_points.is_emergency_area`, added 2026-11-21): a clinic, and at most one a facility (a partial unique index, and a CHECK against triage). The facility admin marks it with `PATCH /service-points/{id}` (`emergencyArea`), audited with the point's other changes; marking a second is refused (`emergency_area_taken`) until the first is unmarked. `GET /service-points` shows it.
 - **Who:**
   - the queue staff (records clerks, nurses, ward nurses, doctors, clinical officers, the facility admin) view queues, send patients to one, and take a waiting patient out;
   - calling a patient in and finishing with them is a clinical act: a doctor, clinical officer, nurse or ward nurse with a current licence (`requireClinicalRole`).
