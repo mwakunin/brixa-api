@@ -1342,11 +1342,19 @@ export const servicePoints = pgTable("service_points", {
   consultationItemId: uuid(),
   /** A sensitive clinic (the HIV clinic, psychiatry): everything clinical recorded in a visit here is restricted (rule 27). */
   sensitiveCategory: text().$type<"hiv" | "mental_health" | "gbv">(),
+  /**
+   * The clinic an emergency attendance joins unless told otherwise, so the
+   * front desk's Emergency button skips triage (the staff walkthrough,
+   * 2026-11-20). One a facility, set by the facility admin.
+   */
+  isEmergencyArea: boolean().default(false).notNull(),
   isActive: boolean().default(true).notNull(),
   createdAt: createdAt(),
 }, t => [
   unique("service_points_facility_id_id_key").on(t.facilityId, t.id),
   unique("service_points_facility_id_name_key").on(t.facilityId, t.name),
+  uniqueIndex("service_points_one_emergency_area").on(t.facilityId).where(sql`${t.isEmergencyArea}`),
+  check("service_points_emergency_area_a_clinic", sql`${t.kind} = 'consultation' OR NOT ${t.isEmergencyArea}`),
   foreignKey({
     name: "service_points_consultation_item_fk",
     columns: [t.facilityId, t.consultationItemId],

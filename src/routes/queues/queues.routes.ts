@@ -35,6 +35,8 @@ const ServicePointSchema = z.object({
   consultationItemId: z.uuid().nullable(),
   /** A sensitive clinic: everything clinical recorded in a visit here is restricted (rule 27). */
   sensitiveCategory: sensitiveCategorySchema.nullable(),
+  /** The clinic an emergency attendance joins unless told otherwise, instead of triage. At most one. */
+  emergencyArea: z.boolean(),
   isActive: z.boolean(),
 });
 
@@ -89,9 +91,11 @@ const UpdateBodySchema = z.object({
   consultationItemId: z.uuid().nullable().optional(),
   /** Marks a clinic sensitive (the HIV clinic, psychiatry), or null to unmark it. Applies to its visits past and future. */
   sensitiveCategory: sensitiveCategorySchema.nullable().optional(),
+  /** Marks a clinic as the emergency area, where an emergency attendance goes instead of triage, or false to unmark it. */
+  emergencyArea: z.boolean().optional(),
 }).refine(
-  b => b.name !== undefined || b.isActive !== undefined || b.consultationItemId !== undefined || b.sensitiveCategory !== undefined,
-  "Change the name, whether it is in use, the consultation fee, or whether it is sensitive",
+  b => b.name !== undefined || b.isActive !== undefined || b.consultationItemId !== undefined || b.sensitiveCategory !== undefined || b.emergencyArea !== undefined,
+  "Change the name, whether it is in use, the consultation fee, whether it is sensitive, or whether it is the emergency area",
 );
 const JoinBodySchema = z.object({ servicePointId: z.uuid() });
 const FinishBodySchema = z.object({
@@ -151,7 +155,9 @@ export const updateServicePoint = createRoute({
   method: "patch",
   path: "/service-points/{id}",
   summary: "Change a service point",
-  description: "Rename it, retire it, or set a clinic's consultation fee. A point with patients still in its queue, or a clinic with appointments booked from today on, cannot be retired.",
+  description:
+    "Rename it, retire it, set a clinic's consultation fee, or mark a clinic as the emergency area (`emergency_area_taken` while another is). "
+    + "A point with patients still in its queue, or a clinic with appointments booked from today on, cannot be retired.",
   middleware: [adminOnly] as const,
   request: { headers: facilityHeaders, params: IdParamsSchema, body: jsonContentRequired(UpdateBodySchema, "The change") },
   responses: {

@@ -1,0 +1,3 @@
+ALTER TABLE "service_points" ADD COLUMN "is_emergency_area" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "service_points_one_emergency_area" ON "service_points" USING btree ("facility_id") WHERE "service_points"."is_emergency_area";--> statement-breakpoint
+ALTER TABLE "service_points" ADD CONSTRAINT "service_points_emergency_area_a_clinic" CHECK ("service_points"."kind" = 'consultation' OR NOT "service_points"."is_emergency_area");

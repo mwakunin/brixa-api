@@ -15,7 +15,7 @@ import { hasStandingNotes } from "./notes";
 import { issueNumber } from "./number-series";
 import { hasStandingObservations } from "./observations";
 import { hasStandingOrders } from "./orders";
-import { attendingOfEach, defaultTriagePoint, endLiveEntry, joinLocked, liveEntryOf, liveEntryOfEach } from "./queues";
+import { attendingOfEach, defaultFirstPoint, endLiveEntry, joinLocked, liveEntryOf, liveEntryOfEach } from "./queues";
 import { bedOccupied, bedWithWard } from "./wards";
 
 /**
@@ -130,7 +130,8 @@ async function endOpenStay(tx: AppDb, admissionId: string, at: Date, actor: Pati
  *
  * The patient joins a queue in the same step: `queueAt` names the service
  * point, `null` joins none (a walk-in for the lab), and leaving it out joins
- * the facility's triage point when it has exactly one.
+ * the facility's triage point when it has exactly one; an emergency
+ * attendance joins the emergency area instead, while one is marked.
  */
 export async function openEncounter(
   tx: AppDb,
@@ -167,7 +168,7 @@ export async function openEncounter(
     detail: { patientId: input.patientId, kind: input.kind },
   });
 
-  const queueAt = input.queueAt === undefined ? await defaultTriagePoint(tx) : input.queueAt;
+  const queueAt = input.queueAt === undefined ? await defaultFirstPoint(tx, input.kind) : input.queueAt;
   if (queueAt)
     await joinLocked(tx, facilityId, encounter, queueAt, actor, at);
   return encounter;

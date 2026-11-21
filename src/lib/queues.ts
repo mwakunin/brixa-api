@@ -59,7 +59,8 @@ export type QueueErrorCode
     | "come_back_at_clinic_only"
     | "fee_unpriced"
     | "not_a_clinic"
-    | "not_a_consultation_item";
+    | "not_a_consultation_item"
+    | "emergency_area_taken";
 
 export const QUEUE_NOT_FOUND: ReadonlySet<QueueErrorCode> = new Set(["service_point_not_found", "encounter_not_found", "entry_not_found"]);
 
@@ -82,8 +83,9 @@ export class QueueError extends Error {
       priority_at_triage_only: "Only triage sets how soon the patient must be seen",
       come_back_at_clinic_only: "Only a clinic asks a patient to come back with their results",
       fee_unpriced: "This clinic's consultation fee has no price today; the facility admin or finance manager sets it",
-      not_a_clinic: "Only a clinic charges a consultation fee; triage has none",
+      not_a_clinic: "Only a clinic has a consultation fee, a sensitive mark or the emergency area; triage has none of them",
       not_a_consultation_item: "That item is not an active consultation item",
+      emergency_area_taken: "Another clinic is the emergency area; unmark it first",
     }[code]);
     this.name = "QueueError";
   }
@@ -121,15 +123,16 @@ export async function createServicePoint(
 }
 
 /**
- * Renames or retires a service point, or sets a clinic's consultation fee
- * item (null for none). One with patients still in its queue stays in use. A
- * fee change applies to patients who join from now on.
+ * Renames or retires a service point, sets a clinic's consultation fee item
+ * (null for none), or marks a clinic as the emergency area. One with patients
+ * still in its queue stays in use. A fee change applies to patients who join
+ * from now on.
  */
 export async function updateServicePoint(
   tx: AppDb,
   facilityId: string,
   id: string,
-  input: { name?: string; isActive?: boolean; consultationItemId?: string | null; sensitiveCategory?: ServicePointRow["sensitiveCategory"] },
+  input: { name?: string; isActive?: boolean; consultationItemId?: string | null; sensitiveCategory?: ServicePointRow["sensitiveCategory"]; isEmergencyArea?: boolean },
   actor: PatientActor,
 ): Promise<ServicePointRow> {
   const [current] = await tx.select().from(servicePoints).where(eq(servicePoints.id, id)).for("update").limit(1);
@@ -150,14 +153,23 @@ export async function updateServicePoint(
   // Only a clinic is marked sensitive: triage sees everyone (rule 27).
   if (input.sensitiveCategory && current.kind !== "consultation")
     throw new QueueError("not_a_clinic");
+  // The emergency area is where an emergency goes instead of triage: a clinic, one a facility.
+  if (input.isEmergencyArea && !current.isEmergencyArea) {
+    if (current.kind !== "consultation")
+      throw new QueueError("not_a_clinic");
+    const [other] = await tx.select({ id: servicePoints.id }).from(servicePoints).where(eq(servicePoints.isEmergencyArea, true)).limit(1);
+    if (other)
+      throw new QueueError("emergency_area_taken");
+  }
 
   let point: ServicePointRow;
   try {
     [point] = await tx.update(servicePoints).set(input).where(eq(servicePoints.id, id)).returning();
   }
   catch (err) {
+    // Two marked at once: the index lets one through.
     if (isUniqueViolation(err))
-      throw new QueueError("name_taken");
+      throw new QueueError(pgConstraintName(err) === "service_points_one_emergency_area" ? "emergency_area_taken" : "name_taken");
     throw err;
   }
 
@@ -169,8 +181,8 @@ export async function updateServicePoint(
     entityId: id,
     summary: `Updated service point ${point.name}`,
     detail: {
-      before: { name: current.name, isActive: current.isActive, consultationItemId: current.consultationItemId, sensitiveCategory: current.sensitiveCategory },
-      after: { name: point.name, isActive: point.isActive, consultationItemId: point.consultationItemId, sensitiveCategory: point.sensitiveCategory },
+      before: { name: current.name, isActive: current.isActive, consultationItemId: current.consultationItemId, sensitiveCategory: current.sensitiveCategory, emergencyArea: current.isEmergencyArea },
+      after: { name: point.name, isActive: point.isActive, consultationItemId: point.consultationItemId, sensitiveCategory: point.sensitiveCategory, emergencyArea: point.isEmergencyArea },
     },
   });
   return point;
@@ -199,6 +211,8 @@ export interface ListedServicePoint {
   kind: ServicePointKind;
   consultationItemId: string | null;
   sensitiveCategory: ServicePointRow["sensitiveCategory"];
+  /** Where an emergency attendance goes unless told otherwise. */
+  emergencyArea: boolean;
   isActive: boolean;
   /** How many are waiting there now. */
   waiting: number;
@@ -220,6 +234,7 @@ export async function listServicePoints(tx: AppDb): Promise<ListedServicePoint[]
       kind: servicePoints.kind,
       consultationItemId: servicePoints.consultationItemId,
       sensitiveCategory: servicePoints.sensitiveCategory,
+      emergencyArea: servicePoints.isEmergencyArea,
       isActive: servicePoints.isActive,
       waiting: sql<number>`coalesce(${waiting.n}, 0)::int`,
     })
@@ -236,6 +251,25 @@ export async function defaultTriagePoint(tx: AppDb): Promise<string | null> {
     .where(and(eq(servicePoints.kind, "triage"), eq(servicePoints.isActive, true)))
     .limit(2);
   return points.length === 1 ? points[0].id : null;
+}
+
+/**
+ * Where a new visit of this kind joins unless told otherwise. An emergency
+ * attendance goes straight to the emergency area while one is marked and in
+ * use (the staff walkthrough, 2026-11-20); without one, it joins triage, as
+ * an outpatient visit does.
+ */
+export async function defaultFirstPoint(tx: AppDb, kind: "opd" | "emergency"): Promise<string | null> {
+  if (kind === "emergency") {
+    const [area] = await tx
+      .select({ id: servicePoints.id })
+      .from(servicePoints)
+      .where(and(eq(servicePoints.isEmergencyArea, true), eq(servicePoints.isActive, true)))
+      .limit(1);
+    if (area)
+      return area.id;
+  }
+  return defaultTriagePoint(tx);
 }
 
 // ---------------------------------------------------------------------------
@@ -555,7 +589,7 @@ export async function viewQueue(tx: AppDb, facilityId: string, servicePointId: s
   });
 
   return {
-    servicePoint: { id: point.id, name: point.name, kind: point.kind, consultationItemId: point.consultationItemId, sensitiveCategory: point.sensitiveCategory, isActive: point.isActive },
+    servicePoint: { id: point.id, name: point.name, kind: point.kind, consultationItemId: point.consultationItemId, sensitiveCategory: point.sensitiveCategory, emergencyArea: point.isEmergencyArea, isActive: point.isActive },
     entries: rows.map(r => ({
       entryId: r.entryId,
       encounterId: r.encounterId,

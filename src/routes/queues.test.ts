@@ -71,8 +71,8 @@ describe("service points", () => {
     const listed = await (await call("GET", "/service-points", c.facility.id, c.cashier)).json();
 
     expect(listed.servicePoints).toEqual([
-      { id: triage, name: "Triage", kind: "triage", consultationItemId: null, sensitiveCategory: null, isActive: true, waiting: 0 },
-      { id: gopd, name: "General OPD", kind: "consultation", consultationItemId: null, sensitiveCategory: null, isActive: true, waiting: 1 },
+      { id: triage, name: "Triage", kind: "triage", consultationItemId: null, sensitiveCategory: null, emergencyArea: false, isActive: true, waiting: 0 },
+      { id: gopd, name: "General OPD", kind: "consultation", consultationItemId: null, sensitiveCategory: null, emergencyArea: false, isActive: true, waiting: 1 },
       expect.objectContaining({ name: "MCH", waiting: 0 }),
     ]);
     const again = await post(c, "/service-points", c.admin, { name: "MCH", kind: "consultation" });
@@ -125,6 +125,45 @@ describe("a visit's queue", () => {
 
     expect((await c.visit()).queue).toBeNull();
     expect((await c.visit({ queueAt: b })).queue).toMatchObject({ servicePointName: "Triage B" });
+  });
+
+  it("sends an emergency attendance straight to the emergency area, and an outpatient visit to triage as before", async () => {
+    const c = await clinic();
+    const triage = await c.point("Triage", "triage");
+    const casualty = await c.point("Casualty", "consultation");
+    // Without an emergency area, an emergency joins triage, as it always did.
+    expect((await c.visit({ kind: "emergency" })).queue).toMatchObject({ servicePointId: triage });
+
+    const marked = await call("PATCH", `/service-points/${casualty}`, c.facility.id, c.admin, { emergencyArea: true });
+
+    expect(marked.status).toBe(200);
+    expect(await marked.json()).toMatchObject({ id: casualty, emergencyArea: true });
+    const listed = (await (await call("GET", "/service-points", c.facility.id, c.clerk)).json()).servicePoints;
+    expect(listed.map((p: { name: string; emergencyArea: boolean }) => [p.name, p.emergencyArea])).toEqual([["Triage", false], ["Casualty", true]]);
+    expect((await c.visit({ kind: "emergency" })).queue).toMatchObject({ servicePointId: casualty, servicePointName: "Casualty" });
+    expect((await c.visit()).queue).toMatchObject({ servicePointId: triage });
+    const [audited] = await db.select().from(auditLog).where(and(eq(auditLog.action, "service_point.updated"), eq(auditLog.entityId, casualty)));
+    expect(audited.detail).toMatchObject({ before: { emergencyArea: false }, after: { emergencyArea: true } });
+  });
+
+  it("has one emergency area at most, a clinic, and never a retired one", async () => {
+    const c = await clinic();
+    const triage = await c.point("Triage", "triage");
+    const casualty = await c.point("Casualty", "consultation");
+    const mch = await c.point("MCH", "consultation");
+    const mark = (id: string, emergencyArea = true) => call("PATCH", `/service-points/${id}`, c.facility.id, c.admin, { emergencyArea });
+    const codeOf = async (res: Response) => [res.status, (await res.json()).code];
+
+    expect(await codeOf(await mark(triage))).toEqual([409, "not_a_clinic"]);
+    expect((await mark(casualty)).status).toBe(200);
+    expect(await codeOf(await mark(mch))).toEqual([409, "emergency_area_taken"]);
+    expect((await mark(casualty, false)).status).toBe(200);
+    expect((await mark(mch)).status).toBe(200);
+    expect((await call("PATCH", `/service-points/${casualty}`, c.facility.id, c.clerk, { emergencyArea: true })).status).toBe(403);
+
+    // A retired emergency area takes no one: the emergency joins triage.
+    expect((await call("PATCH", `/service-points/${mch}`, c.facility.id, c.admin, { isActive: false })).status).toBe(200);
+    expect((await c.visit({ kind: "emergency" })).queue).toMatchObject({ servicePointId: triage });
   });
 
   it("answers a queue that does not exist as a mistake in queueAt, not a missing page", async () => {
