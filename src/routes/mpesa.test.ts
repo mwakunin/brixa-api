@@ -158,6 +158,8 @@ describe("paybill payments", () => {
     expect(payment).toMatchObject({ method: "mpesa_c2b", receivedBy: null, reference: transaction.transactionId });
     const [receipt] = await db.select().from(documents).where(eq(documents.id, payment.documentId));
     expect(receipt.content.fields).toContainEqual({ label: "Paid by", value: "M-Pesa" });
+    // Nobody received it at a desk.
+    expect(receipt.content.fields).toContainEqual({ label: "Received by", value: "M-Pesa, matched automatically" });
     const [received] = await db.select().from(auditLog).where(eq(auditLog.action, "mpesa.received"));
     expect(received.actorId).toBeNull();
   });

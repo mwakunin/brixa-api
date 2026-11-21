@@ -1,3 +1,4 @@
+import type { z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 
 import * as HttpStatusCodes from "stoker/http-status-codes";
@@ -9,14 +10,7 @@ import * as dx from "@/lib/diagnoses";
 import { searchIcd as findIcd } from "@/lib/icd11";
 import { restrictedJson } from "@/lib/validation";
 
-import type {
-  ConfirmDiagnosisRoute,
-  EndDiagnosisRoute,
-  ListDiagnosesRoute,
-  MakePrincipalRoute,
-  RecordDiagnosisRoute,
-  SearchIcdRoute,
-} from "./diagnoses.routes";
+import type { ConfirmDiagnosisRoute, DiagnosisSchema, EndDiagnosisRoute, ListDiagnosesRoute, MakePrincipalRoute, RecordDiagnosisRoute, SearchIcdRoute } from "./diagnoses.routes";
 
 function actorOf(c: Context<TenantBindings>) {
   return { userId: c.var.user!.id, membershipId: c.var.membership.id };
@@ -41,7 +35,7 @@ function refusal(c: Context, err: unknown) {
 
 type Listed = Awaited<ReturnType<typeof dx.diagnosesOf>>[number];
 
-function diagnosisJson(d: Listed) {
+export function diagnosisJson(d: Listed): z.infer<typeof DiagnosisSchema> {
   return {
     ...d,
     diagnosedAt: d.diagnosedAt.toISOString(),

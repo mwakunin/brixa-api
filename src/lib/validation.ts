@@ -1,6 +1,14 @@
 import { z } from "@hono/zod-openapi";
 
 /**
+ * One line of text: no control or invisible character (`\p{C}`), and no line
+ * or paragraph separator (U+2028, U+2029), which break a line as a newline
+ * does though they are not in `\p{C}`. Fields before 2026-11-21 still use
+ * `\P{C}` alone.
+ */
+export const ONE_LINE = /^[^\p{C}\p{Zl}\p{Zp}]+$/u;
+
+/**
  * Text that ends up in an email from our domain.
  *
  * An invitation names its recipient and its facility, so whoever writes those

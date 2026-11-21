@@ -6,7 +6,7 @@ import type { MembershipRole } from "@/db/schema";
 import { clinicalNotes, encounters, memberships, user } from "@/db/schema";
 
 import type { PatientActor } from "./patients";
-import type { Filtered, SensitiveCategory } from "./sensitivity";
+import type { Filtered, Reader, SensitiveCategory } from "./sensitivity";
 
 import { recordAudit } from "./audit";
 import { alertRecorders, categoriesOf, clinicCategoriesOf, filterFor, isRestricted, patientOfEncounter, readDetail, readerOf } from "./sensitivity";
@@ -409,15 +409,7 @@ export async function listNotes(tx: AppDb, facilityId: string, encounterId: stri
   if (!encounter)
     throw new NoteError("encounter_not_found");
 
-  // The notes first, then the clinics: a clinic joined before a note was written is then always seen (each read is its own snapshot).
-  const all = await notesOf(tx, encounterId, actor);
-  const clinics = (await clinicCategoriesOf(tx, [encounterId])).get(encounterId);
-  const listed = filterFor(
-    await readerOf(tx, encounter.patientId, actor),
-    all,
-    n => ({ categories: categoriesOf(clinics, [n.sensitiveCategory]), recordedBy: [n.writtenBy.membershipId] }),
-    n => n.createdAt,
-  );
+  const listed = await notesSeen(tx, encounterId, await readerOf(tx, encounter.patientId, actor), actor);
   await recordAudit(tx, {
     facilityId,
     actorId: actor.userId,
@@ -429,6 +421,19 @@ export async function listNotes(tx: AppDb, facilityId: string, encounterId: stri
   });
   await alertRecorders(tx, facilityId, listed.viaGrant, listed.viaGrantRecorders, actor);
   return listed;
+}
+
+/** An encounter's notes as `reader` may see them (rule 27), for a read that audits itself. */
+export async function notesSeen(tx: AppDb, encounterId: string, reader: Reader, actor: PatientActor): Promise<Filtered<ShownNote>> {
+  // The notes first, then the clinics: a clinic joined before a note was written is then always seen (each read is its own snapshot).
+  const all = await notesOf(tx, encounterId, actor);
+  const clinics = (await clinicCategoriesOf(tx, [encounterId])).get(encounterId);
+  return filterFor(
+    reader,
+    all,
+    n => ({ categories: categoriesOf(clinics, [n.sensitiveCategory]), recordedBy: [n.writtenBy.membershipId] }),
+    n => n.createdAt,
+  );
 }
 
 /** One note as `reader` sees it, for answering a write. */

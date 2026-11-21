@@ -8,6 +8,7 @@ import type { PatientActor } from "./patients";
 import type { WorklistPatient } from "./worklist-patient";
 
 import { recordAudit } from "./audit";
+import { businessDate } from "./dates";
 import { DispenseError } from "./dispensing";
 import { paidCharges } from "./specimens";
 import { patientColumns, patientOf } from "./worklist-patient";
@@ -32,6 +33,73 @@ export interface WaitingMedicine {
   /** Prepared and waiting to be handed over. */
   prepared: boolean;
   controlledSchedule: string | null;
+  /** How the pharmacy's shelf stands for it, measured against this medicine alone: `stockFlagOf`. */
+  stockFlag: StockFlag;
+}
+
+/**
+ * A medicine the pharmacy cannot fill from its shelf (gap 4, from the staff
+ * walkthrough of 2026-11-20): `out` when it holds nothing in date that fills
+ * it, `low` when it holds less than is still owed. Null flags nothing.
+ */
+export type StockFlag = "low" | "out" | null;
+
+/** A pharmacy's in-date stock of one drug, from its items not retired, in base units. */
+export interface DrugOnShelf {
+  total: number;
+  /** By base unit, lowercased: one unit is never counted as another. */
+  byUnit: Map<string, number>;
+}
+
+/**
+ * The flag of a medicine still to give. Null once it is prepared, as its
+ * stock is taken. Low is told only where it can be measured: when all the
+ * shelf holds of it is in the prescription's dose unit, and nothing has
+ * gone out in another unit, since one unit is never counted as another.
+ */
+export function stockFlagOf(medicine: Pick<WaitingMedicine, "doseUnit" | "quantity" | "given" | "givenOtherUnits" | "prepared">, shelf: DrugOnShelf | undefined): StockFlag {
+  if (medicine.prepared)
+    return null;
+  if (!shelf || shelf.total <= 0)
+    return "out";
+  const inDoseUnit = shelf.byUnit.get(medicine.doseUnit.toLowerCase()) ?? 0;
+  if (medicine.givenOtherUnits || inDoseUnit < shelf.total)
+    return null;
+  return inDoseUnit < Math.ceil(medicine.quantity - medicine.given) ? "low" : null;
+}
+
+/** In-date stock of each of these drugs on a store's shelf, from items not retired. */
+async function onShelf(tx: AppDb, storeId: string, drugCodes: string[], today: string): Promise<Map<string, DrugOnShelf>> {
+  if (drugCodes.length === 0)
+    return new Map();
+  const rows = await tx
+    .select({ drugCode: stockItems.drugCode, unit: sql<string>`lower(${stockItems.baseUnit})`, onHand: sql<string>`sum(${stockMovements.quantity})` })
+    .from(stockMovements)
+    .innerJoin(stockBatches, eq(stockBatches.id, stockMovements.batchId))
+    .innerJoin(stockItems, eq(stockItems.id, stockBatches.stockItemId))
+    .where(and(
+      eq(stockMovements.storeId, storeId),
+      inArray(stockItems.drugCode, [...new Set(drugCodes)]),
+      eq(stockItems.isActive, true),
+      sql`(${stockBatches.expiresOn} IS NULL OR ${stockBatches.expiresOn} >= ${today})`,
+    ))
+    .groupBy(stockItems.drugCode, sql`lower(${stockItems.baseUnit})`);
+  const shelf = new Map<string, DrugOnShelf>();
+  for (const r of rows) {
+    const drug = shelf.get(r.drugCode!) ?? { total: 0, byUnit: new Map() };
+    drug.total += Number(r.onHand);
+    drug.byUnit.set(r.unit, Number(r.onHand));
+    shelf.set(r.drugCode!, drug);
+  }
+  return shelf;
+}
+
+/** The pharmacy the list's stock is measured in: the one named, or the facility's only open one; null when there are several. */
+async function measuredIn(tx: AppDb, storeId: string | undefined): Promise<{ id: string; name: string } | null> {
+  const open = await tx.select({ id: stores.id, name: stores.name }).from(stores).where(and(eq(stores.kind, "pharmacy"), eq(stores.isActive, true), storeId ? eq(stores.id, storeId) : undefined));
+  if (storeId && open.length === 0)
+    throw new DispenseError("not_a_pharmacy");
+  return open.length === 1 ? open[0] : null;
 }
 
 export interface WaitingPrescription {
@@ -47,8 +115,8 @@ export interface WaitingPrescription {
 
 const visitPatient = and(eq(encounters.id, orders.encounterId), eq(encounters.status, "open"));
 
-/** Medicines neither finished nor cancelled on open visits, by prescription, oldest first. */
-async function waiting(tx: AppDb): Promise<WaitingPrescription[]> {
+/** Medicines neither finished nor cancelled on open visits, by prescription, oldest first, flagged against this pharmacy's shelf if one is given. */
+async function waiting(tx: AppDb, pharmacyId: string | null, today: string): Promise<WaitingPrescription[]> {
   const pending = and(isNotNull(orderItems.drugCode), eq(orderItems.status, "ordered"));
   // The oldest prescriptions first, a bounded number, each then read whole.
   const oldest = await tx
@@ -103,11 +171,12 @@ async function waiting(tx: AppDb): Promise<WaitingPrescription[]> {
     else
       otherUnits.add(l.orderItemId);
   }
+  const shelf = pharmacyId ? await onShelf(tx, pharmacyId, rows.map(r => r.medicine.drugCode!), today) : null;
 
   const byOrder = new Map<string, WaitingPrescription>();
   for (const r of rows) {
     const prescription = byOrder.get(r.orderId) ?? { orderId: r.orderId, number: r.number, encounterId: r.encounterId, patient: patientOf(r), prescribedByName: r.prescribedByName, orderedAt: r.orderedAt, medicines: [] };
-    prescription.medicines.push({
+    const medicine = {
       orderItemId: r.medicine.id,
       drugCode: r.medicine.drugCode!,
       description: r.medicine.drugDescription!,
@@ -117,7 +186,8 @@ async function waiting(tx: AppDb): Promise<WaitingPrescription[]> {
       givenOtherUnits: otherUnits.has(r.medicine.id),
       prepared: prepared.has(r.medicine.id),
       controlledSchedule: r.controlledSchedule,
-    });
+    };
+    prescription.medicines.push({ ...medicine, stockFlag: shelf ? stockFlagOf(medicine, shelf.get(medicine.drugCode)) : null });
     byOrder.set(r.orderId, prescription);
   }
   return [...byOrder.values()];
@@ -126,9 +196,18 @@ async function waiting(tx: AppDb): Promise<WaitingPrescription[]> {
 /**
  * The pharmacy's list: prescriptions with a medicine still to give, and
  * dispenses prepared and not yet collected. Audited, as it names patients.
+ * Each medicine is flagged against the shelf of the pharmacy named, or of
+ * the facility's only open one; with several and none named, nothing is
+ * flagged and `stockIn` is null.
  */
-export async function pharmacyWorklist(tx: AppDb, facilityId: string, actor: PatientActor): Promise<{ waiting: WaitingPrescription[]; prepared: ShownDispense[] }> {
-  const list = await waiting(tx);
+export async function pharmacyWorklist(
+  tx: AppDb,
+  facilityId: string,
+  actor: PatientActor,
+  options: { storeId?: string; today?: string } = {},
+): Promise<{ stockIn: { id: string; name: string } | null; waiting: WaitingPrescription[]; prepared: ShownDispense[] }> {
+  const stockIn = await measuredIn(tx, options.storeId);
+  const list = await waiting(tx, stockIn?.id ?? null, options.today ?? businessDate());
   const preparedIds = await tx.select({ id: dispenses.id }).from(dispenses).where(eq(dispenses.status, "prepared")).orderBy(asc(dispenses.preparedAt)).limit(WORKLIST_LIMIT);
   const prepared = await dispensesShown(tx, preparedIds.map(d => d.id));
   await recordAudit(tx, {
@@ -139,7 +218,7 @@ export async function pharmacyWorklist(tx: AppDb, facilityId: string, actor: Pat
     entityId: facilityId,
     summary: `Viewed the pharmacy's list (${list.length} prescriptions waiting, ${prepared.length} prepared)`,
   });
-  return { waiting: list, prepared };
+  return { stockIn, waiting: list, prepared };
 }
 
 interface Step { byName: string; at: Date }

@@ -180,3 +180,44 @@ describe("verifying a document", () => {
     expect((await check()).status).toBe(429);
   });
 });
+
+describe("the facility's address", () => {
+  beforeEach(async () => {
+    await resetDb();
+  });
+
+  const change = (facilityId: string, who: Awaited<ReturnType<typeof signedInUserAt>>, body: unknown) =>
+    app.request("/facility", { method: "PATCH", headers: { ...facilityHeaders(facilityId, who), "content-type": "application/json" }, body: JSON.stringify(body) });
+
+  it("is set by the facility admin, audited, and printed at the head of each document issued after", async () => {
+    const { facility, document: before } = await receiptAt();
+    const admin = await signedInUserAt(facility.id, ["facility_admin"]);
+    const clerk = await signedInUserAt(facility.id, ["records_clerk"]);
+
+    expect((await change(facility.id, clerk, { address: "P.O. Box 120-20100, Nakuru" })).status).toBe(403);
+    const set = await change(facility.id, admin, { address: "  P.O. Box 120-20100, Nakuru " });
+    expect(set.status).toBe(200);
+    expect(await set.json()).toMatchObject({ address: "P.O. Box 120-20100, Nakuru", phone: null });
+    const [audited] = (await viewsOf(facility.id)).filter(e => e.action === "facility.updated");
+    expect(audited).toMatchObject({ summary: "Set the facility's address", detail: { address: { from: null, to: "P.O. Box 120-20100, Nakuru" } } });
+
+    const after = await runAsFacility(facility.id, tx => issueDocument(tx, { facilityId: facility.id, kind: "receipt", content: RECEIPT, issuedBy: null }));
+    expect(JSON.stringify(documentDefinition(after).content)).toContain("P.O. Box 120-20100, Nakuru");
+    // One issued before keeps the header it had.
+    expect(JSON.stringify(documentDefinition(before).content)).not.toContain("P.O. Box");
+  });
+
+  it("is one plain line, at most 200 characters, and cleared with null", async () => {
+    const { facility } = await receiptAt();
+    const admin = await signedInUserAt(facility.id, ["facility_admin"]);
+
+    // A line or paragraph separator breaks a line as a newline does.
+    for (const address of ["P.O. Box 120\nNakuru", "P.O. Box 120\u2028Nakuru", "P.O. Box 120\u2029Nakuru", "x".repeat(201), "  "])
+      expect((await change(facility.id, admin, { address })).status).toBe(422);
+    expect((await change(facility.id, admin, {})).status).toBe(422);
+
+    await change(facility.id, admin, { address: "Kenyatta Avenue, Nakuru", phone: "0722 000 111" });
+    const cleared = await change(facility.id, admin, { address: null });
+    expect(await cleared.json()).toMatchObject({ address: null, phone: "+254722000111" });
+  });
+});

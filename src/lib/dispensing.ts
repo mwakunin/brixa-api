@@ -158,7 +158,7 @@ async function handedOverOf(tx: AppDb, orderItemIds: string[]): Promise<Map<stri
 interface PlannedLine {
   line: PrepareLine;
   medicine: MedicineRow;
-  item: { id: string; billableItemId: string; code: string };
+  item: { id: string; billableItemId: string; code: string; name: string; baseUnit: string };
   quantity: number;
   completes: boolean;
 }
@@ -188,7 +188,7 @@ async function planLines(tx: AppDb, orderId: string, lines: PrepareLine[], actor
   const preparing = await beingPrepared(tx, ids);
   const given = await handedOverOf(tx, ids);
   const items = await tx
-    .select({ id: stockItems.id, billableItemId: stockItems.billableItemId, drugCode: stockItems.drugCode, baseUnit: stockItems.baseUnit, isActive: stockItems.isActive, schedule: drugCatalogue.controlledSchedule, code: billableItems.code })
+    .select({ id: stockItems.id, billableItemId: stockItems.billableItemId, drugCode: stockItems.drugCode, baseUnit: stockItems.baseUnit, isActive: stockItems.isActive, schedule: drugCatalogue.controlledSchedule, code: billableItems.code, name: billableItems.name })
     .from(stockItems)
     .innerJoin(billableItems, eq(billableItems.id, stockItems.billableItemId))
     .leftJoin(drugCatalogue, eq(drugCatalogue.code, stockItems.drugCode))
@@ -216,18 +216,29 @@ async function planLines(tx: AppDb, orderId: string, lines: PrepareLine[], actor
   });
 }
 
+export interface PrepareInput {
+  orderId: string;
+  storeId?: string;
+  lines: PrepareLine[];
+}
+
+interface Plan {
+  order: { id: string; encounterId: string };
+  storeId: string;
+  serviceDate: string;
+  planned: PlannedLine[];
+  /** Each line's price, and its charge as it would be captured. */
+  prices: { priceListItemId: string; unitPriceCents: number; amountCents: number }[];
+  /** The batches each line takes. */
+  taken: Taken[][];
+}
+
 /**
- * Prepares a prescription from a pharmacy: takes each medicine's stock,
- * earliest expiry first unless batches are named, and charges it. A
- * refused line refuses the whole dispense, and nothing of it is kept.
+ * Everything preparing checks before it writes: the visit, each line, the
+ * pharmacy, each line's price and charge, and the batches it would take.
+ * Refuses as preparing refuses, naming the line. Writes nothing.
  */
-export async function prepareDispense(
-  tx: AppDb,
-  facilityId: string,
-  input: { orderId: string; storeId?: string; lines: PrepareLine[] },
-  actor: DispenseActor,
-  at = new Date(),
-): Promise<DispenseRow> {
+async function planDispense(tx: AppDb, facilityId: string, input: PrepareInput, actor: DispenseActor, at: Date): Promise<Plan> {
   const [order] = await tx.select({ id: orders.id, encounterId: orders.encounterId, documentId: orders.documentId }).from(orders).where(eq(orders.id, input.orderId)).limit(1);
   if (!order?.documentId)
     throw new DispenseError("prescription_not_found");
@@ -244,16 +255,68 @@ export async function prepareDispense(
       throw new DispenseError("not_priced", index + 1);
     // Checked before anything is taken: one charge holds at most KES 20 million, and rounding refuses more.
     try {
-      chargeAmountCents(String(p.quantity), price.unitPriceCents);
+      prices.push({ ...price, amountCents: chargeAmountCents(String(p.quantity), price.unitPriceCents) });
     }
     catch (err) {
       if (err instanceof RangeError)
         throw new DispenseError("amount_too_large", index + 1);
       throw err;
     }
-    prices.push(price);
   }
   const taken = await allocate(tx, facilityId, storeId, planned.map(p => ({ stockItemId: p.item.id, quantity: p.line.batches ? undefined : p.quantity, batches: p.line.batches })), serviceDate);
+  return { order, storeId, serviceDate, planned, prices, taken };
+}
+
+/** One line of a quote: what it would give, and its charge. */
+export interface QuotedLine {
+  orderItemId: string;
+  stockItemId: string;
+  code: string;
+  name: string;
+  baseUnit: string;
+  quantity: number;
+  completes: boolean;
+  /** Per base unit, on the cash price list today. */
+  unitPriceCents: number;
+  amountCents: number;
+}
+
+/**
+ * What preparing these lines would charge, line by line and in all, so the
+ * patient can decide how much to buy (gap 11, from the staff walkthrough of
+ * 2026-11-20). Checked and refused exactly as preparing would be; nothing
+ * is taken, charged or recorded. Not audited: it answers prices, and names
+ * no patient.
+ */
+export async function quoteDispense(tx: AppDb, facilityId: string, input: PrepareInput, actor: DispenseActor, at = new Date()): Promise<{ lines: QuotedLine[]; totalCents: number }> {
+  const { planned, prices } = await planDispense(tx, facilityId, input, actor, at);
+  const lines = planned.map((p, index) => ({
+    orderItemId: p.medicine.id,
+    stockItemId: p.item.id,
+    code: p.item.code,
+    name: p.item.name,
+    baseUnit: p.item.baseUnit,
+    quantity: p.quantity,
+    completes: p.completes,
+    unitPriceCents: prices[index].unitPriceCents,
+    amountCents: prices[index].amountCents,
+  }));
+  return { lines, totalCents: lines.reduce((sum, l) => sum + l.amountCents, 0) };
+}
+
+/**
+ * Prepares a prescription from a pharmacy: takes each medicine's stock,
+ * earliest expiry first unless batches are named, and charges it. A
+ * refused line refuses the whole dispense, and nothing of it is kept.
+ */
+export async function prepareDispense(
+  tx: AppDb,
+  facilityId: string,
+  input: PrepareInput,
+  actor: DispenseActor,
+  at = new Date(),
+): Promise<DispenseRow> {
+  const { order, storeId, serviceDate, planned, prices, taken } = await planDispense(tx, facilityId, input, actor, at);
 
   const [dispense] = await tx.insert(dispenses).values({ facilityId, encounterId: order.encounterId, orderId: order.id, storeId, status: "prepared", preparedBy: actor.membershipId, preparedAt: at }).returning();
   for (const [index, p] of planned.entries())

@@ -38,7 +38,7 @@ const IcdMatchSchema = z.object({
   residual: z.boolean(),
 });
 
-const DiagnosisSchema = z.object({
+export const DiagnosisSchema = z.object({
   id: z.uuid(),
   code: z.string(),
   title: z.string(),

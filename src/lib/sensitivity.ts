@@ -325,17 +325,23 @@ export async function documentSight(
 
 /**
  * The members who recorded a patient's restricted records: told when someone
- * breaks the glass on them. Notes, diagnoses and orders; a result's owner is
- * the clinician who ordered it.
+ * breaks the glass on them. Notes, diagnoses, orders, and a sensitive
+ * clinic's complaint; a result's owner is the clinician who ordered it.
  */
 async function ownersOf(tx: AppDb, patientId: string): Promise<Set<string>> {
-  const visits = await tx.select({ id: encounters.id }).from(encounters).where(eq(encounters.patientId, patientId));
+  const visits = await tx.select({ id: encounters.id, complaintBy: encounters.complaintRecordedBy }).from(encounters).where(eq(encounters.patientId, patientId));
   const ids = visits.map(v => v.id);
   if (ids.length === 0)
     return new Set();
   const clinics = await clinicCategoriesOf(tx, ids);
   const sensitiveVisit = (id: string) => (clinics.get(id)?.size ?? 0) > 0;
   const owners = new Set<string>();
+
+  // Today's complaint is hidden with the rest of a sensitive clinic's visit (lib/consultation.ts).
+  for (const v of visits) {
+    if (v.complaintBy && sensitiveVisit(v.id))
+      owners.add(v.complaintBy);
+  }
 
   const notes = await tx
     .select({ by: clinicalNotes.writtenBy, encounterId: clinicalNotes.encounterId, category: clinicalNotes.sensitiveCategory })

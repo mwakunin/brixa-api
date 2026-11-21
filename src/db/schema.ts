@@ -192,6 +192,12 @@ export const facilities = pgTable("facilities", {
   /** E.164 (rule 13): the number a reminder tells patients to call. Set by the facility admin. */
   phone: text(),
   /**
+   * One line, as printed under the name at the head of every document it
+   * issues, e.g. a P.O. box and town (the staff walkthrough, 2026-11-20). Set
+   * by the facility admin.
+   */
+  address: text(),
+  /**
    * The sender name its SMS go out under, once registered with Africa's
    * Talking on the platform's account; null for the account's default. Set
    * on the superadmin plane, since an unregistered one fails every message.
@@ -204,6 +210,7 @@ export const facilities = pgTable("facilities", {
   oneOf("facilities_status_known", t.status, ["active", "suspended"]),
   check("facilities_keph_level_valid", sql`${t.kephLevel} BETWEEN 1 AND 6`),
   check("facilities_phone_e164", sql`${t.phone} IS NULL OR ${t.phone} ~ '^\\+[1-9][0-9]{7,14}$'`),
+  check("facilities_address_length", sql`${t.address} IS NULL OR char_length(${t.address}) BETWEEN 1 AND 200`),
   // An alphanumeric sender is at most 11 characters.
   check("facilities_sms_sender_id_shape", sql`${t.smsSenderId} IS NULL OR ${t.smsSenderId} ~ '^[A-Za-z0-9][A-Za-z0-9 ]{0,10}$'`),
 ]);
@@ -345,6 +352,7 @@ export const auditLog = pgTable("audit_log", {
     | "encounter.closed"
     | "encounter.cancelled"
     | "encounter.viewed"
+    | "encounter.complaint_recorded"
     | "patient.admitted"
     | "patient.transferred"
     | "patient.discharged"
@@ -1203,9 +1211,25 @@ export const encounters = pgTable("encounters", {
   cancelReason: text(),
   /** The visit this one came from, e.g. the emergency attendance an admission followed. */
   parentEncounterId: uuid(),
+  /**
+   * Why the patient came today, in a few words, as triage hears it (decided
+   * 2026-11-20, after the staff walkthrough): the doctor reads it first.
+   * Clinical content, so hidden with the rest of a sensitive clinic's visit
+   * (rule 27). Corrected in place while the visit is open, each change
+   * audited with the old text.
+   */
+  complaint: text(),
+  complaintRecordedAt: timestamp({ withTimezone: true }),
+  complaintRecordedBy: uuid(),
   updatedAt: updatedAt(),
 }, t => [
   unique("encounters_facility_id_id_key").on(t.facilityId, t.id),
+  foreignKey({ name: "encounters_complaint_recorded_by_fk", columns: [t.facilityId, t.complaintRecordedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
+  check(
+    "encounters_complaint_recorded",
+    sql`num_nonnulls(${t.complaint}, ${t.complaintRecordedAt}, ${t.complaintRecordedBy}) IN (0, 3)
+      AND (${t.complaint} IS NULL OR length(btrim(${t.complaint})) > 0)`,
+  ),
   foreignKey({ name: "encounters_patient_fk", columns: [t.facilityId, t.patientId], foreignColumns: [patients.facilityId, patients.id] }),
   foreignKey({ name: "encounters_opened_by_fk", columns: [t.facilityId, t.openedBy], foreignColumns: [memberships.facilityId, memberships.id] }),
   foreignKey({ name: "encounters_closed_by_fk", columns: [t.facilityId, t.closedBy], foreignColumns: [memberships.facilityId, memberships.id] }),

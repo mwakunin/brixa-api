@@ -2,7 +2,7 @@ import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 
-import { accounts, admissions, allocations, cashierShifts, documents, encounters, invoices, mpesaTransactions, patients, payments, refunds } from "@/db/schema";
+import { accounts, admissions, allocations, cashierShifts, documents, encounters, invoices, memberships, mpesaTransactions, patients, payments, refunds, user } from "@/db/schema";
 
 import type { PrintedContent } from "./document-content";
 import type { PatientActor } from "./patients";
@@ -10,11 +10,11 @@ import type { RefundStatus } from "./refunds";
 
 import { allocate, unallocatedCents } from "./allocations";
 import { recordAudit } from "./audit";
-import { billedFields, ensureAccount } from "./billing";
+import { billedFields, ensureAccount, linesOf } from "./billing";
 import { isUniqueViolation } from "./db-errors";
 import { issueDocument, voidDocument } from "./documents";
 import { balanceCents } from "./invoice-balance";
-import { formatKes } from "./money";
+import { formatKes, printedQuantity } from "./money";
 
 /**
  * Cashier shifts and payments (SCHEMA.md §7.4).
@@ -272,17 +272,31 @@ async function depositFor(tx: AppDb, encounterId: string): Promise<string> {
   return admission ? `Deposit, admission ${admission.number}` : "Deposit for this visit";
 }
 
-/** What the receipt prints, frozen when it is issued (rule 7). */
+/** Who the receipt says received the money: the member at the desk, or nobody for M-Pesa the system matched by itself. */
+async function receivedBy(tx: AppDb, actor: PatientActor | null): Promise<string> {
+  if (!actor)
+    return "M-Pesa, matched automatically";
+  const [member] = await tx.select({ name: user.name }).from(memberships).innerJoin(user, eq(user.id, memberships.userId)).where(eq(memberships.id, actor.membershipId)).limit(1);
+  return member.name;
+}
+
+/**
+ * What the receipt prints, frozen when it is issued (rule 7). A payment on a
+ * bill lists what the bill was for, as the bill prints it, and every receipt
+ * says who received it (the staff walkthrough, 2026-11-20).
+ */
 async function printedReceipt(
   tx: AppDb,
   input: PaymentInput,
   accountId: string,
   target: Awaited<ReturnType<typeof paymentTarget>>,
   appliedCents: number,
+  actor: PatientActor | null,
 ): Promise<PrintedContent> {
   const forWhat = target.invoiceNumber
     ? `Invoice ${target.invoiceNumber}`
     : target.encounterId ? await depositFor(tx, target.encounterId) : "Credit on account";
+  const lines = target.invoice ? await linesOf(tx, target.invoice.id) : [];
 
   return {
     title: "Receipt",
@@ -291,7 +305,16 @@ async function printedReceipt(
       { label: "For", value: forWhat },
       { label: "Paid by", value: METHODS[input.method] },
       ...(input.reference ? [{ label: "Reference", value: input.reference }] : []),
+      { label: "Received by", value: await receivedBy(tx, actor) },
     ],
+    ...(lines.length > 0
+      ? {
+          table: {
+            columns: [{ label: "Item" }, { label: "Qty", align: "right" as const }, { label: "Amount", align: "right" as const }],
+            rows: lines.map(l => [l.description, printedQuantity(l.quantity), formatKes(l.amountCents)]),
+          },
+        }
+      : {}),
     totals: [
       { label: "Amount received", value: formatKes(input.amountCents) },
       ...(target.invoice
@@ -337,7 +360,7 @@ export async function recordPayment(tx: AppDb, facilityId: string, input: Paymen
   const receipt = await issueDocument(tx, {
     facilityId,
     kind: "receipt",
-    content: await printedReceipt(tx, input, accountId, target, appliedCents),
+    content: await printedReceipt(tx, input, accountId, target, appliedCents, actor),
     issuedBy: actor,
     at,
   });

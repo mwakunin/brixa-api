@@ -103,7 +103,7 @@ const ValueSchema = z.object({
   flag: z.enum(["low", "high", "critical_low", "critical_high", "abnormal"]).nullable(),
 });
 
-const ResultSchema = z.object({
+export const ResultSchema = z.object({
   id: z.uuid(),
   orderId: z.uuid(),
   encounterId: z.uuid(),

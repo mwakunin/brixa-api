@@ -1,3 +1,4 @@
+import type { z } from "@hono/zod-openapi";
 import type { Context } from "hono";
 
 import * as HttpStatusCodes from "stoker/http-status-codes";
@@ -7,7 +8,7 @@ import type { TenantBindings, TenantRouteHandler } from "@/lib/types";
 
 import * as obs from "@/lib/observations";
 
-import type { ListObservationsRoute, MarkEnteredInErrorRoute, RecordVitalsRoute } from "./observations.routes";
+import type { ListObservationsRoute, MarkEnteredInErrorRoute, ObservationSchema, RecordVitalsRoute } from "./observations.routes";
 
 function actorOf(c: Context<TenantBindings>) {
   return { userId: c.var.user!.id, membershipId: c.var.membership.id };
@@ -35,7 +36,7 @@ function refusal(c: Context, err: unknown) {
   return c.json({ message: err.message, code: err.code }, HttpStatusCodes.CONFLICT);
 }
 
-function readingJson(r: Awaited<ReturnType<typeof obs.listObservations>>[number]) {
+export function readingJson(r: Awaited<ReturnType<typeof obs.listObservations>>[number]): z.infer<typeof ObservationSchema> {
   return {
     ...r,
     observedAt: r.observedAt.toISOString(),

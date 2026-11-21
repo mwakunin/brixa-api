@@ -27,6 +27,7 @@ async function facilityRow(tx: AppDb) {
       kephLevel: facilities.kephLevel,
       county: facilities.county,
       phone: facilities.phone,
+      address: facilities.address,
       smsSenderId: facilities.smsSenderId,
     })
     .from(facilities);
@@ -41,21 +42,27 @@ export const getFacility: TenantRouteHandler<GetFacilityRoute> = async (c) => {
   return c.json(facilityJson(c, await facilityRow(c.var.db)), HttpStatusCodes.OK);
 };
 
+const NAMED = { phone: "phone number", address: "address" } as const;
+
 export const updateFacility: TenantRouteHandler<UpdateFacilityRoute> = async (c) => {
-  const { phone } = c.req.valid("json");
-  const next = phone === null ? null : normalizePhone(phone);
-  // Locked, so a change in flight commits first and the audit names the number it left.
-  const [current] = await c.var.db.select({ phone: facilities.phone }).from(facilities).where(eq(facilities.id, c.var.facility.id)).for("update");
-  if (current.phone !== next) {
-    await c.var.db.update(facilities).set({ phone: next }).where(eq(facilities.id, c.var.facility.id));
+  const body = c.req.valid("json");
+  const wanted = {
+    ...(body.phone === undefined ? {} : { phone: body.phone === null ? null : normalizePhone(body.phone) }),
+    ...(body.address === undefined ? {} : { address: body.address }),
+  };
+  // Locked, so a change in flight commits first and the audit names what it left.
+  const [current] = await c.var.db.select({ phone: facilities.phone, address: facilities.address }).from(facilities).where(eq(facilities.id, c.var.facility.id)).for("update");
+  const changed = (Object.keys(wanted) as (keyof typeof wanted)[]).filter(key => current[key] !== wanted[key]);
+  if (changed.length > 0) {
+    await c.var.db.update(facilities).set(Object.fromEntries(changed.map(key => [key, wanted[key]]))).where(eq(facilities.id, c.var.facility.id));
     await recordAudit(c.var.db, {
       facilityId: c.var.facility.id,
       actorId: c.var.user!.id,
       action: "facility.updated",
       entityType: "facility",
       entityId: c.var.facility.id,
-      summary: next ? "Set the facility's phone number" : "Cleared the facility's phone number",
-      detail: { phone: { from: current.phone, to: next } },
+      summary: changed.map(key => `${wanted[key] ? "Set" : "Cleared"} the facility's ${NAMED[key]}`).join("; "),
+      detail: Object.fromEntries(changed.map(key => [key, { from: current[key], to: wanted[key] }])),
     });
   }
   return c.json(facilityJson(c, await facilityRow(c.var.db)), HttpStatusCodes.OK);

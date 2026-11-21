@@ -7,7 +7,7 @@ import type { MembershipRole } from "@/db/schema";
 import { billableItems, chargeAssignments, charges, documents, encounters, invoiceLines, invoices, labAnalytes, labTests, memberships, orderItems, orders, user } from "@/db/schema";
 
 import type { PatientActor } from "./patients";
-import type { Filtered } from "./sensitivity";
+import type { Filtered, Reader } from "./sensitivity";
 
 import { recordAudit } from "./audit";
 import { cancelOrderItemCharge, captureOrderItemCharge, ChargeError } from "./charges";
@@ -521,9 +521,7 @@ export async function listOrders(tx: AppDb, facilityId: string, encounterId: str
   if (!encounter)
     throw new OrderError("encounter_not_found");
 
-  const all = await ordersOf(tx, encounterId);
-  const guards = await orderGuards(tx, all.map(o => o.id));
-  const listed = filterFor(await readerOf(tx, encounter.patientId, actor), all, o => guards.get(o.id)!, o => o.orderedAt);
+  const listed = await ordersSeen(tx, encounterId, await readerOf(tx, encounter.patientId, actor));
   await recordAudit(tx, {
     facilityId,
     actorId: actor.userId,
@@ -535,6 +533,13 @@ export async function listOrders(tx: AppDb, facilityId: string, encounterId: str
   });
   await alertRecorders(tx, facilityId, listed.viaGrant, listed.viaGrantRecorders, actor);
   return listed;
+}
+
+/** An encounter's orders as `reader` may see them (rule 27), for a read that audits itself. */
+export async function ordersSeen(tx: AppDb, encounterId: string, reader: Reader): Promise<Filtered<ShownOrder>> {
+  const all = await ordersOf(tx, encounterId);
+  const guards = await orderGuards(tx, all.map(o => o.id));
+  return filterFor(reader, all, o => guards.get(o.id)!, o => o.orderedAt);
 }
 
 /** The order an item belongs to, as `ordersOf` shows it. */

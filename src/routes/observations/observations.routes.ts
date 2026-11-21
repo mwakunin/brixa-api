@@ -53,7 +53,7 @@ const RecordBodySchema = z.object({
   observedAt: z.iso.datetime({ offset: true }).optional(),
 });
 
-const ObservationSchema = z.object({
+export const ObservationSchema = z.object({
   id: z.uuid(),
   code: z.enum(VITAL_SIGN_CODES),
   label: z.string(),

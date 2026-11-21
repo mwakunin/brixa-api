@@ -214,7 +214,9 @@ Every printed, numbered document goes through one table, `documents`. The module
 
 1. It takes the number from the facility's series of the same `kind` (§6.1, rule 20).
 2. It mints a `verification_code`: 160 random bits, base64url, the payload of the QR printed on every page.
-3. It freezes `content`: exactly what is printed (title, label and value pairs, a table, totals, notes, all as formatted text), plus the facility's name and KMHFR code as they are at that moment (rule 7). The PDF is rendered from `content` and nothing else, so a reprint years later says what the original said.
+3. It freezes `content`: exactly what is printed (title, label and value pairs, a table, totals, notes, all as formatted text), plus the facility's name, KMHFR code, county and address as they are at that moment (rule 7). The PDF is rendered from `content` and nothing else, so a reprint years later says what the original said.
+   - **The address** (`facilities.address`, one line of at most 200 characters, such as a P.O. box and town) prints under the name. Staff asked for it in the walkthrough of 2026-11-20. The facility admin sets it with `PATCH /facility`, as they set the phone, and each change is audited (`facility.updated`) with the old and new.
+   - A document issued before the facility had an address has none in its `content`, and prints as it always did.
 4. It records the issuing membership in `issued_by` (rule 25) and writes `document.issued` to the audit log.
 
 | Column | Notes |
@@ -356,6 +358,8 @@ Re-pricing an encounter (for example, coverage confirmed after the charges were 
 - `cashier_shifts`: the cashier's membership, `opened_at`, `opening_float_cents`, and `closed_at` with `declared_cash_cents` (both or neither). One open shift per cashier (partial unique index). Cash and card taken, cash and card refunded, the expected cash (float plus cash taken, less cash refunded) and the variance are derived. A trigger closes a shift once and freezes the rest, and another refuses a payment or a refund payout through a closed shift, for every role, holding the shift's share lock so a close waits. Opened and closed by the app's clock.
 - `payments`: `account_id`, `method` (cash \| card \| bank; slice 6 adds M-Pesa), `amount_cents` (whole shillings), `reference` (required for card and bank, none for cash), `cashier_shift_id` (required exactly for cash and card, by CHECK), `encounter_id` (what it was paid towards), `document_id` (the receipt, `RCT-`), `received_by`, and reversal columns. The shift foreign key is `(facility_id, cashier_shift_id, received_by)`, so a payment's shift is always its receiver's own. A CHECK forbids reversal by the receiver.
 - **Taking a payment** issues its receipt in the same transaction. Taken against a bill, as much as the bill owes is allocated at once and the rest stays as credit; the receipt prints what was applied and what is still owed. Taken towards a visit or admission, it is a deposit; but if that encounter's final bill is already out and still owes, it settles that bill like a payment against it.
+  - **What else the receipt prints** (the staff walkthrough, 2026-11-20): a payment on a bill lists the bill's lines (item, quantity, amount), as the bill prints them, neutral names included (rule 27).
+  - **"Received by"** names the member who took the payment, or says "M-Pesa, matched automatically" for one the system matched by itself.
 - **Deposits:** finalising an invoice locks the standing payments tagged to its encounter on the same account (before the invoice, M8) and applies their credit, oldest first, up to the total. Untagged credit is applied on request (`POST /payments/{id}/allocations`, by default as much as both have left).
 - `allocations`: `payment_id` and `invoice_id`, each in a three-column FK with `account_id` (M1), `amount_cents`, `allocated_by`, and reversal columns. The service locks the payment, then the invoice, and checks M2 and M3; the `allocations_within_limits` trigger re-checks both for every role, and the adjustment trigger now counts allocations too.
 - **Reversing a payment** voids its receipt; its allocations stop being live, so the bills it settled owe again. Reversing an allocation returns its money to the payment's credit. Both are finance's. An invoice with live allocations cannot be voided. A payment with a live refund cannot be reversed (5b).
@@ -638,6 +642,24 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 - **Cancelling a visit** is refused while a draft, or a signed note or addendum not marked entered in error, stands (`has_clinical_records`), as for vital signs and diagnoses. An addendum counts even under a marked note: once the visit is cancelled it could no longer be marked.
 - **Not yet:** note templates by clinic, which the frontend can offer over these sections. Sensitive notes and break-glass came with slice 7, below.
 
+**As built (after the staff walkthrough, 2026-11-20): today's complaint and the consultation read.**
+
+- **Today's complaint:** `encounters.complaint`, with who recorded it and when (all three or none, by CHECK).
+  - Doctors look first at "the complaint and vitals from triage", so the triage nurse records it in a few words (at most 200 characters, one line).
+  - `PUT /encounters/{id}/complaint` records it, by nurses, doctors and clinical officers under a current licence, while the visit is open (`not_open`). Sending it again corrects it.
+  - Each change is audited as `encounter.complaint_recorded`, with the old and new text. The same text sent again is no change.
+  - It is clinical content: hidden with the rest of a sensitive clinic's visit (rule 27), seen by whoever recorded it and the staff assigned the category. Only someone who may see it changes it. Breaking the glass on the patient alerts whoever recorded it, as it alerts the recorders of other restricted records.
+  - It is one line: no control character and no line or paragraph separator (`ONE_LINE`, `src/lib/validation.ts`), which the facility's address also uses.
+- **`GET /encounters/{id}/consultation`** (clinical roles), audited once as `encounter.viewed` ("Viewed the consultation"). It answers SPEC §7.9's one or two calls for a screen, where the doctor's screen needed seven reads. It returns:
+  - the patient (names, OP number, sex, age);
+  - this visit's vital signs, the standing allergies and today's complaint;
+  - this visit's notes (signed ones, and the reader's own drafts), diagnoses, orders, results and lab reports;
+  - **the last visit:** the patient's most recent earlier outpatient visit or emergency attendance, with its date, its clinic, its standing diagnoses by name and the medicines prescribed.
+- **Withheld as in the separate reads.** Each part goes through the same filter as its own read (`notesSeen`, `diagnosesSeen`, `ordersSeen`, `resultsSeen`, extracted from them).
+  - Everything withheld is listed together under `restricted`, by date only.
+  - A last visit to a sensitive clinic the reader may not see shows its date alone, since a clinic's name discloses. Only staff assigned its category, or a break-glass grant, see more.
+  - Records seen through a grant alert their recorders, once.
+
 **As built (P3, slice 4a): orders and the lab catalogue.** Decided 2026-11-10 and 2026-11-11 (`ROADMAP.md` P3):
 
 - **The lab catalogue**, kept by the facility admin and the lab supervisor, read by every member (it holds no patient data):
@@ -775,7 +797,7 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
 - **A clinic with appointments booked from today on is not retired** (`has_appointments`). A booking share-locks the clinic, so retiring it (which locks it, then counts) waits for one in flight.
 - **Locks:** the appointment first, then (checking in) the patient, `FOR NO KEY UPDATE`, then the encounter, then as M8. Two of a patient's appointments checked in at once queue on the patient, so the second joins the visit the first opened.
 - **The patient's answer** (`patients.sms_reminders`, with `sms_reminders_set_at` and `_by`, all or none): null until asked. A booking for a patient with a phone who has not been asked is refused (`sms_answer_needed`) until the answer comes with it; `PUT /patients/{id}/sms-reminders` changes it. Each change is audited with the old answer. It stands in for the `consents` table sketched in §3 until a second kind of consent needs one.
-- **The facility's phone** (`facilities.phone`, E.164), set by the facility admin with `PATCH /facility`, is the number a reminder tells patients to call. **Its SMS sender** (`facilities.sms_sender_id`) is set on the superadmin plane (`PUT /superadmin/facilities/{id}/sms-sender`), since a sender Africa's Talking has not registered fails every message; null uses the account's.
+- **The facility's phone** (`facilities.phone`, E.164), set by the facility admin with `PATCH /facility`, is the number a reminder tells patients to call. The same route sets the address printed on its documents (§6.2); either or both may be sent. **Its SMS sender** (`facilities.sms_sender_id`) is set on the superadmin plane (`PUT /superadmin/facilities/{id}/sms-sender`), since a sender Africa's Talking has not registered fails every message; null uses the account's.
 - **`appointment_reminders`:** one per appointment per day it was booked for (`appointment_reminders_one_per_day`).
   - Booking or moving writes a `scheduled` row due at 17:00 Kenyan time the day before, with an outbox job (`appointment.remind`, its subject the row) held back to then by `outbox.available_at`. The minute's sweep delivers it; it is not a Cloud Task, which cannot be scheduled more than 30 days ahead. A booking made after that time gets none. A day already scheduled (moved away and back) keeps its one row and job.
   - The job locks its row and re-reads everything. It is skipped, with the reason in `outcome_note`, when SMS is not configured, the facility is suspended, the appointment is no longer booked or was moved to another day, the patient has not said yes, there is no Kenyan mobile number, or the appointment's day has come.
@@ -939,6 +961,18 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - the controlled-drug register (4);
   - the pharmacy's outcome on the clinicians' order view;
   - dispensing labels.
+
+**As built (after the staff walkthrough, 2026-11-20): the pharmacy's stock flag and its quote.** Staff asked for a flag on the list, not the products that could fill each medicine, which are read once a prescription is opened. Patients ask the price first, then decide how much to buy.
+
+- **The stock flag:** each medicine on `GET /pharmacy/worklist` carries `stockFlag`, measured against that medicine alone, since the question at the counter is "can I fill this one?". The reorder level plays no part.
+  - `out`: the pharmacy holds nothing in date that fills it, from items not retired.
+  - `low`: it holds less than is still owed, the prescribed quantity less what was handed over. This is told only when all it holds is in the prescription's dose unit and nothing has gone out in another, since one unit is never counted as another.
+  - Null flags nothing: enough on the shelf, a shortfall that cannot be measured, or a medicine already prepared, whose stock is taken.
+- **Which pharmacy:** `?storeId=` names it, as preparing does; otherwise the facility's only open one. With several and none named, nothing is flagged. `stockIn` names the pharmacy measured, or is null. A store that is not an open pharmacy is refused (`not_a_pharmacy`).
+- **`POST /dispenses/quote`** takes the body of `POST /dispenses`. It answers each line's quantity, whether it completes the medicine, its unit price and its charge, and the total.
+  - It runs the same checks as preparing (`planDispense`, shared by both), so it is priced and refused exactly as preparing would be, naming the line.
+  - Nothing is taken, charged or recorded. It holds the visit, the medicines and the batches only for its own transaction, as preparing does.
+  - Not audited: it answers prices and names no patient.
 
 **As built (P4, slice 3b): returns and stock adjustments.** Decided 2026-11-15 (`ROADMAP.md` P4, slice 3b). `dispense_returns`, `stock_adjustments` and `stock_adjustment_lines`; `src/lib/dispense-returns.ts` and `src/lib/stock-adjustments.ts`.
 

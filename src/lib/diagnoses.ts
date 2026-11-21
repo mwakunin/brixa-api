@@ -5,7 +5,7 @@ import type { AppDb } from "@/db";
 import { diagnoses, encounters, memberships, user } from "@/db/schema";
 
 import type { PatientActor } from "./patients";
-import type { Filtered, Guarded, SensitiveCategory } from "./sensitivity";
+import type { Filtered, Guarded, Reader, SensitiveCategory } from "./sensitivity";
 
 import { recordAudit } from "./audit";
 import { codableIcd } from "./icd11";
@@ -284,15 +284,7 @@ export async function listDiagnoses(tx: AppDb, facilityId: string, encounterId: 
   if (!encounter)
     throw new DiagnosisError("encounter_not_found");
 
-  // The diagnoses first, then the clinics: a clinic joined before a diagnosis was made is then always seen (each read is its own snapshot).
-  const all = await diagnosesOf(tx, encounterId);
-  const clinics = (await clinicCategoriesOf(tx, [encounterId])).get(encounterId);
-  const listed = filterFor(
-    await readerOf(tx, encounter.patientId, actor),
-    all,
-    d => guardOf({ code: d.code, diagnosedBy: d.diagnosedBy.membershipId }, clinics),
-    d => d.diagnosedAt,
-  );
+  const listed = await diagnosesSeen(tx, encounterId, await readerOf(tx, encounter.patientId, actor));
   await recordAudit(tx, {
     facilityId,
     actorId: actor.userId,
@@ -304,4 +296,17 @@ export async function listDiagnoses(tx: AppDb, facilityId: string, encounterId: 
   });
   await alertRecorders(tx, facilityId, listed.viaGrant, listed.viaGrantRecorders, actor);
   return listed;
+}
+
+/** An encounter's diagnoses as `reader` may see them (rule 27), for a read that audits itself. */
+export async function diagnosesSeen(tx: AppDb, encounterId: string, reader: Reader): Promise<Filtered<ShownDiagnosis>> {
+  // The diagnoses first, then the clinics: a clinic joined before a diagnosis was made is then always seen (each read is its own snapshot).
+  const all = await diagnosesOf(tx, encounterId);
+  const clinics = (await clinicCategoriesOf(tx, [encounterId])).get(encounterId);
+  return filterFor(
+    reader,
+    all,
+    d => guardOf({ code: d.code, diagnosedBy: d.diagnosedBy.membershipId }, clinics),
+    d => d.diagnosedAt,
+  );
 }
