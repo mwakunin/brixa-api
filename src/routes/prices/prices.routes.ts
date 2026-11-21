@@ -3,6 +3,7 @@ import * as HttpStatusCodes from "stoker/http-status-codes";
 import { jsonContent, jsonContentRequired } from "stoker/openapi/helpers";
 import { createErrorSchema } from "stoker/openapi/schemas";
 
+import { ONE_LINE } from "@/lib/validation";
 import { requireMembershipRole } from "@/middlewares/auth";
 import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
@@ -31,11 +32,11 @@ const ItemSchema = z.object({
   cashPriceCents: z.number().int().nullable(),
 });
 
-const PrintedNameSchema = z.string().trim().min(2).max(120).regex(/^\P{C}+$/u, "One line");
+const PrintedNameSchema = z.string().trim().min(2).max(120).regex(ONE_LINE, "One line");
 
 const ItemBodySchema = z.object({
   code: z.string().trim().toUpperCase().regex(/^[A-Z0-9][A-Z0-9./-]{0,23}$/, "Letters, digits and . / - only, up to 24"),
-  name: z.string().trim().min(2).max(120).regex(/^\P{C}+$/u, "One line"),
+  name: z.string().trim().min(2).max(120).regex(ONE_LINE, "One line"),
   category: z.enum(CATEGORIES),
   /**
    * What bills print instead of the name, for an item whose name discloses a
@@ -56,7 +57,7 @@ const ChangeLineSchema = z.object({
 
 const ChangeBodySchema = z.object({
   effectiveFrom: z.iso.date(),
-  reason: z.string().trim().min(3).max(300).regex(/^\P{C}+$/u, "One line"),
+  reason: z.string().trim().min(3).max(300).regex(ONE_LINE, "One line"),
   lines: z.array(ChangeLineSchema).min(1).max(2000),
 });
 

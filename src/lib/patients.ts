@@ -101,12 +101,16 @@ const summaryColumns = {
   sex: patients.sex,
   dateOfBirth: patients.dateOfBirth,
   phone: patients.phone,
+  // The latest; of documents added together, as at one registration, the first in IDENTITY_DOCUMENTS' order,
+  // so a national ID comes before a passport and never by a random id.
   idDocument: sql<PatientSummary["idDocument"]>`(
     SELECT json_build_object('type', ${patientIdentifiers.type}, 'value', ${patientIdentifiers.value})
     FROM ${patientIdentifiers}
     WHERE ${patientIdentifiers.patientId} = ${patients.id}
       AND ${patientIdentifiers.type} IN (${sql.join(IDENTITY_DOCUMENTS.map(type => sql`${type}`), sql`, `)})
-    ORDER BY ${patientIdentifiers.addedAt} DESC, ${patientIdentifiers.id} DESC
+    ORDER BY ${patientIdentifiers.addedAt} DESC,
+      array_position(ARRAY[${sql.join(IDENTITY_DOCUMENTS.map(type => sql`${type}`), sql`, `)}]::text[], ${patientIdentifiers.type}),
+      ${patientIdentifiers.id} DESC
     LIMIT 1
   )`,
 };

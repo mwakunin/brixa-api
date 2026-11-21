@@ -3,7 +3,7 @@ import * as HttpStatusCodes from "stoker/http-status-codes";
 import { jsonContent, jsonContentRequired } from "stoker/openapi/helpers";
 import { createErrorSchema } from "stoker/openapi/schemas";
 
-import { sensitiveCategorySchema } from "@/lib/validation";
+import { ONE_LINE, sensitiveCategorySchema } from "@/lib/validation";
 import { requireClinicalRole, requireMembershipRole } from "@/middlewares/auth";
 import { clinicalResponses, facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
@@ -25,7 +25,7 @@ const servingStaff = requireClinicalRole(...SERVING_STAFF);
 
 const RefusalSchema = z.object({ message: z.string(), code: z.string() });
 const IdParamsSchema = z.object({ id: z.uuid() });
-const oneLine = (max: number) => z.string().trim().min(1).max(max).regex(/^\P{C}+$/u, "One line");
+const oneLine = (max: number) => z.string().trim().min(1).max(max).regex(ONE_LINE, "One line");
 
 const ServicePointSchema = z.object({
   id: z.uuid(),

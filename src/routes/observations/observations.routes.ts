@@ -4,6 +4,7 @@ import { jsonContent, jsonContentRequired } from "stoker/openapi/helpers";
 import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { CLINICAL_ROLES } from "@/lib/professions";
+import { ONE_LINE } from "@/lib/validation";
 import { VITAL_SIGN_CODES, VITAL_SIGNS } from "@/lib/vital-signs";
 import { requireClinicalRole, requireMembershipRole } from "@/middlewares/auth";
 import { clinicalResponses, facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
@@ -64,7 +65,7 @@ export const ObservationSchema = z.object({
   enteredInError: z.object({ at: z.string(), reason: z.string() }).nullable(),
 });
 
-const ErrorBodySchema = z.object({ reason: z.string().trim().min(3).max(200).regex(/^\P{C}+$/u, "One line") });
+const ErrorBodySchema = z.object({ reason: z.string().trim().min(3).max(200).regex(ONE_LINE, "One line") });
 
 export const recordVitals = createRoute({
   tags,

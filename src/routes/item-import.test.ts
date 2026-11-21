@@ -88,6 +88,19 @@ describe("previewing an item list", () => {
     expect(rows.every((r: { action: unknown }) => r.action === null)).toBe(true);
   });
 
+  it("keeps a name and a base unit to one line, a line or paragraph separator included", async () => {
+    const res = await preview(file(
+      "GLV-S,Gloves\u2028small,consumable,,pair,50,",
+      "GLV-L,Gloves large,consumable,,pa\u2029ir,50,",
+    ));
+
+    const { rows } = await res.json();
+    expect(rows.map((r: { problems: string[] }) => r.problems)).toEqual([
+      ["name: 2 to 120 characters on one line"],
+      ["base_unit: 1 to 20 characters, e.g. tablet, mL, vial, pair"],
+    ]);
+  });
+
   it("refuses what is not this file format", async () => {
     const refusal = async (csv: string) => {
       const res = await preview(csv);

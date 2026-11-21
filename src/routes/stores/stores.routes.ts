@@ -5,6 +5,7 @@ import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { STOCK_READERS } from "@/lib/goods-received";
 import { STOCK_KEEPERS } from "@/lib/stock-items";
+import { ONE_LINE } from "@/lib/validation";
 import { requireMembershipRole } from "@/middlewares/auth";
 import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
@@ -20,7 +21,7 @@ const RefusalSchema = z.object({ message: z.string(), code: z.string() });
 const IdParamsSchema = z.object({ id: z.uuid() });
 
 const STORE_KINDS = ["main", "pharmacy", "ward", "other"] as const;
-const NameSchema = z.string().trim().min(1).max(80).regex(/^\P{C}+$/u, "One line");
+const NameSchema = z.string().trim().min(1).max(80).regex(ONE_LINE, "One line");
 
 const StoreSchema = z.object({
   id: z.uuid(),

@@ -3,6 +3,7 @@ import * as HttpStatusCodes from "stoker/http-status-codes";
 import { jsonContent, jsonContentRequired } from "stoker/openapi/helpers";
 import { createErrorSchema } from "stoker/openapi/schemas";
 
+import { ONE_LINE } from "@/lib/validation";
 import { requireMembershipRole } from "@/middlewares/auth";
 import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
@@ -22,7 +23,7 @@ const WardSchema = z.object({
   beds: z.array(BedSchema),
 });
 
-const WardBodySchema = z.object({ name: z.string().trim().min(1).max(80).regex(/^\P{C}+$/u, "One line") });
+const WardBodySchema = z.object({ name: z.string().trim().min(1).max(80).regex(ONE_LINE, "One line") });
 const BedBodySchema = z.object({ label: z.string().trim().min(1).max(20).regex(/^[\w ./-]+$/, "Letters, digits, spaces and . / - only") });
 const WardParamsSchema = z.object({ id: z.uuid() });
 

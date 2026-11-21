@@ -5,6 +5,7 @@ import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { STOCK_READERS } from "@/lib/goods-received";
 import { SHORTFALL_APPROVERS, TRANSFER_STAFF } from "@/lib/transfers";
+import { ONE_LINE } from "@/lib/validation";
 import { requireMembershipRole } from "@/middlewares/auth";
 import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
@@ -40,7 +41,7 @@ const RequestBodySchema = z.strictObject({
   storeId: z.uuid(),
   /** A write-off (`expired`, `damaged`, `lost`) takes stock off; `found` puts it on an existing batch; `correction` either. */
   kind: z.enum(KINDS),
-  reason: z.string().trim().min(3).max(200).regex(/^\P{C}+$/u, "One line"),
+  reason: z.string().trim().min(3).max(200).regex(ONE_LINE, "One line"),
   lines: z.array(z.strictObject({
     batchId: z.uuid(),
     /** In base units: below zero off the shelf, above zero onto it. */

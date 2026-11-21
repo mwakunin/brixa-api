@@ -4,6 +4,7 @@ import { jsonContent, jsonContentRequired } from "stoker/openapi/helpers";
 import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { DISPENSERS } from "@/lib/dispensing";
+import { ONE_LINE } from "@/lib/validation";
 import { requireClinicalRole } from "@/middlewares/auth";
 import { clinicalResponses, facilityHeaders } from "@/routes/facility/facility.routes";
 
@@ -18,7 +19,7 @@ const dispensers = requireClinicalRole(...DISPENSERS);
 
 const RefusalSchema = z.object({ message: z.string(), code: z.string(), line: z.number().optional() });
 const IdParamsSchema = z.object({ id: z.uuid() });
-const ReasonSchema = z.string().trim().min(3).max(200).regex(/^\P{C}+$/u, "One line");
+const ReasonSchema = z.string().trim().min(3).max(200).regex(ONE_LINE, "One line");
 const QuantitySchema = z.number().int().min(1).max(100_000);
 const lower = (id: string) => id.toLowerCase();
 

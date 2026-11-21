@@ -1,10 +1,9 @@
 import { z } from "@hono/zod-openapi";
 
 /**
- * One line of text: no control or invisible character (`\p{C}`), and no line
- * or paragraph separator (U+2028, U+2029), which break a line as a newline
- * does though they are not in `\p{C}`. Fields before 2026-11-21 still use
- * `\P{C}` alone.
+ * One line of text, for every one-line field: no control or invisible
+ * character (`\p{C}`), and no line or paragraph separator (U+2028, U+2029),
+ * which break a line as a newline does though they are not in `\p{C}`.
  */
 export const ONE_LINE = /^[^\p{C}\p{Zl}\p{Zp}]+$/u;
 
@@ -13,12 +12,12 @@ export const ONE_LINE = /^[^\p{C}\p{Zl}\p{Zp}]+$/u;
  *
  * An invitation names its recipient and its facility, so whoever writes those
  * fields writes part of a genuine, platform-sent message carrying a real link.
- * One short line with no control or invisible characters (`\p{C}`: newlines,
- * zero-width joiners, direction overrides) keeps it a name rather than a
- * paragraph of someone else's text.
+ * One short line (`ONE_LINE`: no newlines or line separators, zero-width
+ * joiners or direction overrides) keeps it a name rather than a paragraph of
+ * someone else's text.
  */
 function displayText(max: number) {
-  return z.string().trim().min(2).max(max).regex(/^\P{C}+$/u, "One line, without control characters");
+  return z.string().trim().min(2).max(max).regex(ONE_LINE, "One line, without control characters");
 }
 
 /** A person's name as staff will see it. */

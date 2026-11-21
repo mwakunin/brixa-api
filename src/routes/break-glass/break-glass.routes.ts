@@ -8,6 +8,7 @@ import type { TenantBindings } from "@/lib/types";
 
 import { CLINICAL_ROLES } from "@/lib/professions";
 import { recordRefusal } from "@/lib/refusal-audit";
+import { ONE_LINE } from "@/lib/validation";
 import { requireClinicalRole, requireMembershipRole } from "@/middlewares/auth";
 import { clinicalResponses, facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
@@ -48,7 +49,7 @@ const adminOnly = requireMembershipRole("facility_admin");
 
 const IdParamsSchema = z.object({ id: z.uuid() });
 const RefusalSchema = z.object({ message: z.string(), code: z.string() });
-const oneLine = (max: number) => z.string().trim().min(3).max(max).regex(/^\P{C}+$/u, "One line");
+const oneLine = (max: number) => z.string().trim().min(3).max(max).regex(ONE_LINE, "One line");
 
 const BreakBodySchema = z.strictObject({
   /** Why, always: an emergency too. Kept with the grant for the review. */

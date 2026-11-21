@@ -4,6 +4,7 @@ import { jsonContent, jsonContentRequired } from "stoker/openapi/helpers";
 import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { DOCUMENT_READERS } from "@/lib/documents";
+import { ONE_LINE } from "@/lib/validation";
 import { requireMembershipRole } from "@/middlewares/auth";
 import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 import { BILLERS, FINANCE } from "@/routes/invoices/invoices.routes";
@@ -50,7 +51,7 @@ const RequestBodySchema = z.object({
   kind: KindSchema,
   /** Whole shillings, in cents. */
   amountCents: z.number().int().positive().max(2_000_000_000).refine(c => c % 100 === 0, "Whole shillings only"),
-  reason: z.string().trim().min(3).max(200).regex(/^\P{C}+$/u, "One line"),
+  reason: z.string().trim().min(3).max(200).regex(ONE_LINE, "One line"),
 });
 
 const decisionResponses = {

@@ -4,7 +4,7 @@ import { jsonContent, jsonContentRequired } from "stoker/openapi/helpers";
 import { createErrorSchema, createMessageObjectSchema } from "stoker/openapi/schemas";
 
 import { forbiddenSchema, unauthorizedSchema } from "@/lib/constants";
-import { facilityNameSchema, personNameSchema } from "@/lib/validation";
+import { facilityNameSchema, ONE_LINE, personNameSchema } from "@/lib/validation";
 import { requireAuth, requireRole } from "@/middlewares/auth";
 import { rateLimits } from "@/middlewares/rate-limit";
 
@@ -169,7 +169,7 @@ export const exportSignInEvents = createRoute({
 export const TwoFactorResetBodySchema = z.strictObject({
   email: z.email().max(254),
   /** How who they are was checked, in a sentence: kept with the reset. */
-  reason: z.string().trim().min(10).max(500).regex(/^\P{C}+$/u, "One line, without control characters"),
+  reason: z.string().trim().min(10).max(500).regex(ONE_LINE, "One line, without control characters"),
 });
 
 export const resetTwoFactor = createRoute({

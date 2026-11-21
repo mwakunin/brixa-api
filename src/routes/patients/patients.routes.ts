@@ -6,7 +6,7 @@ import { createErrorSchema } from "stoker/openapi/schemas";
 import { businessDate } from "@/lib/dates";
 import { IDENTITY_DOCUMENTS, normalizeIdentifier } from "@/lib/patients";
 import { normalizePhone } from "@/lib/phone";
-import { personNameSchema } from "@/lib/validation";
+import { ONE_LINE, personNameSchema } from "@/lib/validation";
 import { requireMembershipRole } from "@/middlewares/auth";
 import { rateLimits } from "@/middlewares/rate-limit";
 import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
@@ -53,7 +53,7 @@ const IdentifierSchema = z.object({
 const IdDocumentSchema = z.object({ type: z.enum(IDENTITY_DOCUMENTS), value: IdentifierValueSchema });
 
 /** How a contact is related to the patient, as told: mother, father, aunt. */
-const RelationshipSchema = z.string().trim().min(2).max(40).regex(/^\P{C}+$/u, "One line, without control characters");
+const RelationshipSchema = z.string().trim().min(2).max(40).regex(ONE_LINE, "One line, without control characters");
 
 /** Someone to reach about the patient, such as a child's guardian. */
 const ContactSchema = z.object({
@@ -84,7 +84,9 @@ const RegisterBodySchema = z.object({
   /** Brought in unable to say who they are. */
   unidentified: z.boolean().default(false),
   /** A child's guardian, for example. Never part of the duplicate check. */
-  contacts: z.array(ContactSchema).max(3).default([]),
+  contacts: z.array(ContactSchema).max(3).default([]).openapi({
+    description: "At most three at registration; add more afterwards with `POST /patients/{id}/contacts`.",
+  }),
   /** The clerk saw the likely duplicates and says this is someone else. */
   confirmNotDuplicate: z.boolean().default(false),
 }).superRefine((body, ctx) => {
@@ -147,7 +149,9 @@ export const PatientSummarySchema = z.object({
   age: z.number().int(),
   phone: z.string().nullable(),
   idDocument: z.object({ type: z.enum(IDENTITY_DOCUMENTS), value: z.string() }).nullable().openapi({
-    description: "The identity document added most recently. An SHA or registry number does not count.",
+    description:
+      "The identity document added most recently; of several added together, as at one registration, the first of "
+      + "national ID, passport, birth certificate, alien ID and refugee ID. An SHA or registry number does not count.",
   }),
 });
 

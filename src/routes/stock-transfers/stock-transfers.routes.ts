@@ -4,6 +4,7 @@ import { jsonContent, jsonContentRequired } from "stoker/openapi/helpers";
 import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { MAX_TRANSFER_BATCHES, SHORTFALL_APPROVERS, TRANSFER_READERS, TRANSFER_STAFF, WARD_STAFF } from "@/lib/transfers";
+import { ONE_LINE } from "@/lib/validation";
 import { requireMembershipRole } from "@/middlewares/auth";
 import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
@@ -21,7 +22,7 @@ const readers = requireMembershipRole(...TRANSFER_READERS);
 
 const RefusalSchema = z.object({ message: z.string(), code: z.string(), line: z.number().optional() });
 const IdParamsSchema = z.object({ id: z.uuid() });
-const ReasonSchema = z.string().trim().min(3).max(200).regex(/^\P{C}+$/u, "One line");
+const ReasonSchema = z.string().trim().min(3).max(200).regex(ONE_LINE, "One line");
 const QuantitySchema = z.number().int().min(1).max(100_000_000);
 const lower = (id: string) => id.toLowerCase();
 

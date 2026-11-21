@@ -5,6 +5,7 @@ import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { MAX_IMPORT_ROWS } from "@/lib/item-import";
 import { STOCK_KEEPERS } from "@/lib/stock-items";
+import { ONE_LINE } from "@/lib/validation";
 import { requireMembershipRole } from "@/middlewares/auth";
 import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
 
@@ -54,7 +55,7 @@ const CreateBodySchema = z.strictObject({
   /** The catalogue drug a `drug` item is; none for a consumable. */
   drugCode: DrugCodeSchema.optional(),
   /** What one is counted in, e.g. `tablet`, `mL`, `vial`, `piece`. Fixed once set. */
-  baseUnit: z.string().trim().min(1).max(20).regex(/^\P{C}+$/u, "One line"),
+  baseUnit: z.string().trim().min(1).max(20).regex(ONE_LINE, "One line"),
   /** How many base units a pack holds, e.g. 100 tablets. */
   packSize: PackSizeSchema,
 });

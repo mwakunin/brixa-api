@@ -195,6 +195,19 @@ describe("finding and opening a patient", () => {
     expect(later.patients[0].idDocument).toEqual({ type: "passport", value: "AK123456" });
   });
 
+  it("shows, of documents added together, the first by kind: a national ID before a passport", async () => {
+    // Given at one registration, both are stamped with its moment, copied in the database to the microsecond;
+    // the passport's id is the highest there is.
+    await db.execute(sql`
+      INSERT INTO patient_identifiers (id, facility_id, patient_id, type, value, added_at, added_by)
+      SELECT 'ffffffff-ffff-4fff-bfff-ffffffffffff', facility_id, patient_id, 'passport', 'AK123456', added_at, added_by
+      FROM patient_identifiers WHERE patient_id = ${patient.id} AND type = 'national_id'`);
+
+    const found = await (await call("GET", "/patients?q=Kamau", facility.id, clerk)).json();
+
+    expect(found.patients[0].idDocument).toEqual({ type: "national_id", value: "12345678" });
+  });
+
   it("shows the document added last, though its request began before another's was added", async () => {
     const [membership] = await db.select({ id: memberships.id }).from(memberships).where(eq(memberships.userId, clerk.id));
     let go!: () => void;
