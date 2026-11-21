@@ -127,6 +127,7 @@ export function documentDefinition(doc: IssuedDocument): TDocumentDefinitions {
     watermark: doc.voidedAt ? { text: "VOID", opacity: 0.12, bold: true } : undefined,
     content: [
       { text: content.issuer.name, style: "issuer" },
+      ...(content.issuer.address ? [{ text: content.issuer.address, style: "muted" }] : []),
       { text: issuerLine, style: "muted", margin: [0, 0, 0, 16] },
       {
         columns: [

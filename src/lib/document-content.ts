@@ -81,6 +81,8 @@ const issuerSchema = z.object({
   name: z.string(),
   kmhfrCode: z.string(),
   county: z.string().nullable(),
+  /** Absent from documents issued before facilities had one (2026-11-20), since stored content is not parsed again. */
+  address: z.string().nullable().optional(),
 });
 
 /** What is stored: the supplied content plus the issuer. */

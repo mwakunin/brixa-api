@@ -61,6 +61,23 @@ describe("a document's printed page", () => {
     expect(text).toContain("KES 200.00");
   });
 
+  it("prints the facility's address under its name, and a document issued before addresses were kept without one", () => {
+    const addressed = receipt();
+    addressed.content.issuer = { ...addressed.content.issuer, address: "P.O. Box 120-20100, Nakuru" };
+    const header = (documentDefinition(addressed).content as Content[]).slice(0, 3);
+    expect(header).toEqual([
+      expect.objectContaining({ text: "Amani Hospital" }),
+      expect.objectContaining({ text: "P.O. Box 120-20100, Nakuru" }),
+      expect.objectContaining({ text: "KMHFR 12345 · Nakuru" }),
+    ]);
+
+    // Stored content is not parsed again when read, so an older one has no address at all.
+    const older = receipt();
+    delete older.content.issuer.address;
+    const top = (documentDefinition(older).content as Content[]).slice(0, 2);
+    expect(top).toEqual([expect.objectContaining({ text: "Amani Hospital" }), expect.objectContaining({ text: "KMHFR 12345 · Nakuru" })]);
+  });
+
   it("carries the QR that opens this document's verification, on every page", () => {
     for (const page of [1, 2]) {
       const footer = printedText(footerOf(receipt(), page, 2));

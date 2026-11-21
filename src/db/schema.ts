@@ -192,6 +192,12 @@ export const facilities = pgTable("facilities", {
   /** E.164 (rule 13): the number a reminder tells patients to call. Set by the facility admin. */
   phone: text(),
   /**
+   * One line, as printed under the name at the head of every document it
+   * issues, e.g. a P.O. box and town (the staff walkthrough, 2026-11-20). Set
+   * by the facility admin.
+   */
+  address: text(),
+  /**
    * The sender name its SMS go out under, once registered with Africa's
    * Talking on the platform's account; null for the account's default. Set
    * on the superadmin plane, since an unregistered one fails every message.
@@ -204,6 +210,7 @@ export const facilities = pgTable("facilities", {
   oneOf("facilities_status_known", t.status, ["active", "suspended"]),
   check("facilities_keph_level_valid", sql`${t.kephLevel} BETWEEN 1 AND 6`),
   check("facilities_phone_e164", sql`${t.phone} IS NULL OR ${t.phone} ~ '^\\+[1-9][0-9]{7,14}$'`),
+  check("facilities_address_length", sql`${t.address} IS NULL OR char_length(${t.address}) BETWEEN 1 AND 200`),
   // An alphanumeric sender is at most 11 characters.
   check("facilities_sms_sender_id_shape", sql`${t.smsSenderId} IS NULL OR ${t.smsSenderId} ~ '^[A-Za-z0-9][A-Za-z0-9 ]{0,10}$'`),
 ]);

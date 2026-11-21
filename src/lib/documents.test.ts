@@ -89,7 +89,18 @@ describe("issuing a document", () => {
     await db.update(facilities).set({ name: "Amani Hospital (renamed)" }).where(eq(facilities.id, facility.id));
 
     const [stored] = await db.select().from(documents).where(eq(documents.id, issued.id));
-    expect(stored.content.issuer).toEqual({ name: "Amani Hospital", kmhfrCode: facility.kmhfrCode, county: null });
+    expect(stored.content.issuer).toEqual({ name: "Amani Hospital", kmhfrCode: facility.kmhfrCode, county: null, address: null });
+  });
+
+  it("freezes the facility's address with it", async () => {
+    const facility = await facilityWithReceipts();
+    await db.update(facilities).set({ address: "P.O. Box 120-20100, Nakuru" }).where(eq(facilities.id, facility.id));
+    const issued = await issue(facility.id);
+
+    await db.update(facilities).set({ address: "Kenyatta Avenue, Nakuru" }).where(eq(facilities.id, facility.id));
+
+    const [stored] = await db.select().from(documents).where(eq(documents.id, issued.id));
+    expect(stored.content.issuer.address).toBe("P.O. Box 120-20100, Nakuru");
   });
 
   it("mints a distinct unguessable code for each document", async () => {

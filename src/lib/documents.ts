@@ -78,7 +78,7 @@ export async function issueDocument(
   const printed = printedContentSchema.parse(input.content);
 
   const [issuer] = await tx
-    .select({ name: facilities.name, kmhfrCode: facilities.kmhfrCode, county: facilities.county })
+    .select({ name: facilities.name, kmhfrCode: facilities.kmhfrCode, county: facilities.county, address: facilities.address })
     .from(facilities)
     .where(eq(facilities.id, input.facilityId))
     .limit(1);

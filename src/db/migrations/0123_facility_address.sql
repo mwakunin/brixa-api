@@ -1,0 +1,2 @@
+ALTER TABLE "facilities" ADD COLUMN "address" text;--> statement-breakpoint
+ALTER TABLE "facilities" ADD CONSTRAINT "facilities_address_length" CHECK ("facilities"."address" IS NULL OR char_length("facilities"."address") BETWEEN 1 AND 200);

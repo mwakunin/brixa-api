@@ -41,13 +41,16 @@ const FacilitySchema = MyFacilitySchema.extend({
   county: z.string().nullable(),
   /** The number appointment reminders tell patients to call. */
   phone: z.string().nullable(),
+  /** One line, printed under the name at the head of every document it issues. */
+  address: z.string().nullable(),
   /** The sender its SMS go out under; null for the platform account's default. */
   smsSenderId: z.string().nullable(),
 });
 
 const UpdateBodySchema = z.strictObject({
-  phone: z.string().trim().max(30).refine(v => normalizePhone(v) !== null, "Not a phone number we recognise").nullable(),
-});
+  phone: z.string().trim().max(30).refine(v => normalizePhone(v) !== null, "Not a phone number we recognise").nullable().optional(),
+  address: z.string().trim().min(1).max(200).regex(/^\P{C}+$/u, "One line").nullable().optional(),
+}).refine(b => b.phone !== undefined || b.address !== undefined, "Give the phone, the address, or both");
 
 export const getFacility = createRoute({
   tags,
@@ -70,7 +73,9 @@ export const updateFacility = createRoute({
   method: "patch",
   path: "/facility",
   summary: "Change the facility's details",
-  description: "The phone number appointment reminders tell patients to call. Facility admin only; audited with the old and new.",
+  description:
+    "The phone number appointment reminders tell patients to call, and the address printed at the head of every document issued from now on. "
+    + "Either or both; null clears one. Facility admin only; audited with the old and new.",
   middleware: [requireMembershipRole("facility_admin")] as const,
   request: { headers: facilityHeaders, body: jsonContentRequired(UpdateBodySchema, "The change") },
   responses: {

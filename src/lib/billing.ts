@@ -318,7 +318,19 @@ async function invoiceById(tx: AppDb, invoiceId: string, lock = false): Promise<
   return invoice;
 }
 
-async function linesOf(tx: AppDb, invoiceId: string) {
+/** One line of an invoice. */
+interface Line {
+  code: string;
+  /** The item's printed name, neutral where its own would disclose (rule 27). */
+  description: string;
+  quantity: string;
+  unitPriceCents: number;
+  amountCents: number;
+  serviceDate: string;
+}
+
+/** An invoice's lines in the order it prints them. */
+export async function linesOf(tx: AppDb, invoiceId: string): Promise<Line[]> {
   return tx
     .select({
       code: invoiceLines.code,
@@ -332,8 +344,6 @@ async function linesOf(tx: AppDb, invoiceId: string) {
     .where(eq(invoiceLines.invoiceId, invoiceId))
     .orderBy(asc(invoiceLines.serviceDate), asc(invoiceLines.code), asc(invoiceLines.id));
 }
-
-type Line = Awaited<ReturnType<typeof linesOf>>[number];
 
 export interface FinalisedInvoice {
   invoice: InvoiceRow;

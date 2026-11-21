@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { Hospital, Person } from "@/test/hospital";
 
 import db, { pool } from "@/db";
-import { auditLog, documents, payments } from "@/db/schema";
+import { auditLog, documents, payments, user } from "@/db/schema";
 import { runAsFacility } from "@/db/tenant-transaction";
 import { approveAdjustment, requestAdjustment } from "@/lib/adjustments";
 import { allocate } from "@/lib/allocations";
@@ -109,13 +109,20 @@ describe("payments", () => {
     expect(await invoice(invoiceId)).toMatchObject({ paidCents: 50_800, balanceCents: 0 });
 
     const [receipt] = await db.select().from(documents).where(eq(documents.id, payment.documentId));
+    const [cashier] = await db.select({ name: user.name }).from(user).where(eq(user.id, h.cashier.id));
     expect(receipt.content).toMatchObject({
       title: "Receipt",
       fields: expect.arrayContaining([
         { label: "Received from", value: "Test Patient" },
         { label: "For", value: `Invoice INV-${year()}-000001` },
         { label: "Paid by", value: "Cash" },
+        { label: "Received by", value: cashier.name },
       ]),
+      // What the bill was for, as the bill prints it.
+      table: {
+        columns: [{ label: "Item" }, { label: "Qty", align: "right" }, { label: "Amount", align: "right" }],
+        rows: [["CONS", "1", "KES 500.00"], ["PCM-500", "3", "KES 8.00"]],
+      },
       totals: [
         { label: "Amount received", value: "KES 600.00" },
         { label: "Applied to the bill", value: "KES 508.00" },
