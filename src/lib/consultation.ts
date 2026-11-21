@@ -185,8 +185,15 @@ async function lastVisitOf(
     return null;
 
   // A sensitive clinic's name alone discloses (rule 27), so a visit to one the reader may not see shows its date only.
-  const clinics = (await clinicCategoriesOf(tx, [previous.id])).get(previous.id);
-  const visitSight = sight(reader, { categories: categoriesOf(clinics), recordedBy: [] });
+  // Every point the visit queued at is read in one statement, so the name shown is always one the check covered:
+  // a queue entry committed between two reads could otherwise bring a sensitive clinic's name past it.
+  const points = await tx
+    .select({ name: servicePoints.name, kind: servicePoints.kind, category: servicePoints.sensitiveCategory })
+    .from(queueEntries)
+    .innerJoin(servicePoints, eq(servicePoints.id, queueEntries.servicePointId))
+    .where(eq(queueEntries.encounterId, previous.id))
+    .orderBy(desc(queueEntries.joinedAt), desc(queueEntries.id));
+  const visitSight = sight(reader, { categories: categoriesOf(points.map(p => p.category)), recordedBy: [] });
   if (visitSight === "restricted") {
     return {
       visit: { encounterId: previous.id, startedAt: previous.startedAt, restricted: true, clinic: null, diagnoses: [], medicines: [] },
@@ -194,13 +201,7 @@ async function lastVisitOf(
     };
   }
 
-  const [clinic] = await tx
-    .select({ name: servicePoints.name })
-    .from(queueEntries)
-    .innerJoin(servicePoints, eq(servicePoints.id, queueEntries.servicePointId))
-    .where(and(eq(queueEntries.encounterId, previous.id), eq(servicePoints.kind, "consultation")))
-    .orderBy(desc(queueEntries.joinedAt))
-    .limit(1);
+  const clinic = points.find(p => p.kind === "consultation");
   const diagnoses = await diagnosesSeen(tx, previous.id, reader);
   const orders = await ordersSeen(tx, previous.id, reader);
 
