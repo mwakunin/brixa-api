@@ -19,6 +19,7 @@ import { currentDrug, describeDrug, ingredientsOf, INJECTED_ROUTES } from "./dru
 import { printedQuantity } from "./money";
 import { PROFESSIONS } from "./professions";
 import { isRestricted, orderGuards } from "./sensitivity";
+import { closedVisit } from "./visit-closed";
 
 /**
  * Prescriptions (SCHEMA.md §8, P3 slice 4b): medicines ordered on an open
@@ -357,7 +358,7 @@ export async function prescribe(
   if (!encounter)
     throw new PrescriptionError("encounter_not_found");
   if (encounter.status !== "open")
-    throw new PrescriptionError("not_open");
+    throw await closedVisit(tx, encounterId, new PrescriptionError("not_open"));
 
   const drugs = await catalogueDrugs(tx, input.items, actor);
   const today = businessDate(at);

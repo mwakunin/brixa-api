@@ -14,6 +14,7 @@ import { cancelOrderItemCharge, captureOrderItemCharge, ChargeError } from "./ch
 import { refreshReport } from "./lab-results";
 import { returnWithResults } from "./results-return";
 import { alertRecorders, filterFor, isRestricted, orderGuards, readDetail, readerOf } from "./sensitivity";
+import { closedVisit } from "./visit-closed";
 
 /**
  * Orders (SCHEMA.md §8, P3 slice 4a): lab tests and services asked for on an
@@ -188,7 +189,7 @@ async function place(
 ): Promise<OrderRow> {
   const encounter = await lockEncounter(tx, encounterId);
   if (encounter.status !== "open")
-    throw new OrderError("not_open");
+    throw await closedVisit(tx, encounterId, new OrderError("not_open"));
   if (input.walkIn && encounter.kind !== "opd")
     throw new OrderError("not_outpatient");
   const resolved = await resolveItems(tx, input.items);

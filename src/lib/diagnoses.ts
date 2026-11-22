@@ -10,6 +10,7 @@ import type { Filtered, Guarded, Reader, SensitiveCategory } from "./sensitivity
 import { recordAudit } from "./audit";
 import { codableIcd } from "./icd11";
 import { alertRecorders, categoriesOf, categoryOfCode, clinicCategoriesOf, filterFor, isRestricted, readDetail, readerOf, sight } from "./sensitivity";
+import { closedVisit } from "./visit-closed";
 
 /**
  * Diagnoses (SCHEMA.md §8, P3 slice 3a), coded in ICD-11 (rule 8) and made by
@@ -117,7 +118,7 @@ export async function recordDiagnosis(
 ): Promise<DiagnosisRow> {
   const encounter = await lockEncounter(tx, encounterId);
   if (encounter.status !== "open")
-    throw new DiagnosisError("not_open");
+    throw await closedVisit(tx, encounterId, new DiagnosisError("not_open"));
 
   const icd = await codableIcd(tx, input.code);
   if (!icd)

@@ -632,6 +632,44 @@ export const numberSeriesCounters = pgTable("number_series_counters", {
 ]);
 
 // ---------------------------------------------------------------------------
+// Repeat-safe writes (decided 2026-11-22)
+// ---------------------------------------------------------------------------
+
+/**
+ * A write sent with an Idempotency-Key, and the answer it got, so the same
+ * write sent again (a retry after a dropped connection) is answered with that
+ * answer instead of being done twice (`middlewares/tenant.ts`).
+ *
+ * Written in the request's own transaction: a write that commits keeps its
+ * key and answer, and one refused or failed keeps neither, so its retry runs
+ * afresh. A second request with the same key waits on the first's unique
+ * entry until it commits. Keys are a person's own at one facility. The
+ * nightly close forgets those more than a day old (`jobs/idempotency.ts`).
+ *
+ * `answer` is the response as sent, which may name a patient: it is kept
+ * under the facility's row-level security, as the record it came from.
+ */
+export const idempotentRequests = pgTable("idempotent_requests", {
+  id: uuid().primaryKey().defaultRandom(),
+  facilityId: uuid().notNull().references(() => facilities.id),
+  /** Kept no longer than the account: a key's answer goes with it. */
+  userId: text().notNull().references(() => user.id, { onDelete: "cascade" }),
+  key: text().notNull(),
+  /** The method and path, and a hash of the body: the same key for another write is refused. */
+  request: text().notNull(),
+  bodyHash: text().notNull(),
+  /** Null only within the transaction that is doing the write. */
+  status: integer(),
+  answer: text(),
+  contentType: text(),
+  createdAt: createdAt(),
+}, t => [
+  uniqueIndex("idempotent_requests_key").on(t.facilityId, t.userId, t.key),
+  index("idempotent_requests_age").on(t.facilityId, t.userId, t.createdAt),
+  check("idempotent_requests_key_shape", sql`${t.key} ~ '^[A-Za-z0-9._:-]{8,200}$'`),
+]);
+
+// ---------------------------------------------------------------------------
 // Outbox (CLAUDE.md rule 18, §7)
 // ---------------------------------------------------------------------------
 
@@ -3916,6 +3954,7 @@ export type AuditAction = (typeof auditLog.$inferInsert)["action"];
  * primary key and listed separately in the RLS tests.
  */
 export const TENANT_TABLES = [
+  "idempotent_requests",
   "memberships",
   "audit_log",
   "number_series",

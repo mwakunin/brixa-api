@@ -33,6 +33,20 @@ describe("the staff app's origin", () => {
     expect(res.headers.get("access-control-allow-headers")?.toLowerCase()).toContain("x-facility-id");
   });
 
+  it("allows the Idempotency-Key a screen sends with its writes", async () => {
+    const res = await preflight(appOrigin);
+
+    expect(res.headers.get("access-control-allow-headers")?.toLowerCase()).toContain("idempotency-key");
+  });
+
+  it("lets the staff app read that a write was answered from its first time", async () => {
+    const res = await app.request("/health", { headers: { "origin": appOrigin, "x-forwarded-for": nextIp() } });
+
+    const exposed = res.headers.get("access-control-expose-headers")?.toLowerCase() ?? "";
+    expect(exposed).toContain("idempotent-replayed");
+    expect(exposed).toContain("retry-after");
+  });
+
   it("is the only origin granted cross-origin access", async () => {
     const res = await preflight("https://evil.example");
 

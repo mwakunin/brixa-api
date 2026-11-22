@@ -5,7 +5,7 @@ import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { ONE_LINE } from "@/lib/validation";
 import { requireMembershipRole } from "@/middlewares/auth";
-import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
+import { facilityHeaders, keyReused, tenantResponses } from "@/routes/facility/facility.routes";
 
 /**
  * The item catalogue and its prices. The facility admin and the finance
@@ -114,6 +114,7 @@ export const setPrintedName = createRoute({
   responses: {
     [HttpStatusCodes.OK]: jsonContent(z.object({ id: z.uuid(), printedName: z.string().nullable() }), "Set"),
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(PrintedNameBodySchema), "Invalid name"),
+    ...keyReused,
     ...tenantResponses,
   },
 });

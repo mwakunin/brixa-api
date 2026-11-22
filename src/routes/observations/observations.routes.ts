@@ -24,7 +24,7 @@ const clinicalReaders = requireMembershipRole(...CLINICAL_ROLES);
 const RefusalSchema = z.object({ message: z.string(), code: z.string() });
 const IdParamsSchema = z.object({ id: z.uuid() });
 
-const ReadingSchema = z.object({
+export const ReadingSchema = z.object({
   code: z.enum(VITAL_SIGN_CODES),
   /** In the sign's unit: °C, /min, mmHg, %, kg, cm, mmol/L, or a 0–10 score. */
   value: z.number(),

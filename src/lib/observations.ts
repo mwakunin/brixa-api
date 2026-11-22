@@ -8,6 +8,7 @@ import type { PatientActor } from "./patients";
 import type { VitalSign } from "./vital-signs";
 
 import { recordAudit } from "./audit";
+import { closedVisit } from "./visit-closed";
 import { VITAL_SIGNS } from "./vital-signs";
 
 /**
@@ -89,7 +90,7 @@ export async function recordVitals(
   if (!encounter)
     throw new ObservationError("encounter_not_found");
   if (encounter.status !== "open")
-    throw new ObservationError("not_open");
+    throw await closedVisit(tx, encounterId, new ObservationError("not_open"));
 
   if (!input.readings.every(plausible))
     throw new ObservationError("implausible");

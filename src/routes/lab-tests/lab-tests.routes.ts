@@ -5,7 +5,7 @@ import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { ONE_LINE, sensitiveCategorySchema } from "@/lib/validation";
 import { requireMembershipRole } from "@/middlewares/auth";
-import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
+import { facilityHeaders, keyReused, tenantResponses } from "@/routes/facility/facility.routes";
 
 /**
  * The lab's catalogue: its tests, their analytes, and each number's
@@ -193,6 +193,7 @@ export const updateLabTest = createRoute({
   responses: {
     [HttpStatusCodes.OK]: jsonContent(LabTestSchema, "Updated"),
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(UpdateTestBodySchema), "Invalid change"),
+    ...keyReused,
     ...tenantResponses,
   },
 });

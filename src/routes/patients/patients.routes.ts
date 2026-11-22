@@ -9,7 +9,7 @@ import { normalizePhone } from "@/lib/phone";
 import { ONE_LINE, personNameSchema } from "@/lib/validation";
 import { requireMembershipRole } from "@/middlewares/auth";
 import { rateLimits } from "@/middlewares/rate-limit";
-import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
+import { facilityHeaders, keyReused, KeyReusedSchema, tenantResponses } from "@/routes/facility/facility.routes";
 
 /**
  * The patient register. Front-desk staff register and correct; every member
@@ -210,7 +210,7 @@ export const registerPatient = createRoute({
   request: { headers: facilityHeaders, body: jsonContentRequired(RegisterBodySchema, "The patient") },
   responses: {
     [HttpStatusCodes.CREATED]: jsonContent(PatientRecordSchema, "Registered"),
-    [HttpStatusCodes.CONFLICT]: jsonContent(DuplicateSchema, "Possibly already registered"),
+    [HttpStatusCodes.CONFLICT]: jsonContent(z.union([DuplicateSchema, KeyReusedSchema]), "Possibly already registered, or an Idempotency-Key already used for another request"),
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(RegisterBodySchema), "Missing or invalid details"),
     ...tenantResponses,
   },
@@ -261,6 +261,7 @@ export const updatePatient = createRoute({
   responses: {
     [HttpStatusCodes.OK]: jsonContent(PatientRecordSchema, "Corrected"),
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(UpdateBodySchema), "Invalid change"),
+    ...keyReused,
     ...tenantResponses,
   },
 });
@@ -281,7 +282,7 @@ export const addIdentifier = createRoute({
   },
   responses: {
     [HttpStatusCodes.OK]: jsonContent(PatientRecordSchema, "Added"),
-    [HttpStatusCodes.CONFLICT]: jsonContent(DuplicateSchema, "Another patient has this number"),
+    [HttpStatusCodes.CONFLICT]: jsonContent(z.union([DuplicateSchema, KeyReusedSchema]), "Another patient has this number, or an Idempotency-Key already used for another request"),
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(AddIdentifierBodySchema), "Invalid identifier"),
     ...tenantResponses,
   },
@@ -302,6 +303,7 @@ export const addContact = createRoute({
   responses: {
     [HttpStatusCodes.OK]: jsonContent(PatientRecordSchema, "Added"),
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(ContactSchema), "Invalid contact"),
+    ...keyReused,
     ...tenantResponses,
   },
 });
@@ -321,6 +323,7 @@ export const updateContact = createRoute({
   responses: {
     [HttpStatusCodes.OK]: jsonContent(PatientRecordSchema, "Corrected"),
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(UpdateContactBodySchema), "Invalid change"),
+    ...keyReused,
     ...tenantResponses,
   },
 });

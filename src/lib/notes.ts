@@ -10,6 +10,7 @@ import type { Filtered, Reader, SensitiveCategory } from "./sensitivity";
 
 import { recordAudit } from "./audit";
 import { alertRecorders, categoriesOf, clinicCategoriesOf, filterFor, isRestricted, patientOfEncounter, readDetail, readerOf } from "./sensitivity";
+import { closedVisit } from "./visit-closed";
 
 /**
  * Clinical notes (SCHEMA.md §8, P3 slice 3b). A note is the author's draft
@@ -163,7 +164,7 @@ export async function startNote(
   now = new Date(),
 ): Promise<NoteRow> {
   if (await encounterStatus(tx, encounterId) !== "open")
-    throw new NoteError("not_open");
+    throw await closedVisit(tx, encounterId, new NoteError("not_open"));
   mayWrite(actor, input.kind);
 
   const [note] = await tx.insert(clinicalNotes).values({

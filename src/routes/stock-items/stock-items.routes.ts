@@ -7,7 +7,7 @@ import { MAX_IMPORT_ROWS } from "@/lib/item-import";
 import { STOCK_KEEPERS } from "@/lib/stock-items";
 import { ONE_LINE } from "@/lib/validation";
 import { requireMembershipRole } from "@/middlewares/auth";
-import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
+import { facilityHeaders, KeyReusedSchema, tenantResponses } from "@/routes/facility/facility.routes";
 
 /**
  * What the facility stocks: set up by the facility admin, pharmacists and
@@ -171,7 +171,7 @@ export const previewImport = createRoute({
   request: { headers: facilityHeaders, body: jsonContentRequired(PreviewBodySchema, "The file") },
   responses: {
     [HttpStatusCodes.OK]: jsonContent(z.object({ rows: z.array(PlannedRowSchema) }), "Row by row"),
-    [HttpStatusCodes.CONFLICT]: jsonContent(ImportRefusalSchema, "Not a file this reads"),
+    [HttpStatusCodes.CONFLICT]: jsonContent(z.union([ImportRefusalSchema, KeyReusedSchema]), "Not a file this reads, or an Idempotency-Key already used for another request"),
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(PreviewBodySchema), "No file"),
     ...tenantResponses,
   },
@@ -196,7 +196,7 @@ export const importItems = createRoute({
       /** Awaiting approval; null when no price changed. */
       priceChangeId: z.uuid().nullable(),
     }), "Imported"),
-    [HttpStatusCodes.CONFLICT]: jsonContent(ImportRefusalSchema, "Not imported"),
+    [HttpStatusCodes.CONFLICT]: jsonContent(z.union([ImportRefusalSchema, KeyReusedSchema]), "Not imported, or an Idempotency-Key already used for another request"),
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(ImportBodySchema), "No file"),
     ...tenantResponses,
   },

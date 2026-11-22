@@ -10,7 +10,7 @@ import { CLINICAL_ROLES } from "@/lib/professions";
 import { recordRefusal } from "@/lib/refusal-audit";
 import { ONE_LINE } from "@/lib/validation";
 import { requireClinicalRole, requireMembershipRole } from "@/middlewares/auth";
-import { clinicalResponses, facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
+import { clinicalResponses, facilityHeaders, keyReused, tenantResponses } from "@/routes/facility/facility.routes";
 
 /**
  * Break-glass (rule 27, SPEC.md D5): a clinician opens a patient's restricted
@@ -92,6 +92,7 @@ export const breakGlass = createRoute({
   responses: {
     [HttpStatusCodes.CREATED]: jsonContent(GrantSchema, "Open until `expiresAt`"),
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(BreakBodySchema), "No reason"),
+    ...keyReused,
     ...clinicalResponses,
   },
 });

@@ -17,6 +17,12 @@ const tags = ["Facility"];
  */
 export const facilityHeaders = z.object({
   "x-facility-id": z.uuid().openapi({ description: "The facility this request acts in" }),
+  "idempotency-key": z.string().optional().openapi({
+    description:
+      "On a write: a key made once per action (8 to 200 letters, digits, or . _ : -) and sent again with any retry. "
+      + "A repeat is answered with the first answer (`Idempotent-Replayed: true`) and not done again; a key sent with another request is refused "
+      + "(`idempotency_key_reused`). A refused write keeps nothing, so its retry runs afresh. Keys are kept a day.",
+  }),
 });
 
 /**
@@ -29,6 +35,16 @@ export const tenantResponses = {
   [HttpStatusCodes.UNAUTHORIZED]: jsonContent(unauthorizedSchema, "Not signed in"),
   [HttpStatusCodes.FORBIDDEN]: jsonContent(forbiddenSchema, "Facility suspended, or role not allowed"),
   [HttpStatusCodes.NOT_FOUND]: jsonContent(notFoundSchema, "Not found, or not yours: the facility, a membership there, or what the path names"),
+};
+
+/**
+ * A tenant write's 409 where the route declares none of its own: an
+ * Idempotency-Key already used for another request (`middlewares/tenant.ts`).
+ */
+export const KeyReusedSchema = z.object({ message: z.string(), code: z.literal("idempotency_key_reused") });
+
+export const keyReused = {
+  [HttpStatusCodes.CONFLICT]: jsonContent(KeyReusedSchema, "An Idempotency-Key already used for another request (`idempotency_key_reused`)"),
 };
 
 /** As `tenantResponses`, for a route behind `requireClinicalRole`: a lapsed licence answers 403 with a code. */
@@ -86,6 +102,7 @@ export const updateFacility = createRoute({
   responses: {
     [HttpStatusCodes.OK]: jsonContent(FacilitySchema, "Changed"),
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(UpdateBodySchema), "Invalid change"),
+    ...keyReused,
     ...tenantResponses,
   },
 });

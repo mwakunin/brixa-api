@@ -5,7 +5,10 @@ import { createErrorSchema } from "stoker/openapi/schemas";
 
 import { ONE_LINE, sensitiveCategorySchema } from "@/lib/validation";
 import { requireClinicalRole, requireMembershipRole } from "@/middlewares/auth";
+import { RecordBodySchema as AllergyBodySchema } from "@/routes/allergies/allergies.routes";
+import { COMPLAINT_STAFF } from "@/routes/consultation/consultation.routes";
 import { clinicalResponses, facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
+import { ReadingSchema } from "@/routes/observations/observations.routes";
 
 /**
  * Service points and their queues: triage and the clinics. The facility admin
@@ -241,6 +244,37 @@ export const finish = createRoute({
   },
 });
 
+const TriageBodySchema = z.strictObject({
+  /** Today's complaint, in a few words as the patient tells it. */
+  complaint: z.string().trim().min(2).max(200).regex(ONE_LINE, "One line").optional(),
+  /** The vital signs taken now; leave out what was not taken. */
+  readings: z.array(ReadingSchema).max(20).refine(rs => new Set(rs.map(r => r.code)).size === rs.length, "Give each sign once").optional(),
+  /** Allergies asked about: "no known allergies", or each one found. */
+  allergies: z.array(AllergyBodySchema).max(10).optional(),
+  priority: z.enum(["emergency", "urgent", "routine"]),
+  /** The clinic the patient goes to next. */
+  nextServicePointId: z.uuid().optional(),
+});
+
+export const triage = createRoute({
+  tags,
+  method: "post",
+  path: "/queue-entries/{id}/triage",
+  summary: "Triage a patient in one step",
+  description:
+    "Records today's complaint, the vital signs and the allergies asked about, sets how soon the patient must be seen, "
+    + "and sends them to the next clinic: all of it, or, on any refusal, none of it. Each part is checked as its own route checks it. "
+    + "Send an Idempotency-Key, so a press sent again after a dropped connection records it once.",
+  middleware: [requireClinicalRole(...COMPLAINT_STAFF)] as const,
+  request: { headers: facilityHeaders, params: IdParamsSchema, body: jsonContentRequired(TriageBodySchema, "The triage") },
+  responses: {
+    [HttpStatusCodes.OK]: jsonContent(z.object({ finished: QueueEntrySchema, next: QueueEntrySchema.nullable() }), "Triaged and sent on"),
+    ...refusals,
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(TriageBodySchema), "Invalid triage"),
+    ...clinicalResponses,
+  },
+});
+
 export const removeFromQueue = createRoute({
   tags,
   method: "post",
@@ -263,4 +297,5 @@ export type ViewQueueRoute = typeof viewQueue;
 export type JoinQueueRoute = typeof joinQueue;
 export type ServeRoute = typeof serve;
 export type FinishRoute = typeof finish;
+export type TriageRoute = typeof triage;
 export type RemoveFromQueueRoute = typeof removeFromQueue;

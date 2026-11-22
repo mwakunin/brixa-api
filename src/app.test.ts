@@ -83,6 +83,59 @@ describe("the API description", () => {
     expect(undeclared).toEqual([]);
   });
 
+  // A tenant write sent with an Idempotency-Key it already used for another
+  // request is refused with a 409 (`idempotency_key_reused`), whatever the
+  // route; a route that does not say so misleads its clients.
+  it("lets a patient write's 409 be a reused key's, beside a likely duplicate", async () => {
+    const doc = await (await app.request("/doc")).json() as { paths: Record<string, Record<string, { responses: Record<string, { content: { "application/json": { schema: unknown } } }> }>> };
+
+    for (const [path, method] of [["/patients", "post"], ["/patients/{id}/identifiers", "post"]] as const) {
+      const schema = JSON.stringify(doc.paths[path][method].responses["409"].content["application/json"].schema);
+      expect(schema, `${method.toUpperCase()} ${path}`).toContain("idempotency_key_reused");
+      expect(schema, `${method.toUpperCase()} ${path}`).toContain("possible_duplicate");
+    }
+  });
+
+  it("declares, on every tenant write, a 409 whose shape takes a reused Idempotency-Key's answer", async () => {
+    type Schema = Record<string, unknown>;
+    const doc = await (await app.request("/doc")).json() as {
+      paths: Record<string, Record<string, Operation & { responses: Record<string, { content?: { "application/json"?: { schema: Schema } } }> }>>;
+      components?: { schemas?: Record<string, Schema> };
+    };
+    const writes = new Set(["post", "put", "patch", "delete"]);
+    const answer = { message: "This Idempotency-Key was sent with another request.", code: "idempotency_key_reused" };
+
+    // Whether a value fits a schema, for the JSON Schema this description uses.
+    const fits = (schema: Schema | undefined, value: unknown): boolean => {
+      if (!schema)
+        return false;
+      if (typeof schema.$ref === "string")
+        return fits(doc.components?.schemas?.[schema.$ref.split("/").pop()!], value);
+      if (Array.isArray(schema.anyOf) || Array.isArray(schema.oneOf))
+        return ((schema.anyOf ?? schema.oneOf) as Schema[]).some(s => fits(s, value));
+      if ("const" in schema)
+        return schema.const === value;
+      if (Array.isArray(schema.enum))
+        return schema.enum.includes(value);
+      if (schema.type === "string")
+        return typeof value === "string";
+      if (schema.type === "object" && value && typeof value === "object") {
+        const properties = (schema.properties ?? {}) as Record<string, Schema>;
+        return ((schema.required ?? []) as string[]).every(k => k in value)
+          && Object.entries(value).every(([k, v]) => !(k in properties) || fits(properties[k], v));
+      }
+      return false;
+    };
+
+    const unfit = Object.entries(doc.paths).flatMap(([path, operations]) =>
+      Object.entries(operations)
+        .filter(([method, op]) => writes.has(method) && op.parameters?.some(p => p.in === "header" && p.name === "x-facility-id"))
+        .filter(([, op]) => !fits(op.responses["409"]?.content?.["application/json"]?.schema, answer))
+        .map(([method]) => `${method.toUpperCase()} ${path}`));
+
+    expect(unfit).toEqual([]);
+  });
+
   // JSON Schema's `pattern` is the regular expression alone. zod-to-openapi 9.1.0 writes a flagged
   // one's source with "/u" or "/i" left on its end, which no text can match.
   it("writes every pattern as JSON Schema reads it, with no regex flags left on its end", async () => {

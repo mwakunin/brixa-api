@@ -69,6 +69,12 @@ const OWNER_ALLOWLIST = new Map([
     + "facility whose run failed, and does each facility's work as that tenant",
   ],
   [
+    "jobs/idempotency.ts",
+    "the nightly close forgets day-old Idempotency-Keys of every facility; "
+    + "the runtime role deletes from no tenant table (CLAUDE.md rule 5), so the "
+    + "owner does, and only rows more than a day old",
+  ],
+  [
     "jobs/reconciliation.ts",
     "the daily check serves every facility; it lists them, and records a "
     + "facility whose check failed, and checks each facility as that tenant",

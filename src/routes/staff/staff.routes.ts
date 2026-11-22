@@ -8,7 +8,7 @@ import { MEMBERSHIP_ROLES } from "@/lib/roles";
 import { personNameSchema, sensitiveCategorySchema } from "@/lib/validation";
 import { requireMembershipRole } from "@/middlewares/auth";
 import { rateLimits } from "@/middlewares/rate-limit";
-import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
+import { facilityHeaders, keyReused, tenantResponses } from "@/routes/facility/facility.routes";
 
 /**
  * Staff, run by the facility admin. Accounts are invite-only (SPEC.md §2):
@@ -254,6 +254,7 @@ export const setSensitiveAccess = createRoute({
   responses: {
     [HttpStatusCodes.OK]: jsonContent(z.object({ id: z.uuid(), sensitiveCategories: z.array(sensitiveCategorySchema) }), "Assigned"),
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(SensitiveAccessBodySchema), "Not a category"),
+    ...keyReused,
     ...tenantResponses,
   },
 });

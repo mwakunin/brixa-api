@@ -40,7 +40,7 @@ export const AllergySchema = z.object({
 });
 
 // Strict, so a misspelt `drugCode` is refused rather than the allergy recorded with no drug to check.
-const RecordBodySchema = z.union([
+export const RecordBodySchema = z.union([
   z.strictObject({
     category: z.enum(["drug", "food", "environment", "other"]),
     /** As the patient or their record says it, e.g. "Penicillin", "Groundnuts". */

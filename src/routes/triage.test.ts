@@ -3,8 +3,10 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import db, { pool } from "@/db";
 import { auditLog } from "@/db/schema";
+import { runAsFacility } from "@/db/tenant-transaction";
 import { addDays, businessDate } from "@/lib/dates";
-import { addMembership, makeFacility, makeOnboardedFacility, resetDb, signedInUser } from "@/test/helpers";
+import { closeStaleVisit } from "@/lib/encounters";
+import { addMembership, backendPid, makeFacility, makeOnboardedFacility, resetDb, signedInUser, waitForBlockedBackend } from "@/test/helpers";
 import { call } from "@/test/hospital";
 
 /** P3 slice 2: vital signs, allergies, and the triage priority that orders the clinic queues. */
@@ -310,5 +312,116 @@ describe("the triage priority", () => {
     await at(c, c.doctor, "POST", `/queue-entries/${back.id}/serve`);
     const state = (q: Promise<unknown>) => q.then(() => "ok", (e: { constraint?: string; code?: string }) => e.constraint ?? e.code);
     expect(await state(pool.query("UPDATE queue_entries SET status = 'done', ended_at = now(), ended_by = served_by, priority = 'routine' WHERE id = $1", [back.id]))).toBe("23514");
+  });
+});
+
+describe("triage in one step", () => {
+  /** A patient called in at triage, with a clinic to send them to. */
+  async function calledIn(c: Clinic) {
+    const triage = await c.point("Triage", "triage");
+    const gopd = await c.point("General OPD", "consultation");
+    const visit = await c.visit({ queueAt: triage });
+    expect((await at(c, c.nurse, "POST", `/queue-entries/${visit.queue.entryId}/serve`)).status).toBe(200);
+    return { triage, gopd, visit, entryId: visit.queue.entryId as string };
+  }
+
+  const triageBody = (gopd: string, extra: Record<string, unknown> = {}) => ({
+    complaint: "Fever and headache for three days",
+    readings: [{ code: "temperature", value: 38.4 }, { code: "pulse", value: 104 }],
+    allergies: [{ noKnownAllergies: true }],
+    priority: "urgent",
+    nextServicePointId: gopd,
+    ...extra,
+  });
+
+  const recorded = async (c: Clinic, encounterId: string, patientId: string) => ({
+    complaint: (await (await at(c, c.doctor, "GET", `/encounters/${encounterId}/consultation`)).json()).complaint?.text ?? null,
+    readings: (await (await at(c, c.nurse, "GET", `/encounters/${encounterId}/observations`)).json()).observations.length,
+    allergies: (await (await at(c, c.nurse, "GET", `/patients/${patientId}/allergies`)).json()).allergies.map((a: { category: string }) => a.category),
+  });
+
+  it("records the complaint, vital signs and allergies, and sends the patient on, in one call", async () => {
+    const c = await clinic();
+    const { gopd, visit, entryId } = await calledIn(c);
+
+    const res = await at(c, c.nurse, "POST", `/queue-entries/${entryId}/triage`, triageBody(gopd));
+
+    expect(res.status).toBe(200);
+    const sent = await res.json();
+    // How soon is set on the triage entry, which the clinic's queue orders by.
+    expect(sent.finished).toMatchObject({ id: entryId, status: "done", priority: "urgent" });
+    expect(sent.next).toMatchObject({ servicePointId: gopd, status: "waiting" });
+    expect(await recorded(c, visit.id, visit.patientId)).toEqual({ complaint: "Fever and headache for three days", readings: 2, allergies: ["none_known"] });
+  });
+
+  it("saves nothing when any part is refused, so it can be put right and sent again", async () => {
+    const c = await clinic();
+    const { gopd, visit, entryId } = await calledIn(c);
+    // An allergy stands, so "no known allergies" is refused: the last part to be recorded.
+    expect((await at(c, c.nurse, "POST", `/patients/${visit.patientId}/allergies`, { category: "drug", allergen: "Penicillin" })).status).toBe(201);
+
+    const refused = await at(c, c.nurse, "POST", `/queue-entries/${entryId}/triage`, triageBody(gopd));
+
+    expect(refused.status).toBe(409);
+    expect(await recorded(c, visit.id, visit.patientId)).toEqual({ complaint: null, readings: 0, allergies: ["drug"] });
+    const corrected = await at(c, c.nurse, "POST", `/queue-entries/${entryId}/triage`, triageBody(gopd, { allergies: [] }));
+    expect(corrected.status).toBe(200);
+  });
+
+  it("says when the visit was cancelled, and by whom, if it no longer takes triage", async () => {
+    const c = await clinic();
+    await c.point("Triage", "triage");
+    const gopd = await c.point("General OPD", "consultation");
+    // Cancelled while the patient waited: a visit is never cancelled while its patient is being seen.
+    const visit = await c.visit({ queueAt: (await (await at(c, c.admin, "GET", "/service-points")).json()).servicePoints[0].id });
+    const entryId = visit.queue.entryId as string;
+    expect((await at(c, c.clerk, "POST", `/encounters/${visit.id}/cancel`, { reason: "Registered twice" })).status).toBe(200);
+    const [{ name }] = (await pool.query("SELECT u.name FROM \"user\" u JOIN memberships m ON m.user_id = u.id WHERE m.id = $1", [c.clerk.actor.membershipId])).rows;
+
+    const res = await at(c, c.nurse, "POST", `/queue-entries/${entryId}/triage`, triageBody(gopd));
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe("not_open");
+    expect(body.message).toMatch(new RegExp(`^This visit was cancelled at \\d\\d:\\d\\d by ${name}\\. Ask the front desk whether to start a new one\\.$`));
+    // Every write on a closed visit says the same.
+    const vitals = await (await at(c, c.nurse, "POST", `/encounters/${visit.id}/observations`, { readings: [{ code: "pulse", value: 80 }] })).json();
+    expect(vitals).toMatchObject({ code: "not_open", message: body.message });
+  });
+
+  it("reads whether the visit is open under its lock, so a nightly close it waited on refuses it", async () => {
+    const c = await clinic();
+    const { entryId, visit } = await calledIn(c);
+    let triaged!: Promise<Response>;
+
+    await runAsFacility(c.facility.id, async (holder) => {
+      // The nightly close holds the visit as it closes it, and the triage arrives meanwhile.
+      expect(await closeStaleVisit(holder, c.facility.id, visit.id)).toBe(true);
+      triaged = Promise.resolve(at(c, c.nurse, "POST", `/queue-entries/${entryId}/triage`, { priority: "urgent" }));
+      expect(await waitForBlockedBackend(await backendPid(holder))).toBe(true);
+    });
+
+    const res = await triaged;
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: "not_open", message: expect.stringMatching(/^This visit closed by itself at \d\d:\d\d\./) });
+  });
+
+  it("names the allergy refused by its place in the triage", async () => {
+    const c = await clinic();
+    const { gopd, entryId } = await calledIn(c);
+    const allergies = [{ category: "food", allergen: "Groundnuts" }, { category: "drug", allergen: "A tablet", drugCode: "NOPE-1" }];
+
+    const res = await at(c, c.nurse, "POST", `/queue-entries/${entryId}/triage`, triageBody(gopd, { allergies }));
+
+    expect(res.status).toBe(422);
+    expect(await firstIssuePath(res)).toEqual(["allergies", 1, "drugCode"]);
+  });
+
+  it("is for licensed nurses and clinicians, at triage", async () => {
+    const c = await clinic();
+    const { gopd, entryId } = await calledIn(c);
+
+    expect((await at(c, c.clerk, "POST", `/queue-entries/${entryId}/triage`, triageBody(gopd))).status).toBe(403);
+    expect((await at(c, c.nurse, "POST", `/queue-entries/${entryId}/triage`, triageBody(gopd, { priority: "now" }))).status).toBe(422);
   });
 });

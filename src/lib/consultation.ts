@@ -21,6 +21,7 @@ import { notesSeen } from "./notes";
 import { observationsOf } from "./observations";
 import { ordersSeen } from "./orders";
 import { alertRecorders, categoriesOf, clinicCategoriesOf, isRestricted, readDetail, readerOf, sight } from "./sensitivity";
+import { closedVisit } from "./visit-closed";
 
 /**
  * The consultation (decided 2026-11-20, after the staff walkthrough): what the
@@ -80,7 +81,7 @@ export async function recordComplaint(
   if (!encounter)
     throw new ConsultationError("not_found");
   if (encounter.status !== "open")
-    throw new ConsultationError("not_open");
+    throw await closedVisit(tx, encounterId, new ConsultationError("not_open"));
 
   if (encounter.complaint !== null) {
     const clinics = (await clinicCategoriesOf(tx, [encounterId])).get(encounterId);

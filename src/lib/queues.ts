@@ -11,6 +11,7 @@ import { cancelEntryFee, captureConsultationFee, ChargeError } from "./charges";
 import { ageInYears, businessDate } from "./dates";
 import { isUniqueViolation, pgConstraintName } from "./db-errors";
 import { labTestsWaiting } from "./lab-pending";
+import { closedVisit } from "./visit-closed";
 
 /**
  * Service points and their queues (SCHEMA.md §8): where an outpatient waits
@@ -307,7 +308,7 @@ export async function joinLocked(
   if (encounter.kind === "ipd")
     throw new QueueError("not_a_visit");
   if (encounter.status !== "open")
-    throw new QueueError("not_open");
+    throw await closedVisit(tx, encounter.id, new QueueError("not_open"));
 
   // Shared, so retiring the point (which locks it for update, then counts
   // its queue) waits for this join, and a join waits for a retirement.

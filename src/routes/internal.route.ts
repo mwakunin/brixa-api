@@ -7,6 +7,7 @@ import type { AppBindings, AppOpenAPI } from "@/lib/types";
 
 import env from "@/env";
 import { accrueAllBedDays } from "@/jobs/bed-days";
+import { forgetOldKeys } from "@/jobs/idempotency";
 import { drainOutbox } from "@/jobs/outbox-worker";
 import { reconcileAll } from "@/jobs/reconciliation";
 import { closeFinishedVisits, closeStaleVisits } from "@/jobs/visits";
@@ -61,7 +62,12 @@ export function createInternalRouter(verifier: InvokerVerifier): AppOpenAPI {
   router.post(DRAIN_PATH, async c => c.json(await drainOutbox(), HttpStatusCodes.OK));
   router.post(BED_DAYS_PATH, async c => c.json(await accrueAllBedDays(), HttpStatusCodes.OK));
   router.post(RECONCILIATION_PATH, async c => c.json(await reconcileAll(), HttpStatusCodes.OK));
-  router.post(CLOSE_VISITS_PATH, async c => c.json(await closeStaleVisits(), HttpStatusCodes.OK));
+  router.post(CLOSE_VISITS_PATH, async (c) => {
+    const tally = await closeStaleVisits();
+    // The same nightly run forgets day-old Idempotency-Keys.
+    await forgetOldKeys();
+    return c.json(tally, HttpStatusCodes.OK);
+  });
   router.post(FINISH_VISITS_PATH, async c => c.json(await closeFinishedVisits(), HttpStatusCodes.OK));
 
   return router;

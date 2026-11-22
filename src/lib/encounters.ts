@@ -16,6 +16,7 @@ import { issueNumber } from "./number-series";
 import { hasStandingObservations } from "./observations";
 import { hasStandingOrders } from "./orders";
 import { attendingOfEach, defaultFirstPoint, endLiveEntry, joinLocked, liveEntryOf, liveEntryOfEach } from "./queues";
+import { closedVisit } from "./visit-closed";
 import { bedOccupied, bedWithWard } from "./wards";
 
 /**
@@ -82,7 +83,7 @@ async function lockEncounter(tx: AppDb, id: string): Promise<EncounterRow> {
   if (!encounter)
     throw new EncounterError("not_found");
   if (encounter.status !== "open")
-    throw new EncounterError("not_open");
+    throw await closedVisit(tx, id, new EncounterError("not_open"));
   return encounter;
 }
 
