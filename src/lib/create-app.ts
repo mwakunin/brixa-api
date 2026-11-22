@@ -60,7 +60,8 @@ export function staffAppCors(): MiddlewareHandler {
     credentials: true,
     allowMethods: ["GET", "POST", "PATCH", "PUT", "DELETE"],
     allowHeaders: ["content-type", FACILITY_HEADER, IDEMPOTENCY_HEADER],
-    exposeHeaders: ["retry-after"],
+    // Idempotent-Replayed: a write answered from its first time (middlewares/tenant.ts).
+    exposeHeaders: ["retry-after", "idempotent-replayed"],
     maxAge: 600,
   });
 }
