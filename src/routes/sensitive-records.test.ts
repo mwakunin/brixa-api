@@ -352,6 +352,28 @@ describe("restricted records, under review", () => {
 });
 
 describe("marks and neutral names", () => {
+  it("keep a sensitive clinic's mark once it has had visits, so its records stay withheld", async () => {
+    const c = await clinic();
+    const mark = (id: string, sensitiveCategory: string | null) => call("PATCH", `/service-points/${id}`, c.facility.id, c.admin, { sensitiveCategory });
+    const codeOf = async (res: Response) => [res.status, (await res.json()).code];
+    const psychiatry = (await (await call("POST", "/service-points", c.facility.id, c.admin, { name: "Psychiatry", kind: "consultation" })).json()).id;
+
+    // Before any visit, a mark is set right freely.
+    expect((await mark(psychiatry, "hiv")).status).toBe(200);
+    expect((await mark(psychiatry, "mental_health")).status).toBe(200);
+    expect((await mark(psychiatry, null)).status).toBe(200);
+    expect((await mark(psychiatry, "mental_health")).status).toBe(200);
+    await c.visit(psychiatry);
+
+    // Once it has had a visit, removing or changing the mark would show its records to others.
+    expect(await codeOf(await mark(psychiatry, null))).toEqual([409, "sensitive_has_visits"]);
+    expect(await codeOf(await mark(psychiatry, "hiv"))).toEqual([409, "sensitive_has_visits"]);
+    expect((await mark(psychiatry, "mental_health")).status).toBe(200);
+    // Marking a clinic that has had visits withholds more, and is allowed.
+    await c.visit(c.gopd);
+    expect((await mark(c.gopd, "gbv")).status).toBe(200);
+  });
+
   it("are kept by those who keep the clinic, the catalogue and the staff list, audited", async () => {
     const c = await clinic();
     const triage = (await (await call("POST", "/service-points", c.facility.id, c.admin, { name: "Triage", kind: "triage" })).json()).id;

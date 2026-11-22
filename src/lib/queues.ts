@@ -61,7 +61,8 @@ export type QueueErrorCode
     | "fee_unpriced"
     | "not_a_clinic"
     | "not_a_consultation_item"
-    | "emergency_area_taken";
+    | "emergency_area_taken"
+    | "sensitive_has_visits";
 
 export const QUEUE_NOT_FOUND: ReadonlySet<QueueErrorCode> = new Set(["service_point_not_found", "encounter_not_found", "entry_not_found"]);
 
@@ -87,6 +88,7 @@ export class QueueError extends Error {
       not_a_clinic: "Only a clinic has a consultation fee, a sensitive mark or the emergency area; triage has none of them",
       not_a_consultation_item: "That item is not an active consultation item",
       emergency_area_taken: "Another clinic is the emergency area; unmark it first",
+      sensitive_has_visits: "This clinic has had visits, so its sensitive mark stays as it is: removing or changing it would show their records to other staff",
     }[code]);
     this.name = "QueueError";
   }
@@ -154,6 +156,14 @@ export async function updateServicePoint(
   // Only a clinic is marked sensitive: triage sees everyone (rule 27).
   if (input.sensitiveCategory && current.kind !== "consultation")
     throw new QueueError("not_a_clinic");
+  // A mark applies to the clinic's past visits, so once it has had any, removing or changing the mark
+  // would show their records to other staff (decided 2026-11-22). Joining share-locks the clinic, which
+  // this change holds, so no visit joins between this check and the change.
+  if (current.sensitiveCategory && input.sensitiveCategory !== undefined && input.sensitiveCategory !== current.sensitiveCategory) {
+    const [visited] = await tx.select({ id: queueEntries.id }).from(queueEntries).where(eq(queueEntries.servicePointId, id)).limit(1);
+    if (visited)
+      throw new QueueError("sensitive_has_visits");
+  }
   // The emergency area is where an emergency goes instead of triage: a clinic, one a facility.
   if (input.isEmergencyArea && !current.isEmergencyArea) {
     if (current.kind !== "consultation")
