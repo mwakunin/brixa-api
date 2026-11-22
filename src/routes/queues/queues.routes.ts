@@ -92,7 +92,10 @@ const UpdateBodySchema = z.object({
   isActive: z.boolean().optional(),
   /** A clinic's fee item (a consultation item), or null for no fee. Applies to patients who join from now on. */
   consultationItemId: z.uuid().nullable().optional(),
-  /** Marks a clinic sensitive (the HIV clinic, psychiatry), or null to unmark it. Applies to its visits past and future. */
+  /**
+   * Marks a clinic sensitive (the HIV clinic, psychiatry), or null to unmark it. Applies to its visits past and
+   * future, so once the clinic has had visits its mark can be neither removed nor changed (`sensitive_has_visits`).
+   */
   sensitiveCategory: sensitiveCategorySchema.nullable().optional(),
   /** Marks a clinic as the emergency area, where an emergency attendance goes instead of triage, or false to unmark it. */
   emergencyArea: z.boolean().optional(),
