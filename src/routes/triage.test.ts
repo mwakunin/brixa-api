@@ -3,8 +3,10 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import db, { pool } from "@/db";
 import { auditLog } from "@/db/schema";
+import { runAsFacility } from "@/db/tenant-transaction";
 import { addDays, businessDate } from "@/lib/dates";
-import { addMembership, makeFacility, makeOnboardedFacility, resetDb, signedInUser } from "@/test/helpers";
+import { closeStaleVisit } from "@/lib/encounters";
+import { addMembership, backendPid, makeFacility, makeOnboardedFacility, resetDb, signedInUser, waitForBlockedBackend } from "@/test/helpers";
 import { call } from "@/test/hospital";
 
 /** P3 slice 2: vital signs, allergies, and the triage priority that orders the clinic queues. */
@@ -385,6 +387,23 @@ describe("triage in one step", () => {
     // Every write on a closed visit says the same.
     const vitals = await (await at(c, c.nurse, "POST", `/encounters/${visit.id}/observations`, { readings: [{ code: "pulse", value: 80 }] })).json();
     expect(vitals).toMatchObject({ code: "not_open", message: body.message });
+  });
+
+  it("reads whether the visit is open under its lock, so a nightly close it waited on refuses it", async () => {
+    const c = await clinic();
+    const { entryId, visit } = await calledIn(c);
+    let triaged!: Promise<Response>;
+
+    await runAsFacility(c.facility.id, async (holder) => {
+      // The nightly close holds the visit as it closes it, and the triage arrives meanwhile.
+      expect(await closeStaleVisit(holder, c.facility.id, visit.id)).toBe(true);
+      triaged = Promise.resolve(at(c, c.nurse, "POST", `/queue-entries/${entryId}/triage`, { priority: "urgent" }));
+      expect(await waitForBlockedBackend(await backendPid(holder))).toBe(true);
+    });
+
+    const res = await triaged;
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: "not_open", message: expect.stringMatching(/^This visit closed by itself at \d\d:\d\d\./) });
   });
 
   it("names the allergy refused by its place in the triage", async () => {

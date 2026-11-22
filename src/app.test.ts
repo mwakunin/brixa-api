@@ -96,16 +96,44 @@ describe("the API description", () => {
     }
   });
 
-  it("declares the 409 of every tenant write, which a reused Idempotency-Key answers", async () => {
-    const doc = await (await app.request("/doc")).json() as { paths: Record<string, Record<string, Operation>> };
+  it("declares, on every tenant write, a 409 whose shape takes a reused Idempotency-Key's answer", async () => {
+    type Schema = Record<string, unknown>;
+    const doc = await (await app.request("/doc")).json() as {
+      paths: Record<string, Record<string, Operation & { responses: Record<string, { content?: { "application/json"?: { schema: Schema } } }> }>>;
+      components?: { schemas?: Record<string, Schema> };
+    };
     const writes = new Set(["post", "put", "patch", "delete"]);
+    const answer = { message: "This Idempotency-Key was sent with another request.", code: "idempotency_key_reused" };
 
-    const undeclared = Object.entries(doc.paths).flatMap(([path, operations]) =>
+    // Whether a value fits a schema, for the JSON Schema this description uses.
+    const fits = (schema: Schema | undefined, value: unknown): boolean => {
+      if (!schema)
+        return false;
+      if (typeof schema.$ref === "string")
+        return fits(doc.components?.schemas?.[schema.$ref.split("/").pop()!], value);
+      if (Array.isArray(schema.anyOf) || Array.isArray(schema.oneOf))
+        return ((schema.anyOf ?? schema.oneOf) as Schema[]).some(s => fits(s, value));
+      if ("const" in schema)
+        return schema.const === value;
+      if (Array.isArray(schema.enum))
+        return schema.enum.includes(value);
+      if (schema.type === "string")
+        return typeof value === "string";
+      if (schema.type === "object" && value && typeof value === "object") {
+        const properties = (schema.properties ?? {}) as Record<string, Schema>;
+        return ((schema.required ?? []) as string[]).every(k => k in value)
+          && Object.entries(value).every(([k, v]) => !(k in properties) || fits(properties[k], v));
+      }
+      return false;
+    };
+
+    const unfit = Object.entries(doc.paths).flatMap(([path, operations]) =>
       Object.entries(operations)
-        .filter(([method, op]) => writes.has(method) && op.parameters?.some(p => p.in === "header" && p.name === "x-facility-id") && !op.responses["409"])
+        .filter(([method, op]) => writes.has(method) && op.parameters?.some(p => p.in === "header" && p.name === "x-facility-id"))
+        .filter(([, op]) => !fits(op.responses["409"]?.content?.["application/json"]?.schema, answer))
         .map(([method]) => `${method.toUpperCase()} ${path}`));
 
-    expect(undeclared).toEqual([]);
+    expect(unfit).toEqual([]);
   });
 
   // JSON Schema's `pattern` is the regular expression alone. zod-to-openapi 9.1.0 writes a flagged

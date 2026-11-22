@@ -41,7 +41,7 @@ export interface TriageInput {
 
 export async function triage(tx: AppDb, facilityId: string, entryId: string, input: TriageInput, actor: PatientActor, at = new Date()): ReturnType<typeof finish> {
   const [entry] = await tx
-    .select({ encounterId: queueEntries.encounterId, patientId: encounters.patientId, visitStatus: encounters.status })
+    .select({ encounterId: queueEntries.encounterId, patientId: encounters.patientId })
     .from(queueEntries)
     .innerJoin(encounters, eq(encounters.id, queueEntries.encounterId))
     .where(eq(queueEntries.id, entryId))
@@ -49,9 +49,10 @@ export async function triage(tx: AppDb, facilityId: string, entryId: string, inp
   if (!entry)
     throw new QueueError("entry_not_found");
   // The visit's lock first (M8), before an allergy locks the patient, so every mix of parts takes them in one order.
-  await tx.select({ id: encounters.id }).from(encounters).where(eq(encounters.id, entry.encounterId)).for("update");
+  // Its status read under that lock, so a close committed while this waited is seen.
+  const [visit] = await tx.select({ status: encounters.status }).from(encounters).where(eq(encounters.id, entry.encounterId)).for("update");
   // A closed visit first: its queue entry ended with it, and the reason is the visit's.
-  if (entry.visitStatus !== "open")
+  if (visit.status !== "open")
     throw await closedVisit(tx, entry.encounterId, new QueueError("not_open"));
 
   if (input.complaint !== undefined)
