@@ -1,5 +1,5 @@
 import { eq, sql } from "drizzle-orm";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import type { Hospital, Person } from "@/test/hospital";
@@ -8,7 +8,7 @@ import app from "@/app";
 import db from "@/db";
 import { idempotentRequests, patients, payments } from "@/db/schema";
 import { forgetOldKeys } from "@/jobs/idempotency";
-import { facilityHeaders, nextIp, resetDb } from "@/test/helpers";
+import { backendPid, facilityHeaders, nextIp, resetDb, waitForBlockedBackend } from "@/test/helpers";
 import { hospital } from "@/test/hospital";
 
 /**
@@ -49,6 +49,14 @@ function newcomer(givenName = "Wanjiru") {
   };
 }
 
+/** The body's hash, as the API takes it from the bytes sent. */
+function hashOf(body: unknown): string {
+  return createHash("sha256").update(JSON.stringify(body)).digest("hex");
+}
+
+/** Ends a holder's transaction as a refused request's ends: rolled back. */
+class RolledBack extends Error {}
+
 async function registered(givenName: string) {
   return (await db.select({ id: patients.id }).from(patients).where(eq(patients.givenName, givenName))).length;
 }
@@ -80,6 +88,47 @@ describe("a write sent again with its key", () => {
     const ids = new Set(await Promise.all(answers.map(async r => (await r.json()).id)));
     expect(ids.size).toBe(1);
     expect(await db.select().from(payments)).toHaveLength(1);
+  });
+
+  it("waits on a request still holding its key, then gives that request's answer", async () => {
+    const key = randomUUID();
+    const body = newcomer("Wanjiru");
+    const first = { id: randomUUID() };
+    let retry!: Promise<Response>;
+
+    await db.transaction(async (holder) => {
+      // The first request: its key claimed, its answer not yet kept.
+      await holder.insert(idempotentRequests).values({ facilityId: h.facility.id, userId: h.nurse.id, key, request: "POST /patients", bodyHash: hashOf(body) });
+      retry = Promise.resolve(write("/patients", h.nurse, body, key));
+      expect(await waitForBlockedBackend(await backendPid(holder))).toBe(true);
+      await holder.update(idempotentRequests).set({ status: 201, answer: JSON.stringify(first), contentType: "application/json" }).where(eq(idempotentRequests.key, key));
+    });
+
+    const answered = await retry;
+    expect([answered.status, answered.headers.get("idempotent-replayed")]).toEqual([201, "true"]);
+    expect(await answered.json()).toEqual(first);
+    expect(await registered("Wanjiru")).toBe(0);
+  });
+
+  it("waits on a request still holding its key, then does the write itself if that one was refused", async () => {
+    const key = randomUUID();
+    const body = newcomer("Wanjiru");
+    let retry!: Promise<Response>;
+
+    await db.transaction(async (holder) => {
+      await holder.insert(idempotentRequests).values({ facilityId: h.facility.id, userId: h.nurse.id, key, request: "POST /patients", bodyHash: hashOf(body) });
+      retry = Promise.resolve(write("/patients", h.nurse, body, key));
+      expect(await waitForBlockedBackend(await backendPid(holder))).toBe(true);
+      // Refused: its transaction rolls back, key and all.
+      throw new RolledBack();
+    }).catch((err: unknown) => {
+      if (!(err instanceof RolledBack))
+        throw err;
+    });
+
+    const answered = await retry;
+    expect([answered.status, answered.headers.get("idempotent-replayed")]).toEqual([201, null]);
+    expect(await registered("Wanjiru")).toBe(1);
   });
 
   it("refuses the key for a different request", async () => {

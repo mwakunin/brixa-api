@@ -33,6 +33,12 @@ describe("the staff app's origin", () => {
     expect(res.headers.get("access-control-allow-headers")?.toLowerCase()).toContain("x-facility-id");
   });
 
+  it("allows the Idempotency-Key a screen sends with its writes", async () => {
+    const res = await preflight(appOrigin);
+
+    expect(res.headers.get("access-control-allow-headers")?.toLowerCase()).toContain("idempotency-key");
+  });
+
   it("is the only origin granted cross-origin access", async () => {
     const res = await preflight("https://evil.example");
 

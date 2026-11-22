@@ -17,7 +17,7 @@ import { signInLock } from "@/middlewares/sign-in-lock";
 import type { AppBindings, AppOpenAPI, TenantBindings, TenantOpenAPI } from "./types";
 
 import { appOrigin, auth, markCodeCheck, markSignInStart, oneTwoFactorChangeAtATime, RESET_REQUEST_ANSWER_MS } from "./auth";
-import { FACILITY_HEADER } from "./constants";
+import { FACILITY_HEADER, IDEMPOTENCY_HEADER } from "./constants";
 import { onError } from "./on-error";
 import { rememberCaller } from "./sign-in-log";
 
@@ -59,7 +59,7 @@ export function staffAppCors(): MiddlewareHandler {
     origin: origin => (origin === appOrigin ? origin : null),
     credentials: true,
     allowMethods: ["GET", "POST", "PATCH", "PUT", "DELETE"],
-    allowHeaders: ["content-type", FACILITY_HEADER],
+    allowHeaders: ["content-type", FACILITY_HEADER, IDEMPOTENCY_HEADER],
     exposeHeaders: ["retry-after"],
     maxAge: 600,
   });

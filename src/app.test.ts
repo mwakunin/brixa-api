@@ -86,6 +86,16 @@ describe("the API description", () => {
   // A tenant write sent with an Idempotency-Key it already used for another
   // request is refused with a 409 (`idempotency_key_reused`), whatever the
   // route; a route that does not say so misleads its clients.
+  it("lets a patient write's 409 be a reused key's, beside a likely duplicate", async () => {
+    const doc = await (await app.request("/doc")).json() as { paths: Record<string, Record<string, { responses: Record<string, { content: { "application/json": { schema: unknown } } }> }>> };
+
+    for (const [path, method] of [["/patients", "post"], ["/patients/{id}/identifiers", "post"]] as const) {
+      const schema = JSON.stringify(doc.paths[path][method].responses["409"].content["application/json"].schema);
+      expect(schema, `${method.toUpperCase()} ${path}`).toContain("idempotency_key_reused");
+      expect(schema, `${method.toUpperCase()} ${path}`).toContain("possible_duplicate");
+    }
+  });
+
   it("declares the 409 of every tenant write, which a reused Idempotency-Key answers", async () => {
     const doc = await (await app.request("/doc")).json() as { paths: Record<string, Record<string, Operation>> };
     const writes = new Set(["post", "put", "patch", "delete"]);

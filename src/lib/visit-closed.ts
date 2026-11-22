@@ -5,11 +5,13 @@ import type { AppDb } from "@/db";
 import { encounters, memberships, user } from "@/db/schema";
 
 import { businessDate, businessTimeOfDay, printedDate } from "./dates";
+import { clinicCategoriesOf } from "./sensitivity";
 
 /**
  * Why a visit takes no more work, as every refusal of work on it says (after
  * the design review of 2026-11-21): what happened, when, by whom, and what to
- * do. The member of staff reads it as it is.
+ * do. The member of staff reads it as it is. A visit to a sensitive clinic
+ * says only that it is no longer open.
  *
  *   This visit was cancelled at 09:40 by Joyce Mwangi. Ask the front desk whether to start a new one.
  */
@@ -23,6 +25,9 @@ export async function visitClosedMessage(tx: AppDb, encounterId: string, now = n
     .limit(1);
   const next = "Ask the front desk whether to start a new one.";
   if (!visit?.endedAt || visit.status === "open")
+    return `This visit is no longer open. ${next}`;
+  // A sensitive clinic's visit says no more: when and by whom it closed would be told to readers who may not see it (rule 27).
+  if (((await clinicCategoriesOf(tx, [encounterId])).get(encounterId)?.size ?? 0) > 0)
     return `This visit is no longer open. ${next}`;
   const day = businessDate(visit.endedAt);
   const when = day === businessDate(now)

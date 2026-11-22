@@ -218,6 +218,16 @@ describe("the consultation", () => {
     expect(toAssigned.lastVisit).toMatchObject({ restricted: false, clinic: "Comprehensive Care Clinic", diagnoses: [expect.any(String)] });
   }, 60_000);
 
+  it("says only that a sensitive clinic's visit is closed: never when, nor by whom", async () => {
+    const c = await clinic();
+    const { encounterId } = await c.visit(c.ccc);
+    expect((await call("POST", `/encounters/${encounterId}/cancel`, c.facility.id, c.nurse, { reason: "Registered twice" })).status).toBe(200);
+
+    const refused = await (await c.complain(encounterId, "Here for a refill", c.other)).json();
+
+    expect(refused).toEqual({ code: "not_open", message: "This visit is no longer open. Ask the front desk whether to start a new one." });
+  });
+
   it("alerts whoever recorded a sensitive clinic's complaint when the glass is broken, though nothing else was recorded there", async () => {
     const c = await clinic();
     const { encounterId, patientId } = await c.visit(c.ccc);

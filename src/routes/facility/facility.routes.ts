@@ -41,11 +41,10 @@ export const tenantResponses = {
  * A tenant write's 409 where the route declares none of its own: an
  * Idempotency-Key already used for another request (`middlewares/tenant.ts`).
  */
+export const KeyReusedSchema = z.object({ message: z.string(), code: z.literal("idempotency_key_reused") });
+
 export const keyReused = {
-  [HttpStatusCodes.CONFLICT]: jsonContent(
-    z.object({ message: z.string(), code: z.literal("idempotency_key_reused") }),
-    "An Idempotency-Key already used for another request (`idempotency_key_reused`)",
-  ),
+  [HttpStatusCodes.CONFLICT]: jsonContent(KeyReusedSchema, "An Idempotency-Key already used for another request (`idempotency_key_reused`)"),
 };
 
 /** As `tenantResponses`, for a route behind `requireClinicalRole`: a lapsed licence answers 403 with a code. */

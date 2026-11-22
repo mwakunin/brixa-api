@@ -48,6 +48,8 @@ export async function triage(tx: AppDb, facilityId: string, entryId: string, inp
     .limit(1);
   if (!entry)
     throw new QueueError("entry_not_found");
+  // The visit's lock first (M8), before an allergy locks the patient, so every mix of parts takes them in one order.
+  await tx.select({ id: encounters.id }).from(encounters).where(eq(encounters.id, entry.encounterId)).for("update");
   // A closed visit first: its queue entry ended with it, and the reason is the visit's.
   if (entry.visitStatus !== "open")
     throw await closedVisit(tx, entry.encounterId, new QueueError("not_open"));
