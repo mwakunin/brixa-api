@@ -83,6 +83,21 @@ describe("the API description", () => {
     expect(undeclared).toEqual([]);
   });
 
+  // A tenant write sent with an Idempotency-Key it already used for another
+  // request is refused with a 409 (`idempotency_key_reused`), whatever the
+  // route; a route that does not say so misleads its clients.
+  it("declares the 409 of every tenant write, which a reused Idempotency-Key answers", async () => {
+    const doc = await (await app.request("/doc")).json() as { paths: Record<string, Record<string, Operation>> };
+    const writes = new Set(["post", "put", "patch", "delete"]);
+
+    const undeclared = Object.entries(doc.paths).flatMap(([path, operations]) =>
+      Object.entries(operations)
+        .filter(([method, op]) => writes.has(method) && op.parameters?.some(p => p.in === "header" && p.name === "x-facility-id") && !op.responses["409"])
+        .map(([method]) => `${method.toUpperCase()} ${path}`));
+
+    expect(undeclared).toEqual([]);
+  });
+
   // JSON Schema's `pattern` is the regular expression alone. zod-to-openapi 9.1.0 writes a flagged
   // one's source with "/u" or "/i" left on its end, which no text can match.
   it("writes every pattern as JSON Schema reads it, with no regex flags left on its end", async () => {

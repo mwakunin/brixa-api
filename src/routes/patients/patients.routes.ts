@@ -9,7 +9,7 @@ import { normalizePhone } from "@/lib/phone";
 import { ONE_LINE, personNameSchema } from "@/lib/validation";
 import { requireMembershipRole } from "@/middlewares/auth";
 import { rateLimits } from "@/middlewares/rate-limit";
-import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
+import { facilityHeaders, keyReused, tenantResponses } from "@/routes/facility/facility.routes";
 
 /**
  * The patient register. Front-desk staff register and correct; every member
@@ -261,6 +261,7 @@ export const updatePatient = createRoute({
   responses: {
     [HttpStatusCodes.OK]: jsonContent(PatientRecordSchema, "Corrected"),
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(UpdateBodySchema), "Invalid change"),
+    ...keyReused,
     ...tenantResponses,
   },
 });
@@ -302,6 +303,7 @@ export const addContact = createRoute({
   responses: {
     [HttpStatusCodes.OK]: jsonContent(PatientRecordSchema, "Added"),
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(ContactSchema), "Invalid contact"),
+    ...keyReused,
     ...tenantResponses,
   },
 });
@@ -321,6 +323,7 @@ export const updateContact = createRoute({
   responses: {
     [HttpStatusCodes.OK]: jsonContent(PatientRecordSchema, "Corrected"),
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(UpdateContactBodySchema), "Invalid change"),
+    ...keyReused,
     ...tenantResponses,
   },
 });

@@ -37,6 +37,17 @@ export const tenantResponses = {
   [HttpStatusCodes.NOT_FOUND]: jsonContent(notFoundSchema, "Not found, or not yours: the facility, a membership there, or what the path names"),
 };
 
+/**
+ * A tenant write's 409 where the route declares none of its own: an
+ * Idempotency-Key already used for another request (`middlewares/tenant.ts`).
+ */
+export const keyReused = {
+  [HttpStatusCodes.CONFLICT]: jsonContent(
+    z.object({ message: z.string(), code: z.literal("idempotency_key_reused") }),
+    "An Idempotency-Key already used for another request (`idempotency_key_reused`)",
+  ),
+};
+
 /** As `tenantResponses`, for a route behind `requireClinicalRole`: a lapsed licence answers 403 with a code. */
 export const clinicalResponses = {
   ...tenantResponses,
@@ -92,6 +103,7 @@ export const updateFacility = createRoute({
   responses: {
     [HttpStatusCodes.OK]: jsonContent(FacilitySchema, "Changed"),
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(UpdateBodySchema), "Invalid change"),
+    ...keyReused,
     ...tenantResponses,
   },
 });

@@ -9,7 +9,7 @@ import type { Reading } from "./observations";
 import type { PatientActor } from "./patients";
 import type { Priority } from "./queues";
 
-import { recordAllergy, recordNoKnownAllergies } from "./allergies";
+import { AllergyError, recordAllergy, recordNoKnownAllergies } from "./allergies";
 import { recordComplaint } from "./consultation";
 import { recordVitals } from "./observations";
 import { finish, QueueError } from "./queues";
@@ -56,11 +56,19 @@ export async function triage(tx: AppDb, facilityId: string, entryId: string, inp
     await recordComplaint(tx, facilityId, entry.encounterId, input.complaint, actor, at);
   if (input.readings && input.readings.length > 0)
     await recordVitals(tx, facilityId, entry.encounterId, { readings: input.readings }, actor, at);
-  for (const allergy of input.allergies ?? []) {
-    if ("noKnownAllergies" in allergy)
-      await recordNoKnownAllergies(tx, facilityId, entry.patientId, actor, at);
-    else
-      await recordAllergy(tx, facilityId, entry.patientId, allergy, actor, at);
+  for (const [index, allergy] of (input.allergies ?? []).entries()) {
+    try {
+      if ("noKnownAllergies" in allergy)
+        await recordNoKnownAllergies(tx, facilityId, entry.patientId, actor, at);
+      else
+        await recordAllergy(tx, facilityId, entry.patientId, allergy, actor, at);
+    }
+    catch (err) {
+      // A refusal about a field names it from the triage body's root.
+      if (err instanceof AllergyError)
+        err.at = ["allergies", index];
+      throw err;
+    }
   }
   return finish(tx, facilityId, entryId, { priority: input.priority, nextServicePointId: input.nextServicePointId }, actor, at);
 }

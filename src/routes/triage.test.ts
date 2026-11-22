@@ -387,6 +387,17 @@ describe("triage in one step", () => {
     expect(vitals).toMatchObject({ code: "not_open", message: body.message });
   });
 
+  it("names the allergy refused by its place in the triage", async () => {
+    const c = await clinic();
+    const { gopd, entryId } = await calledIn(c);
+    const allergies = [{ category: "food", allergen: "Groundnuts" }, { category: "drug", allergen: "A tablet", drugCode: "NOPE-1" }];
+
+    const res = await at(c, c.nurse, "POST", `/queue-entries/${entryId}/triage`, triageBody(gopd, { allergies }));
+
+    expect(res.status).toBe(422);
+    expect(await firstIssuePath(res)).toEqual(["allergies", 1, "drugCode"]);
+  });
+
   it("is for licensed nurses and clinicians, at triage", async () => {
     const c = await clinic();
     const { gopd, entryId } = await calledIn(c);

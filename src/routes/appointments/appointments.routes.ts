@@ -6,7 +6,7 @@ import { createErrorSchema } from "stoker/openapi/schemas";
 import { ONE_LINE } from "@/lib/validation";
 import { requireMembershipRole } from "@/middlewares/auth";
 import { VISIT_STAFF } from "@/routes/encounters/encounters.routes";
-import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
+import { facilityHeaders, keyReused, tenantResponses } from "@/routes/facility/facility.routes";
 import { QUEUE_STAFF } from "@/routes/queues/queues.routes";
 
 /**
@@ -231,6 +231,7 @@ export const setSmsReminders = createRoute({
   responses: {
     [HttpStatusCodes.OK]: jsonContent(z.object({ smsReminders: z.boolean() }), "Recorded"),
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(SmsBodySchema), "Invalid request"),
+    ...keyReused,
     ...tenantResponses,
   },
 });

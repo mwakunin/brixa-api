@@ -23,6 +23,9 @@ export type Severity = NonNullable<AllergyRow["severity"]>;
 export type RemovalReason = NonNullable<AllergyRow["removalReason"]>;
 
 export class AllergyError extends Error {
+  /** Where the allergy sits in the request's body, when it is one of several (triage's `allergies`). */
+  at: (string | number)[] = [];
+
   constructor(readonly code: "patient_not_found" | "not_found" | "already_removed" | "has_allergies" | "drug_not_found") {
     super({
       drug_not_found: "No such drug in the catalogue",

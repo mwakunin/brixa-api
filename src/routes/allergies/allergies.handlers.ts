@@ -23,7 +23,7 @@ export function allergyRefusal(c: Context, err: unknown): Response | null {
   if (err.code === "drug_not_found") {
     return c.json({
       success: false as const,
-      error: { name: "ValidationError", issues: [{ code: "custom" as const, path: ["drugCode"], message: err.message }] },
+      error: { name: "ValidationError", issues: [{ code: "custom" as const, path: [...err.at, "drugCode"], message: err.message }] },
     }, HttpStatusCodes.UNPROCESSABLE_ENTITY);
   }
   return c.json({ message: err.message, code: err.code }, HttpStatusCodes.CONFLICT);
