@@ -14,7 +14,7 @@ function actorOf(c: Context<TenantBindings>) {
   return { userId: c.var.user!.id, membershipId: c.var.membership.id };
 }
 
-function refusal(c: Context, err: unknown) {
+export function allergyRefusal(c: Context, err: unknown): Response | null {
   if (!(err instanceof allergies.AllergyError))
     return null;
   if (err.code === "patient_not_found" || err.code === "not_found")
@@ -49,7 +49,7 @@ export const listAllergies: TenantRouteHandler<ListAllergiesRoute> = async (c) =
     return c.json({ allergies: rows.map(allergyJson) }, HttpStatusCodes.OK);
   }
   catch (err) {
-    const refused = refusal(c, err);
+    const refused = allergyRefusal(c, err);
     if (refused)
       return refused as never;
     throw err;
@@ -66,7 +66,7 @@ export const recordAllergy: TenantRouteHandler<RecordAllergyRoute> = async (c) =
     return c.json(await asListed(c, id, row.id), HttpStatusCodes.CREATED);
   }
   catch (err) {
-    const refused = refusal(c, err);
+    const refused = allergyRefusal(c, err);
     if (refused)
       return refused as never;
     throw err;
@@ -81,7 +81,7 @@ export const removeAllergy: TenantRouteHandler<RemoveAllergyRoute> = async (c) =
     return c.json(await asListed(c, row.patientId, row.id), HttpStatusCodes.OK);
   }
   catch (err) {
-    const refused = refusal(c, err);
+    const refused = allergyRefusal(c, err);
     if (refused)
       return refused as never;
     throw err;

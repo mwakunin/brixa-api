@@ -21,7 +21,7 @@ const BODY_FIELD: Partial<Record<obs.ObservationErrorCode, string[]>> = {
   observed_out_of_range: ["observedAt"],
 };
 
-function refusal(c: Context, err: unknown) {
+export function observationRefusal(c: Context, err: unknown): Response | null {
   if (!(err instanceof obs.ObservationError))
     return null;
   if (err.code === "encounter_not_found" || err.code === "not_found")
@@ -58,7 +58,7 @@ export const recordVitals: TenantRouteHandler<RecordVitalsRoute> = async (c) => 
     return c.json({ observations: recorded.map(readingJson) }, HttpStatusCodes.CREATED);
   }
   catch (err) {
-    const refused = refusal(c, err);
+    const refused = observationRefusal(c, err);
     if (refused)
       return refused as never;
     throw err;
@@ -72,7 +72,7 @@ export const listObservations: TenantRouteHandler<ListObservationsRoute> = async
     return c.json({ observations: rows.map(readingJson) }, HttpStatusCodes.OK);
   }
   catch (err) {
-    const refused = refusal(c, err);
+    const refused = observationRefusal(c, err);
     if (refused)
       return refused as never;
     throw err;
@@ -87,7 +87,7 @@ export const markEnteredInError: TenantRouteHandler<MarkEnteredInErrorRoute> = a
     return c.json({ id: marked.id, enteredInError: { at: marked.enteredInErrorAt!.toISOString(), reason: marked.enteredInErrorReason! } }, HttpStatusCodes.OK);
   }
   catch (err) {
-    const refused = refusal(c, err);
+    const refused = observationRefusal(c, err);
     if (refused)
       return refused as never;
     throw err;

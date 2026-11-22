@@ -15,6 +15,7 @@ router.openapi(routes.viewQueue, handlers.viewQueue);
 router.openapi(routes.joinQueue, handlers.joinQueue);
 router.openapi(routes.serve, handlers.serve);
 router.openapi(routes.finish, handlers.finish);
+router.openapi(routes.triage, handlers.triage);
 router.openapi(routes.removeFromQueue, handlers.removeFromQueue);
 
 export default router;

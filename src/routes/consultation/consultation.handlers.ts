@@ -22,7 +22,7 @@ function actorOf(c: Context<TenantBindings>) {
   return { userId: c.var.user!.id, membershipId: c.var.membership.id };
 }
 
-function refusal(c: Context, err: unknown) {
+export function consultationRefusal(c: Context, err: unknown): Response | null {
   if (!(err instanceof consultation.ConsultationError))
     return null;
   if (err.code === "not_found")
@@ -54,7 +54,7 @@ export const viewConsultation: TenantRouteHandler<ViewConsultationRoute> = async
     }, HttpStatusCodes.OK);
   }
   catch (err) {
-    const refused = refusal(c, err);
+    const refused = consultationRefusal(c, err);
     if (refused)
       return refused as never;
     throw err;
@@ -69,7 +69,7 @@ export const recordComplaint: TenantRouteHandler<RecordComplaintRoute> = async (
     return c.json({ complaint: complaintJson(complaint) }, HttpStatusCodes.OK);
   }
   catch (err) {
-    const refused = refusal(c, err);
+    const refused = consultationRefusal(c, err);
     if (refused)
       return refused as never;
     throw err;

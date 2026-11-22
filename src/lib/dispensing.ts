@@ -15,6 +15,7 @@ import { businessDate } from "./dates";
 import { chargeAmountCents } from "./money";
 import { cashPriceList, resolvePrice } from "./prices";
 import { allocate } from "./stock-allocation";
+import { closedVisit } from "./visit-closed";
 
 /**
  * Dispensing (SCHEMA.md §8, P4 slice 3a, decided 2026-11-15): a
@@ -106,7 +107,7 @@ export function mayGiveControlled(actor: DispenseActor): boolean {
 async function lockOpenVisit(tx: AppDb, encounterId: string): Promise<{ kind: string }> {
   const [visit] = await tx.select({ status: encounters.status, kind: encounters.kind }).from(encounters).where(eq(encounters.id, encounterId)).for("update");
   if (visit.status !== "open")
-    throw new DispenseError("visit_closed");
+    throw await closedVisit(tx, encounterId, new DispenseError("visit_closed"));
   return visit;
 }
 

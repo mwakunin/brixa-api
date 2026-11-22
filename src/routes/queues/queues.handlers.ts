@@ -8,6 +8,10 @@ import type { queueEntries } from "@/db/schema";
 import type { TenantBindings, TenantRouteHandler } from "@/lib/types";
 
 import * as queues from "@/lib/queues";
+import * as triageSteps from "@/lib/triage";
+import { allergyRefusal } from "@/routes/allergies/allergies.handlers";
+import { consultationRefusal } from "@/routes/consultation/consultation.handlers";
+import { observationRefusal } from "@/routes/observations/observations.handlers";
 
 import type {
   CreateServicePointRoute,
@@ -17,6 +21,7 @@ import type {
   QueueEntrySchema,
   RemoveFromQueueRoute,
   ServeRoute,
+  TriageRoute,
   UpdateServicePointRoute,
   ViewQueueRoute,
 } from "./queues.routes";
@@ -110,6 +115,22 @@ export const finish: TenantRouteHandler<FinishRoute> = async (c) => {
     finished: entryJson(r.finished),
     next: r.next && entryJson(r.next),
   })) as never;
+};
+
+export const triage: TenantRouteHandler<TriageRoute> = async (c) => {
+  const { id } = c.req.valid("param");
+  const body = c.req.valid("json");
+  try {
+    const r = await triageSteps.triage(c.var.db, c.var.facility.id, id, body, actorOf(c));
+    return c.json({ finished: entryJson(r.finished), next: r.next && entryJson(r.next) }, HttpStatusCodes.OK);
+  }
+  catch (err) {
+    // Each part refuses as its own route does; the request's transaction then keeps none of it.
+    const refused = queueRefusal(c, err) ?? observationRefusal(c, err) ?? allergyRefusal(c, err) ?? consultationRefusal(c, err);
+    if (refused)
+      return refused as never;
+    throw err;
+  }
 };
 
 export const removeFromQueue: TenantRouteHandler<RemoveFromQueueRoute> = async (c) => {
