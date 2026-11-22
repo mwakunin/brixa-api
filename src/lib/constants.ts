@@ -12,3 +12,6 @@ export const badRequestSchema = createMessageObjectSchema(HttpStatusPhrases.BAD_
  * and a request queued offline still names the facility it was made in.
  */
 export const FACILITY_HEADER = "x-facility-id";
+
+/** On a write: a key the screen makes once per action and sends again with any retry (`middlewares/tenant.ts`). */
+export const IDEMPOTENCY_HEADER = "idempotency-key";

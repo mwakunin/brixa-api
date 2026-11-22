@@ -2,15 +2,16 @@ import type { Context } from "hono";
 
 import { and, eq } from "drizzle-orm";
 import { createMiddleware } from "hono/factory";
+import { createHash } from "node:crypto";
 import * as HttpStatusCodes from "stoker/http-status-codes";
 import { z } from "zod";
 
 import type { AppDb } from "@/db";
 import type { TenantBindings } from "@/lib/types";
 
-import { facilities, memberships } from "@/db/schema";
+import { facilities, idempotentRequests, memberships } from "@/db/schema";
 import { runAsFacility } from "@/db/tenant-transaction";
-import { FACILITY_HEADER } from "@/lib/constants";
+import { FACILITY_HEADER, IDEMPOTENCY_HEADER } from "@/lib/constants";
 import { notSignedIn } from "@/middlewares/auth";
 
 /**
@@ -138,6 +139,11 @@ export const withFacility = createMiddleware<TenantBindings>(async (c, next) => 
     c.set("membership", access.membership!);
     c.set("db", tx);
 
+    // A write sent again with its key is answered from its first time, and not done again.
+    const claim = await claimKey(c, tx, parsed.data, user.id);
+    if (claim instanceof Response)
+      return claim;
+
     await next();
 
     /*
@@ -152,6 +158,8 @@ export const withFacility = createMiddleware<TenantBindings>(async (c, next) => 
      */
     if (c.res.status >= 400)
       throw new RollbackOnErrorStatus(c.res.status);
+    if (claim)
+      await keepAnswer(tx, claim, c.res);
 
     return null;
   }).catch((err) => {
@@ -164,6 +172,69 @@ export const withFacility = createMiddleware<TenantBindings>(async (c, next) => 
   if (refused)
     return refused;
 });
+
+// ---------------------------------------------------------------------------
+// Repeat-safe writes (decided 2026-11-22): the Idempotency-Key
+// ---------------------------------------------------------------------------
+
+const WRITES = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+const KEY_SHAPE = /^[\w.:-]{8,200}$/;
+
+/**
+ * Claims a write's Idempotency-Key in the request's transaction, before the
+ * handler runs. Answers with the first answer when the key was used before
+ * for the same write, refuses it for a different one, and gives the claim's
+ * id when this is the first time. A write without a key, or a read, has no
+ * claim (null), and runs as it always did.
+ *
+ * Two requests with one key at once: the second's insert waits on the
+ * first's unique entry, then finds its answer, or claims the key if the
+ * first was refused and rolled back. The nightly close forgets day-old keys
+ * (`jobs/idempotency.ts`).
+ */
+async function claimKey(c: Context<TenantBindings>, tx: AppDb, facilityId: string, userId: string): Promise<string | Response | null> {
+  const key = c.req.header(IDEMPOTENCY_HEADER);
+  if (key === undefined || !WRITES.has(c.req.method))
+    return null;
+  if (!KEY_SHAPE.test(key)) {
+    return c.json({
+      success: false as const,
+      error: { name: "ValidationError", issues: [{ code: "custom" as const, path: [IDEMPOTENCY_HEADER], message: "8 to 200 letters, digits, or . _ : -" }] },
+    }, HttpStatusCodes.UNPROCESSABLE_ENTITY);
+  }
+  const url = new URL(c.req.url);
+  const request = `${c.req.method} ${url.pathname}${url.search}`;
+  // Read once here; the route's own validator reads the same body from Hono's cache.
+  const bodyHash = createHash("sha256").update(new Uint8Array(await c.req.arrayBuffer())).digest("hex");
+  const own = and(eq(idempotentRequests.facilityId, facilityId), eq(idempotentRequests.userId, userId));
+
+  const [claimed] = await tx.insert(idempotentRequests)
+    .values({ facilityId, userId, key, request, bodyHash })
+    .onConflictDoNothing()
+    .returning({ id: idempotentRequests.id });
+  if (claimed)
+    return claimed.id;
+
+  const [first] = await tx.select().from(idempotentRequests).where(and(own, eq(idempotentRequests.key, key))).limit(1);
+  if (!first || first.status === null || first.request !== request || first.bodyHash !== bodyHash) {
+    return c.json({
+      message: "This Idempotency-Key was sent with another request. Make a new key for each action.",
+      code: "idempotency_key_reused",
+    }, HttpStatusCodes.CONFLICT);
+  }
+  return new Response(first.answer, {
+    status: first.status,
+    headers: { "content-type": first.contentType ?? "application/json", "idempotent-replayed": "true" },
+  });
+}
+
+/** Keeps the answer a claimed write got, in the same transaction as the write, so a repeat is answered with it. */
+async function keepAnswer(tx: AppDb, claimId: string, res: Response): Promise<void> {
+  const answer = res.status === HttpStatusCodes.NO_CONTENT ? null : await res.clone().text();
+  await tx.update(idempotentRequests)
+    .set({ status: res.status, answer, contentType: res.headers.get("content-type") })
+    .where(eq(idempotentRequests.id, claimId));
+}
 
 /** Internal signal: unwind the transaction but keep the handler's response. */
 class RollbackOnErrorStatus extends Error {

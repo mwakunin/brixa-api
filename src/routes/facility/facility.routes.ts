@@ -17,6 +17,12 @@ const tags = ["Facility"];
  */
 export const facilityHeaders = z.object({
   "x-facility-id": z.uuid().openapi({ description: "The facility this request acts in" }),
+  "idempotency-key": z.string().optional().openapi({
+    description:
+      "On a write: a key made once per action (8 to 200 letters, digits, or . _ : -) and sent again with any retry. "
+      + "A repeat is answered with the first answer (`Idempotent-Replayed: true`) and not done again; a key sent with another request is refused "
+      + "(`idempotency_key_reused`). A refused write keeps nothing, so its retry runs afresh. Keys are kept a day.",
+  }),
 });
 
 /**

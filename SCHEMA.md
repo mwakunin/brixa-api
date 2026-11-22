@@ -51,7 +51,12 @@ A **visit** in the earlier clinic design is an OPD encounter. A **prescription**
 
 - `facility_id` on every tenant table, with RLS policies and composite foreign keys `(facility_id, id)`. The Drizzle sketches below use simple references for readability; the real tables must use the composite form.
 - Text columns typed with `.$type<...>()` carry a matching `CHECK`.
-- Nothing hard-deletes. Phone numbers are E.164. Dates are `date`; instants are `timestamp`.
+- Nothing hard-deletes, but for day-old Idempotency-Keys, which are no record (`CLAUDE.md` rule 5). Phone numbers are E.164. Dates are `date`; instants are `timestamp`.
+- **Repeat-safe writes** (decided 2026-11-22, as blackouts make a retry normal at the pilot): a tenant write may send an `Idempotency-Key`, made once per action by the screen and sent again with any retry. `withFacility` claims it in the request's own transaction (`idempotent_requests`, unique per facility, person and key) and keeps the answer there, so a write that commits keeps both and a refused one keeps neither, and its retry runs afresh.
+  - A repeat is answered with the first answer, marked `Idempotent-Replayed: true`, and not done again. A second request with the key at once waits on the first's unique entry, then gets its answer.
+  - The key with another method, path or body is refused (`idempotency_key_reused`). A key not 8 to 200 of letters, digits and `. _ : -` is a 422.
+  - The answer, which may name a patient, is kept under the facility's row-level security. The nightly close forgets keys more than a day old (`jobs/idempotency.ts`). The runtime role cannot delete them.
+- **Work refused on a closed visit** says why, in one sentence for every route (`lib/visit-closed.ts`, after the design review of 2026-11-21): what happened, when, by whom, and what to do. "This visit was cancelled at 09:40 by Joyce Mwangi. Ask the front desk whether to start a new one." A visit that closed by itself says so. The refusal's code is the route's own (`not_open`, or the pharmacy's `visit_closed`).
 - No patient data in URLs, logs, Redis keys, queue payloads, or object keys.
 - Typed nullable foreign keys plus `CHECK (num_nonnulls(...) = 1)`, never a polymorphic `source_type` / `source_id` pair (rule 22).
 
@@ -575,6 +580,10 @@ Designed to the level of key rules. Detailed sketches come with their phase (`RO
   - The CHECK `queue_entries_priority_when_done` holds it to a finished entry, and the queue trigger to a triage point.
   - **Clinic queues order by it:** emergency, urgent, then routine or untriaged, each by arrival.
   - The priority is the visit's latest triage entry's, derived per row and not copied, so a patient sent back to a clinic keeps it.
+- **Triage in one step** (`POST /queue-entries/{id}/triage`, after the design review of 2026-11-21): today's complaint, the vital signs, the allergies asked about (or none known), how soon, and the next clinic, as the nurse presses one button.
+  - Each part goes through its own route's code and refuses as it does. All of it is in the request's one transaction, which rolls back on any refusal, so either all is recorded or none is.
+  - For licensed nurses, doctors and clinical officers. A visit no longer open refuses first, with the closed-visit sentence.
+  - With an Idempotency-Key, a press sent again after a dropped connection records it once.
 - **Who:**
   - recording vital signs is a clinical act for doctors, clinical officers, nurses and ward nurses, under a current licence;
   - pharmacists and pharmacy technicians may also record and remove allergies;
