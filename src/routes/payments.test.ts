@@ -8,8 +8,9 @@ import { auditLog, documents, payments, user } from "@/db/schema";
 import { runAsFacility } from "@/db/tenant-transaction";
 import { approveAdjustment, requestAdjustment } from "@/lib/adjustments";
 import { allocate } from "@/lib/allocations";
+import { FIELD_LENGTH } from "@/lib/document-content";
 import { admitPatient, dischargePatient } from "@/lib/encounters";
-import { recordPayment } from "@/lib/payments";
+import { billsPaidFor, recordPayment } from "@/lib/payments";
 import { resetDb } from "@/test/helpers";
 import { at, call, hospital, TODAY } from "@/test/hospital";
 
@@ -251,6 +252,17 @@ describe("payments", () => {
       { label: "Applied to the bills", value: "KES 100.00" },
       { label: "Still owed on the bills", value: "KES 105.00" },
     ]);
+  });
+
+  it("taken towards a visit with more bills than one printed field holds name how many, each listed below", () => {
+    const numbers = Array.from({ length: 40 }, (_, at) => `INV-2026-${String(at + 1).padStart(6, "0")}`);
+
+    expect(billsPaidFor(numbers.slice(0, 1))).toBe("Invoice INV-2026-000001");
+    expect(billsPaidFor(numbers.slice(0, 2))).toBe("Invoices INV-2026-000001, INV-2026-000002");
+    expect(billsPaidFor(numbers.slice(0, 29)).length).toBeLessThanOrEqual(FIELD_LENGTH);
+    expect(billsPaidFor(numbers.slice(0, 29))).toMatch(/^Invoices INV-/);
+    expect(billsPaidFor(numbers.slice(0, 30))).toBe("30 invoices, each listed below");
+    expect(billsPaidFor(numbers)).toBe("40 invoices, each listed below");
   });
 
   it("left as credit are applied to a bill on request", async () => {

@@ -12,6 +12,7 @@ import { allocate, unallocatedCents } from "./allocations";
 import { recordAudit } from "./audit";
 import { billedFields, ensureAccount, linesOf } from "./billing";
 import { isUniqueViolation } from "./db-errors";
+import { FIELD_LENGTH } from "./document-content";
 import { issueDocument, voidDocument } from "./documents";
 import { balanceCents } from "./invoice-balance";
 import { formatKes, printedQuantity } from "./money";
@@ -230,9 +231,9 @@ interface PaymentTarget {
   bills: Bill[];
 }
 
-async function billOf(tx: AppDb, invoice: InvoiceRow): Promise<Bill> {
+async function billOf(tx: AppDb, invoice: InvoiceRow, owedCents?: number): Promise<Bill> {
   const [document] = await tx.select({ number: documents.number }).from(documents).where(eq(documents.id, invoice.documentId!)).limit(1);
-  return { invoice, number: document.number, owedCents: await balanceCents(tx, invoice) };
+  return { invoice, number: document.number, owedCents: owedCents ?? await balanceCents(tx, invoice) };
 }
 
 /** What the payment is for, checked against the patient: an invoice, an encounter, or neither. */
@@ -270,11 +271,12 @@ async function paymentTarget(tx: AppDb, input: PaymentInput, accountId: string):
       .orderBy(asc(invoices.id))
       .for("update");
     finalised.sort((a, b) => a.finalisedAt!.getTime() - b.finalisedAt!.getTime() || a.id.localeCompare(b.id));
+    // A bill's number is read only for those that still owe.
     const bills: Bill[] = [];
     for (const invoice of finalised) {
-      const bill = await billOf(tx, invoice);
-      if (bill.owedCents > 0)
-        bills.push(bill);
+      const owedCents = await balanceCents(tx, invoice);
+      if (owedCents > 0)
+        bills.push(await billOf(tx, invoice, owedCents));
     }
     return { encounterId: encounter.id, bills };
   }
@@ -293,6 +295,18 @@ async function receivedBy(tx: AppDb, actor: PatientActor | null): Promise<string
     return "M-Pesa, matched automatically";
   const [member] = await tx.select({ name: user.name }).from(memberships).innerJoin(user, eq(user.id, memberships.userId)).where(eq(memberships.id, actor.membershipId)).limit(1);
   return member.name;
+}
+
+/**
+ * What a receipt says a payment on bills was for: each bill's number, while
+ * they fit in one printed field; else how many, each listed in the table
+ * with its lines. A visit or admission may run to any number of bills.
+ */
+export function billsPaidFor(numbers: string[]): string {
+  if (numbers.length === 1)
+    return `Invoice ${numbers[0]}`;
+  const listed = `Invoices ${numbers.join(", ")}`;
+  return listed.length <= FIELD_LENGTH ? listed : `${numbers.length} invoices, each listed below`;
 }
 
 /** What a payment on bills prints under them: each bill's lines as the bill prints them, with the bill's number when there are several. */
@@ -326,11 +340,9 @@ async function printedReceipt(
   actor: PatientActor | null,
 ): Promise<PrintedContent> {
   const { bills } = target;
-  const forWhat = bills.length > 1
-    ? `Invoices ${bills.map(bill => bill.number).join(", ")}`
-    : bills.length === 1
-      ? `Invoice ${bills[0].number}`
-      : target.encounterId ? await depositFor(tx, target.encounterId) : "Credit on account";
+  const forWhat = bills.length > 0
+    ? billsPaidFor(bills.map(bill => bill.number))
+    : target.encounterId ? await depositFor(tx, target.encounterId) : "Credit on account";
   const table = await billedTable(tx, bills);
   const owedCents = bills.reduce((sum, bill) => sum + bill.owedCents, 0);
   const theBills = bills.length > 1 ? "the bills" : "the bill";
