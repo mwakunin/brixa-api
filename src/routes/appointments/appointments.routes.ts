@@ -96,9 +96,12 @@ const CancelBodySchema = z.strictObject({ reason: oneLine(200) });
 const CheckInBodySchema = z.strictObject({
   /**
    * Where the patient goes: left out, the facility's triage point, as for any
-   * visit; a clinic's id, straight there; null, no queue.
+   * visit; a clinic's id, straight there; null, no queue. A patient already in
+   * a queue stays there.
    */
-  queueAt: z.uuid().nullable().optional(),
+  queueAt: z.uuid().nullable().optional().openapi({
+    description: "Where the patient goes. Left out: the facility's triage point when exactly one is in use, as for any visit; otherwise no queue. A clinic's id: straight there. `null`: no queue. A patient already in a queue stays in it: left out or `null` leaves them there, and naming a queue is refused (`already_queued`).",
+  }),
 });
 const DayQuerySchema = z.object({
   /** Today if left out. */
@@ -190,8 +193,9 @@ export const checkIn = createRoute({
   summary: "Check a patient in",
   description:
     "On the appointment's own day. Opens the patient's outpatient visit, or "
-    + "uses the one already open, and sends them to triage like any visit, "
-    + "or straight to the clinic named. Joining a clinic with a fee charges it.",
+    + "uses the one already open, and sends them where `queueAt` says: triage "
+    + "like any visit, while the facility has one triage point in use, or "
+    + "straight to the clinic named. Joining a clinic with a fee charges it.",
   middleware: [visitStaff] as const,
   request: { headers: facilityHeaders, params: IdParamsSchema, body: jsonContentRequired(CheckInBodySchema, "Where the patient goes") },
   responses: {

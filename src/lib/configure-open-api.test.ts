@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { withPlainPatterns } from "./configure-open-api";
+import { withKeyReuseNamed, withPlainPatterns } from "./configure-open-api";
 
 describe("patterns in the API description", () => {
   it("drops a /u flag, leaves out a pattern with another flag, and keeps the rest as it was", () => {
@@ -32,5 +32,36 @@ describe("patterns in the API description", () => {
     expect(flagged("\\\\/u")).toEqual({ pattern: "\\\\" });
     // A source writes a slash it matches as \/, so this is "a/u" itself, with no flags.
     expect(flagged("a\\/u")).toEqual({ pattern: "a\\/u" });
+  });
+});
+
+describe("a tenant write's 409 in the API description", () => {
+  const facility = { in: "header", name: "x-facility-id" };
+  const doc = {
+    paths: {
+      "/encounters": {
+        post: { parameters: [facility], responses: { 409: { description: "Not possible in the encounter's current state" } } },
+        get: { parameters: [facility], responses: { 200: { description: "Encounters" } } },
+      },
+      "/staff/invitations/{id}/revoke": {
+        post: { parameters: [facility], responses: { 409: { description: "An Idempotency-Key already used for another request (`idempotency_key_reused`)" } } },
+      },
+      "/invitations/accept": {
+        post: { parameters: [], responses: { 409: { description: "Accepted already" } } },
+      },
+    },
+  };
+
+  it("names the reused key beside the route's own conflict", () => {
+    expect(withKeyReuseNamed(doc).paths["/encounters"].post.responses[409].description)
+      .toBe("Not possible in the encounter's current state; or an Idempotency-Key already sent with another request (`idempotency_key_reused`)");
+  });
+
+  it("leaves a 409 that names it already, a read, and a write outside any facility as they were", () => {
+    const named = withKeyReuseNamed(doc).paths;
+
+    expect(named["/staff/invitations/{id}/revoke"]).toEqual(doc.paths["/staff/invitations/{id}/revoke"]);
+    expect(named["/encounters"].get).toEqual(doc.paths["/encounters"].get);
+    expect(named["/invitations/accept"]).toEqual(doc.paths["/invitations/accept"]);
   });
 });

@@ -65,12 +65,13 @@ const OpenBodySchema = z.object({
   kind: z.enum(["opd", "emergency"]),
   /**
    * The service point the patient waits at first. Left out, they join the
-   * facility's triage point if it has exactly one, or for an emergency the
-   * emergency area while one is marked; `null` joins no queue (a walk-in for
-   * the lab).
+   * facility's triage point if it has exactly one in use, or for an emergency
+   * the emergency area while one is marked and in use; with neither, they
+   * join no queue. `null` joins no queue whatever the facility has (a walk-in
+   * for the lab).
    */
   queueAt: z.uuid().nullable().optional().openapi({
-    description: "Where the patient waits first. Left out: the facility's only triage point, or for an emergency the emergency area while one is marked. `null`: no queue (a walk-in for the lab).",
+    description: "Where the patient waits first. Left out: the facility's triage point when it has exactly one in use, or for an emergency the emergency area while one is marked and in use; with neither, no queue (`queue` is null). `null`: no queue, whatever the facility has (a walk-in for the lab).",
   }),
 });
 const CancelBodySchema = z.object({ reason: z.string().trim().min(3).max(200).regex(ONE_LINE, "One line") });

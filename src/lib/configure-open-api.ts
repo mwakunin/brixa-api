@@ -49,6 +49,34 @@ export function withPlainPatterns<T>(node: T): T {
   return plain as T;
 }
 
+/** What this reads of an OpenAPI document: each operation's parameters and responses. */
+type Paths = Record<string, Record<string, { parameters?: { in?: string; name?: string }[]; responses?: Record<string, { description?: string }> }>>;
+
+const WRITES = new Set(["post", "put", "patch", "delete"]);
+const KEY_REUSED = "idempotency_key_reused";
+
+/**
+ * Every tenant write may be refused with a 409 before its route runs: an
+ * Idempotency-Key already sent with another request (`middlewares/tenant.ts`).
+ * Each route's 409 schema takes that answer (app.test.ts checks), but its
+ * description is the route's own conflict, said in some fifty ways: the key's
+ * case is named here, once for them all.
+ */
+export function withKeyReuseNamed<T extends { paths?: object }>(doc: T): T {
+  const paths = Object.fromEntries(Object.entries((doc.paths ?? {}) as Paths).map(([path, operations]) => [
+    path,
+    Object.fromEntries(Object.entries(operations).map(([method, operation]) => {
+      const conflict = operation.responses?.["409"];
+      const tenantWrite = WRITES.has(method) && operation.parameters?.some(p => p.in === "header" && p.name === "x-facility-id");
+      if (!tenantWrite || !conflict || conflict.description?.includes(KEY_REUSED))
+        return [method, operation];
+      const description = `${conflict.description}; or an Idempotency-Key already sent with another request (\`${KEY_REUSED}\`)`;
+      return [method, { ...operation, responses: { ...operation.responses, 409: { ...conflict, description } } }];
+    })),
+  ]));
+  return { ...doc, paths };
+}
+
 const DOCUMENT = {
   openapi: "3.0.0",
   info: {
@@ -63,7 +91,7 @@ const DOCUMENT = {
 };
 
 export default function configureOpenAPI(app: AppOpenAPI): void {
-  app.get("/doc", c => c.json(withPlainPatterns(app.getOpenAPIDocument(DOCUMENT))));
+  app.get("/doc", c => c.json(withKeyReuseNamed(withPlainPatterns(app.getOpenAPIDocument(DOCUMENT)))));
 
   app.get(
     "/reference",
