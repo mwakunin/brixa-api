@@ -187,9 +187,11 @@ describe("the API description", () => {
     expect(patterns).toContain(ONE_LINE.source);
   });
 
-  it("says a tenant route's 404 can be what the path names, not only the facility", async () => {
+  it("says a tenant route's 404 can be what the request names, in its path, query or body, not only the facility", async () => {
     const doc = await (await app.request("/doc")).json() as { paths: Record<string, Record<string, Operation & { responses: Record<string, { description: string }> }>> };
 
-    expect(doc.paths["/patients/{id}/contacts/{contactId}"].patch.responses["404"].description).toMatch(/what the path names/);
+    // A contact named by the path; a patient named by the body, or by the query.
+    for (const [path, method] of [["/patients/{id}/contacts/{contactId}", "patch"], ["/encounters", "post"], ["/encounters", "get"]] as const)
+      expect(doc.paths[path][method].responses["404"].description, `${method.toUpperCase()} ${path}`).toMatch(/what the request names, in its path, query or body/);
   });
 });

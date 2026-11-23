@@ -27,14 +27,15 @@ export const facilityHeaders = z.object({
 
 /**
  * The responses `withFacility` itself can produce, shared by tenant routes.
- * Their 404 is also the route's own when what its path names is not there, or
- * not the caller's to see: one description serves both.
+ * Their 404 is also the route's own when what the request names (in its path,
+ * query or body) is not there, or not the caller's to see: one description
+ * serves both.
  */
 export const tenantResponses = {
   [HttpStatusCodes.BAD_REQUEST]: jsonContent(badRequestSchema, "No facility named"),
   [HttpStatusCodes.UNAUTHORIZED]: jsonContent(unauthorizedSchema, "Not signed in"),
   [HttpStatusCodes.FORBIDDEN]: jsonContent(forbiddenSchema, "Facility suspended, or role not allowed"),
-  [HttpStatusCodes.NOT_FOUND]: jsonContent(notFoundSchema, "Not found, or not yours: the facility, a membership there, or what the path names"),
+  [HttpStatusCodes.NOT_FOUND]: jsonContent(notFoundSchema, "Not found, or not yours: the facility, a membership there, or what the request names, in its path, query or body (a `patientId`, for one)"),
 };
 
 /**
