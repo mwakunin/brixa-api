@@ -96,10 +96,11 @@ const CancelBodySchema = z.strictObject({ reason: oneLine(200) });
 const CheckInBodySchema = z.strictObject({
   /**
    * Where the patient goes: left out, the facility's triage point, as for any
-   * visit; a clinic's id, straight there; null, no queue.
+   * visit; a clinic's id, straight there; null, no queue. A patient already in
+   * a queue stays there.
    */
   queueAt: z.uuid().nullable().optional().openapi({
-    description: "Where the patient goes. Left out: the facility's triage point when it has exactly one in use, as for any visit; with none, no queue. A clinic's id: straight there. `null`: no queue.",
+    description: "Where the patient goes. Left out: the facility's triage point when exactly one is in use, as for any visit; otherwise no queue. A clinic's id: straight there. `null`: no queue. A patient already in a queue stays in it: left out or `null` leaves them there, and naming a queue is refused (`already_queued`).",
   }),
 });
 const DayQuerySchema = z.object({
