@@ -8,8 +8,9 @@ import { auditLog, documents, payments, user } from "@/db/schema";
 import { runAsFacility } from "@/db/tenant-transaction";
 import { approveAdjustment, requestAdjustment } from "@/lib/adjustments";
 import { allocate } from "@/lib/allocations";
+import { FIELD_LENGTH } from "@/lib/document-content";
 import { admitPatient, dischargePatient } from "@/lib/encounters";
-import { recordPayment } from "@/lib/payments";
+import { billsPaidFor, recordPayment } from "@/lib/payments";
 import { resetDb } from "@/test/helpers";
 import { at, call, hospital, TODAY } from "@/test/hospital";
 
@@ -190,6 +191,78 @@ describe("payments", () => {
     // Once it owes nothing, more money towards the visit stays as its credit.
     const more = await (await pay({ patientId, method: "cash", amountCents: 1_000, encounterId })).json();
     expect(more).toMatchObject({ encounterId, unallocatedCents: 1_000, allocations: [] });
+  });
+
+  /** An open visit with a consultation billed and paid in part, KES 200 still owed, then two tablets billed after it. */
+  async function twoBillsOwing() {
+    const patientId = await h.patient();
+    const encounterId = (await (await call("POST", "/encounters", h.facility.id, h.nurse, { patientId, kind: "opd" })).json()).id as string;
+    const charge = (item: string, quantity: string) => call("POST", `/encounters/${encounterId}/charges`, h.facility.id, h.clerk, { billableItemId: item, quantity, reason: "Before P3" });
+    const billNow = async () => (await (await call("POST", `/encounters/${encounterId}/bill-now`, h.facility.id, h.cashier)).json()).id as string;
+    await charge(h.items.consultation, "1");
+    const first = await billNow();
+    await pay({ patientId, method: "cash", amountCents: 30_000, invoiceId: first });
+    await charge(h.items.tablet, "2");
+    const second = await billNow();
+    return { patientId, encounterId, first, second };
+  }
+
+  it("taken towards a visit settle each of its bills that still owe, oldest first, on one receipt", async () => {
+    const { patientId, encounterId, first, second } = await twoBillsOwing();
+
+    const payment = await (await pay({ patientId, method: "cash", amountCents: 30_000, encounterId })).json();
+
+    // What is left over stays as the visit's credit.
+    expect(payment).toMatchObject({ encounterId, unallocatedCents: 9_500 });
+    // Applied in one transaction, so listed in no particular order.
+    expect(payment.allocations).toHaveLength(2);
+    expect(payment.allocations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ invoiceId: first, amountCents: 20_000 }),
+      expect.objectContaining({ invoiceId: second, amountCents: 500 }),
+    ]));
+    expect(await invoice(first)).toMatchObject({ balanceCents: 0 });
+    expect(await invoice(second)).toMatchObject({ balanceCents: 0 });
+    const [receipt] = await db.select().from(documents).where(eq(documents.id, payment.documentId));
+    expect(receipt.content).toMatchObject({
+      fields: expect.arrayContaining([{ label: "For", value: `Invoices INV-${year()}-000001, INV-${year()}-000002` }]),
+      // What each bill was for, as each bill prints it.
+      table: {
+        columns: [{ label: "Bill" }, { label: "Item" }, { label: "Qty", align: "right" }, { label: "Amount", align: "right" }],
+        rows: [[`INV-${year()}-000001`, "CONS", "1", "KES 500.00"], [`INV-${year()}-000002`, "PCM-500", "2", "KES 5.00"]],
+      },
+      totals: [
+        { label: "Amount received", value: "KES 300.00" },
+        { label: "Applied to the bills", value: "KES 205.00" },
+        { label: "Still owed on the bills", value: "KES 0.00" },
+      ],
+    });
+  });
+
+  it("taken towards a visit in part settle its oldest bill first, and the receipt says what all of them still owe", async () => {
+    const { patientId, encounterId, first, second } = await twoBillsOwing();
+
+    const payment = await (await pay({ patientId, method: "cash", amountCents: 10_000, encounterId })).json();
+
+    expect(payment).toMatchObject({ unallocatedCents: 0, allocations: [{ invoiceId: first, amountCents: 10_000 }] });
+    expect(await invoice(first)).toMatchObject({ balanceCents: 10_000 });
+    expect(await invoice(second)).toMatchObject({ balanceCents: 500 });
+    const [receipt] = await db.select().from(documents).where(eq(documents.id, payment.documentId));
+    expect(receipt.content.totals).toEqual([
+      { label: "Amount received", value: "KES 100.00" },
+      { label: "Applied to the bills", value: "KES 100.00" },
+      { label: "Still owed on the bills", value: "KES 105.00" },
+    ]);
+  });
+
+  it("taken towards a visit with more bills than one printed field holds name how many, each listed below", () => {
+    const numbers = Array.from({ length: 40 }, (_, at) => `INV-2026-${String(at + 1).padStart(6, "0")}`);
+
+    expect(billsPaidFor(numbers.slice(0, 1))).toBe("Invoice INV-2026-000001");
+    expect(billsPaidFor(numbers.slice(0, 2))).toBe("Invoices INV-2026-000001, INV-2026-000002");
+    expect(billsPaidFor(numbers.slice(0, 29)).length).toBeLessThanOrEqual(FIELD_LENGTH);
+    expect(billsPaidFor(numbers.slice(0, 29))).toMatch(/^Invoices INV-/);
+    expect(billsPaidFor(numbers.slice(0, 30))).toBe("30 invoices, each listed below");
+    expect(billsPaidFor(numbers)).toBe("40 invoices, each listed below");
   });
 
   it("left as credit are applied to a bill on request", async () => {
