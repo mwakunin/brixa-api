@@ -266,12 +266,13 @@ export const triage = createRoute({
   summary: "Triage a patient in one step",
   description:
     "Records today's complaint, the vital signs and the allergies asked about, sets how soon the patient must be seen, "
-    + "and sends them to the next clinic: all of it, or, on any refusal, none of it. Each part is checked as its own route checks it. "
+    + "and sends them to the clinic named in `nextServicePointId`; with none named, triage ends and the patient joins no "
+    + "other queue (`next` is null). All of it, or, on any refusal, none of it. Each part is checked as its own route checks it. "
     + "Send an Idempotency-Key, so a press sent again after a dropped connection records it once.",
   middleware: [requireClinicalRole(...COMPLAINT_STAFF)] as const,
   request: { headers: facilityHeaders, params: IdParamsSchema, body: jsonContentRequired(TriageBodySchema, "The triage") },
   responses: {
-    [HttpStatusCodes.OK]: jsonContent(z.object({ finished: QueueEntrySchema, next: QueueEntrySchema.nullable() }), "Triaged and sent on"),
+    [HttpStatusCodes.OK]: jsonContent(z.object({ finished: QueueEntrySchema, next: QueueEntrySchema.nullable() }), "Triaged: sent on to the clinic named (`next`), or to none (`next` null)"),
     ...refusals,
     [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(TriageBodySchema), "Invalid triage"),
     ...clinicalResponses,

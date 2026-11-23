@@ -47,6 +47,14 @@ export const keyReused = {
   [HttpStatusCodes.CONFLICT]: jsonContent(KeyReusedSchema, "An Idempotency-Key already used for another request (`idempotency_key_reused`)"),
 };
 
+/**
+ * A tenant write's 422 where the route validates nothing of its own: a
+ * malformed Idempotency-Key, refused before the route runs (`middlewares/tenant.ts`).
+ */
+export const keyMalformed = {
+  [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(facilityHeaders), "A malformed Idempotency-Key"),
+};
+
 /** As `tenantResponses`, for a route behind `requireClinicalRole`: a lapsed licence answers 403 with a code. */
 export const clinicalResponses = {
   ...tenantResponses,

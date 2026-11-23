@@ -96,6 +96,33 @@ describe("the API description", () => {
     }
   });
 
+  // `withFacility` checks a write's Idempotency-Key before the route runs: a malformed one is refused with a 422,
+  // and one already sent with another request with a 409, whatever the route takes.
+  it("declares a 422 on every tenant write, which a malformed Idempotency-Key is refused with", async () => {
+    const doc = await (await app.request("/doc")).json() as { paths: Record<string, Record<string, Operation>> };
+    const writes = new Set(["post", "put", "patch", "delete"]);
+
+    const undeclared = Object.entries(doc.paths).flatMap(([path, operations]) =>
+      Object.entries(operations)
+        .filter(([method, op]) => writes.has(method) && op.parameters?.some(p => p.in === "header" && p.name === "x-facility-id") && !op.responses["422"])
+        .map(([method]) => `${method.toUpperCase()} ${path}`));
+
+    expect(undeclared).toEqual([]);
+  });
+
+  it("names the reused Idempotency-Key in every tenant write's 409", async () => {
+    const doc = await (await app.request("/doc")).json() as { paths: Record<string, Record<string, Operation & { responses: Record<string, { description?: string }> }>> };
+    const writes = new Set(["post", "put", "patch", "delete"]);
+
+    const unnamed = Object.entries(doc.paths).flatMap(([path, operations]) =>
+      Object.entries(operations)
+        .filter(([method, op]) => writes.has(method) && op.parameters?.some(p => p.in === "header" && p.name === "x-facility-id"))
+        .filter(([, op]) => !op.responses["409"]?.description?.includes("idempotency_key_reused"))
+        .map(([method]) => `${method.toUpperCase()} ${path}`));
+
+    expect(unnamed).toEqual([]);
+  });
+
   it("declares, on every tenant write, a 409 whose shape takes a reused Idempotency-Key's answer", async () => {
     type Schema = Record<string, unknown>;
     const doc = await (await app.request("/doc")).json() as {

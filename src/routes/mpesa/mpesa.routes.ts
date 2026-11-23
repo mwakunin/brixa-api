@@ -6,7 +6,7 @@ import { createErrorSchema } from "stoker/openapi/schemas";
 import { DOCUMENT_READERS } from "@/lib/documents";
 import { ONE_LINE } from "@/lib/validation";
 import { requireMembershipRole } from "@/middlewares/auth";
-import { facilityHeaders, tenantResponses } from "@/routes/facility/facility.routes";
+import { facilityHeaders, keyMalformed, tenantResponses } from "@/routes/facility/facility.routes";
 import { BILLERS, FINANCE } from "@/routes/invoices/invoices.routes";
 import { CASHIERS } from "@/routes/shifts/shifts.routes";
 
@@ -94,6 +94,7 @@ export const rotateCallbackToken = createRoute({
   responses: {
     [HttpStatusCodes.OK]: jsonContent(z.object({ settings: SettingsSchema }), "Replaced"),
     [HttpStatusCodes.CONFLICT]: jsonContent(RefusalSchema, "M-Pesa is not set up"),
+    ...keyMalformed,
     ...tenantResponses,
   },
 });
@@ -109,6 +110,7 @@ export const requestRegistration = createRoute({
   responses: {
     [HttpStatusCodes.OK]: jsonContent(z.object({ settings: SettingsSchema }), "Asked"),
     [HttpStatusCodes.CONFLICT]: jsonContent(RefusalSchema, "M-Pesa is not set up"),
+    ...keyMalformed,
     ...tenantResponses,
   },
 });

@@ -98,7 +98,9 @@ const CheckInBodySchema = z.strictObject({
    * Where the patient goes: left out, the facility's triage point, as for any
    * visit; a clinic's id, straight there; null, no queue.
    */
-  queueAt: z.uuid().nullable().optional(),
+  queueAt: z.uuid().nullable().optional().openapi({
+    description: "Where the patient goes. Left out: the facility's triage point when it has exactly one in use, as for any visit; with none, no queue. A clinic's id: straight there. `null`: no queue.",
+  }),
 });
 const DayQuerySchema = z.object({
   /** Today if left out. */
