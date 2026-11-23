@@ -193,8 +193,9 @@ export const checkIn = createRoute({
   summary: "Check a patient in",
   description:
     "On the appointment's own day. Opens the patient's outpatient visit, or "
-    + "uses the one already open, and sends them to triage like any visit, "
-    + "or straight to the clinic named. Joining a clinic with a fee charges it.",
+    + "uses the one already open, and sends them where `queueAt` says: triage "
+    + "like any visit, while the facility has one triage point in use, or "
+    + "straight to the clinic named. Joining a clinic with a fee charges it.",
   middleware: [visitStaff] as const,
   request: { headers: facilityHeaders, params: IdParamsSchema, body: jsonContentRequired(CheckInBodySchema, "Where the patient goes") },
   responses: {

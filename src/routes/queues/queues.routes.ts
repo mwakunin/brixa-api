@@ -200,8 +200,9 @@ export const joinQueue = createRoute({
   description:
     "For an open outpatient visit or emergency attendance whose patient is in "
     + "no queue: back to a clinic with results, or straight to one. Opening a "
-    + "visit already joins triage; finishing in one queue can send the patient "
-    + "to the next. Joining a clinic with a fee charges it, once per visit.",
+    + "visit already joins its first queue, as its `queueAt` says (triage, or for an "
+    + "emergency the emergency area, while one is in use); finishing in one queue can "
+    + "send the patient to the next. Joining a clinic with a fee charges it, once per visit.",
   middleware: [queueStaff] as const,
   request: { headers: facilityHeaders, params: IdParamsSchema, body: jsonContentRequired(JoinBodySchema, "Where to") },
   responses: {
