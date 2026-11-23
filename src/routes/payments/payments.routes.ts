@@ -76,7 +76,7 @@ const RecordBodySchema = z.object({
   reference: z.string().trim().min(3).max(40).regex(/^[\w /-]+$/, "Letters, digits, spaces, / and -").optional(),
   /** Paid against this bill: as much as it owes is applied now, the rest kept as credit. */
   invoiceId: z.uuid().optional(),
-  /** Paid towards this visit or admission (a deposit), applied when its bill is finalised. */
+  /** Paid towards this visit or admission: its bills out that still owe are settled, oldest first, and the rest is a deposit, applied as its next bill is finalised. */
   encounterId: z.uuid().optional(),
 }).refine(b => (b.method === "cash") === (b.reference === undefined), {
   message: "Card and bank payments need a reference; cash has none",

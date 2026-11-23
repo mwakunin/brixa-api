@@ -160,7 +160,7 @@ const AssignBodySchema = z.object({
   patientId: z.uuid(),
   /** Settle this bill with it. */
   invoiceId: z.uuid().optional(),
-  /** Or hold it as a deposit for this visit or admission. */
+  /** Or pay it towards this visit or admission: its bills out that still owe are settled, oldest first, and the rest is a deposit. */
   encounterId: z.uuid().optional(),
 }).refine(b => !(b.invoiceId && b.encounterId), { message: "Name the bill or the visit, not both", path: ["encounterId"] });
 
@@ -223,7 +223,9 @@ const StkBodySchema = z.object({
   /** The phone to prompt, e.g. 0712 345 678. */
   phone: z.string().trim().min(9).max(16),
   amountCents: Cents,
+  /** Settle this bill with the payment. */
   invoiceId: z.uuid().optional(),
+  /** Or pay towards this visit or admission: its bills out that still owe are settled, oldest first, and the rest is a deposit. */
   encounterId: z.uuid().optional(),
 }).refine(b => !(b.invoiceId && b.encounterId), { message: "Name the bill or the visit, not both", path: ["encounterId"] });
 

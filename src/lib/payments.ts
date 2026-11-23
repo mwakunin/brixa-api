@@ -22,8 +22,9 @@ import { formatKes, printedQuantity } from "./money";
  * Recording money and settling bills are two acts. A payment lands as credit
  * on the patient's account, with its receipt issued in the same transaction;
  * when it is taken against a bill, as much as the bill still owes is
- * allocated to it at once, and the rest stays as credit. Credit tagged to a
- * visit or admission (a deposit) settles that encounter's bill when it is
+ * allocated to it at once, and the rest stays as credit. Taken towards a
+ * visit or admission, it settles that encounter's bills out that still owe,
+ * oldest first; what is left (a deposit) settles each of its bills as it is
  * finalised. Cash and card are taken inside the cashier's open shift.
  */
 
@@ -208,20 +209,34 @@ export interface PaymentInput {
   reference?: string;
   /** The M-Pesa transaction this records, for the M-Pesa methods. */
   mpesaTransactionId?: string;
-  /** Paid towards this visit or admission: a deposit. */
+  /** Paid towards this visit or admission: its bills out that still owe are settled, oldest first, and the rest is a deposit. */
   encounterId?: string;
   /** Paid against this bill: as much as it owes is applied at once. */
   invoiceId?: string;
 }
 
-/** A finalised bill as a payment's target: its number and what it still owes. */
-async function billTarget(tx: AppDb, invoice: typeof invoices.$inferSelect) {
+type InvoiceRow = typeof invoices.$inferSelect;
+
+/** A finalised bill a payment is taken towards: its number and what it still owes. */
+interface Bill {
+  invoice: InvoiceRow;
+  number: string;
+  owedCents: number;
+}
+
+/** What a payment is for: the visit or admission it is towards, if any, and the bills it settles, in the order it settles them. */
+interface PaymentTarget {
+  encounterId: string | null;
+  bills: Bill[];
+}
+
+async function billOf(tx: AppDb, invoice: InvoiceRow): Promise<Bill> {
   const [document] = await tx.select({ number: documents.number }).from(documents).where(eq(documents.id, invoice.documentId!)).limit(1);
-  return { encounterId: invoice.encounterId, invoice, invoiceNumber: document.number, owedCents: await balanceCents(tx, invoice) };
+  return { invoice, number: document.number, owedCents: await balanceCents(tx, invoice) };
 }
 
 /** What the payment is for, checked against the patient: an invoice, an encounter, or neither. */
-async function paymentTarget(tx: AppDb, input: PaymentInput, accountId: string) {
+async function paymentTarget(tx: AppDb, input: PaymentInput, accountId: string): Promise<PaymentTarget> {
   if (input.invoiceId) {
     // Locked now, before the payment exists (M8: payment, then invoice).
     const [invoice] = await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).for("update").limit(1);
@@ -231,7 +246,7 @@ async function paymentTarget(tx: AppDb, input: PaymentInput, accountId: string) 
       throw new PaymentError("other_patient");
     if (invoice.status !== "finalised")
       throw new PaymentError("not_finalised");
-    return billTarget(tx, invoice);
+    return { encounterId: invoice.encounterId, bills: [await billOf(tx, invoice)] };
   }
 
   if (input.encounterId) {
@@ -243,28 +258,28 @@ async function paymentTarget(tx: AppDb, input: PaymentInput, accountId: string) 
     if (encounter.status === "cancelled")
       throw new PaymentError("encounter_cancelled");
 
-    // Its final bill is already out and still owes: the payment settles it,
-    // as a deposit taken earlier would have at finalising (decided 2026-11-04).
-    const [final] = await tx
+    // Its bills already out that still owe, whatever their kind: the payment
+    // settles them, oldest first, as a deposit taken earlier would have each
+    // at finalising (decided 2026-11-04 for the final bill, and 2026-11-23 for
+    // every bill, so a visit paid as it goes is paid in one payment). Locked
+    // by id (M8), settled in the order they were finalised.
+    const finalised = await tx
       .select()
       .from(invoices)
-      .where(and(
-        eq(invoices.encounterId, encounter.id),
-        eq(invoices.accountId, accountId),
-        eq(invoices.kind, "final"),
-        eq(invoices.status, "finalised"),
-      ))
-      .for("update")
-      .limit(1);
-    if (final) {
-      const target = await billTarget(tx, final);
-      if (target.owedCents > 0)
-        return target;
+      .where(and(eq(invoices.encounterId, encounter.id), eq(invoices.accountId, accountId), eq(invoices.status, "finalised")))
+      .orderBy(asc(invoices.id))
+      .for("update");
+    finalised.sort((a, b) => a.finalisedAt!.getTime() - b.finalisedAt!.getTime() || a.id.localeCompare(b.id));
+    const bills: Bill[] = [];
+    for (const invoice of finalised) {
+      const bill = await billOf(tx, invoice);
+      if (bill.owedCents > 0)
+        bills.push(bill);
     }
-    return { encounterId: encounter.id, invoice: null, invoiceNumber: null, owedCents: 0 };
+    return { encounterId: encounter.id, bills };
   }
 
-  return { encounterId: null, invoice: null, invoiceNumber: null, owedCents: 0 };
+  return { encounterId: null, bills: [] };
 }
 
 async function depositFor(tx: AppDb, encounterId: string): Promise<string> {
@@ -280,23 +295,45 @@ async function receivedBy(tx: AppDb, actor: PatientActor | null): Promise<string
   return member.name;
 }
 
+/** What a payment on bills prints under them: each bill's lines as the bill prints them, with the bill's number when there are several. */
+async function billedTable(tx: AppDb, bills: Bill[]): Promise<PrintedContent["table"]> {
+  const several = bills.length > 1;
+  const rows: string[][] = [];
+  for (const bill of bills) {
+    for (const l of await linesOf(tx, bill.invoice.id))
+      rows.push([...(several ? [bill.number] : []), l.description, printedQuantity(l.quantity), formatKes(l.amountCents)]);
+  }
+  if (rows.length === 0)
+    return undefined;
+  return {
+    columns: [...(several ? [{ label: "Bill" }] : []), { label: "Item" }, { label: "Qty", align: "right" as const }, { label: "Amount", align: "right" as const }],
+    rows,
+  };
+}
+
 /**
- * What the receipt prints, frozen when it is issued (rule 7). A payment on a
- * bill lists what the bill was for, as the bill prints it, and every receipt
- * says who received it (the staff walkthrough, 2026-11-20).
+ * What the receipt prints, frozen when it is issued (rule 7). A payment on
+ * bills lists what each was for, as the bill prints it, and what they still
+ * owe; every receipt says who received it (the staff walkthrough,
+ * 2026-11-20).
  */
 async function printedReceipt(
   tx: AppDb,
   input: PaymentInput,
   accountId: string,
-  target: Awaited<ReturnType<typeof paymentTarget>>,
+  target: PaymentTarget,
   appliedCents: number,
   actor: PatientActor | null,
 ): Promise<PrintedContent> {
-  const forWhat = target.invoiceNumber
-    ? `Invoice ${target.invoiceNumber}`
-    : target.encounterId ? await depositFor(tx, target.encounterId) : "Credit on account";
-  const lines = target.invoice ? await linesOf(tx, target.invoice.id) : [];
+  const { bills } = target;
+  const forWhat = bills.length > 1
+    ? `Invoices ${bills.map(bill => bill.number).join(", ")}`
+    : bills.length === 1
+      ? `Invoice ${bills[0].number}`
+      : target.encounterId ? await depositFor(tx, target.encounterId) : "Credit on account";
+  const table = await billedTable(tx, bills);
+  const owedCents = bills.reduce((sum, bill) => sum + bill.owedCents, 0);
+  const theBills = bills.length > 1 ? "the bills" : "the bill";
 
   return {
     title: "Receipt",
@@ -307,20 +344,13 @@ async function printedReceipt(
       ...(input.reference ? [{ label: "Reference", value: input.reference }] : []),
       { label: "Received by", value: await receivedBy(tx, actor) },
     ],
-    ...(lines.length > 0
-      ? {
-          table: {
-            columns: [{ label: "Item" }, { label: "Qty", align: "right" as const }, { label: "Amount", align: "right" as const }],
-            rows: lines.map(l => [l.description, printedQuantity(l.quantity), formatKes(l.amountCents)]),
-          },
-        }
-      : {}),
+    ...(table ? { table } : {}),
     totals: [
       { label: "Amount received", value: formatKes(input.amountCents) },
-      ...(target.invoice
+      ...(bills.length > 0
         ? [
-            { label: "Applied to the bill", value: formatKes(appliedCents) },
-            { label: "Still owed on the bill", value: formatKes(target.owedCents - appliedCents) },
+            { label: `Applied to ${theBills}`, value: formatKes(appliedCents) },
+            { label: `Still owed on ${theBills}`, value: formatKes(owedCents - appliedCents) },
           ]
         : []),
     ],
@@ -355,12 +385,18 @@ export async function recordPayment(tx: AppDb, facilityId: string, input: Paymen
 
   const accountId = await ensureAccount(tx, facilityId, { patientId: patient.id });
   const target = await paymentTarget(tx, input, accountId);
-  const appliedCents = Math.min(input.amountCents, target.owedCents);
+  // Each bill in turn, as much as it owes, while the money lasts.
+  let leftCents = input.amountCents;
+  const applied = target.bills.map((bill) => {
+    const cents = Math.min(leftCents, bill.owedCents);
+    leftCents -= cents;
+    return { bill, cents };
+  });
 
   const receipt = await issueDocument(tx, {
     facilityId,
     kind: "receipt",
-    content: await printedReceipt(tx, input, accountId, target, appliedCents, actor),
+    content: await printedReceipt(tx, input, accountId, target, input.amountCents - leftCents, actor),
     issuedBy: actor,
     at,
   });
@@ -388,8 +424,10 @@ export async function recordPayment(tx: AppDb, facilityId: string, input: Paymen
     detail: { patientId: patient.id, method: input.method, amountCents: input.amountCents, receipt: receipt.number, invoiceId: input.invoiceId ?? null },
   });
 
-  if (target.invoice && appliedCents > 0)
-    await allocate(tx, facilityId, { paymentId: payment.id, invoiceId: target.invoice.id, amountCents: appliedCents }, actor);
+  for (const { bill, cents } of applied) {
+    if (cents > 0)
+      await allocate(tx, facilityId, { paymentId: payment.id, invoiceId: bill.invoice.id, amountCents: cents }, actor);
+  }
   return payment.id;
 }
 
