@@ -183,7 +183,7 @@ export const getAccount = createRoute({
   method: "get",
   path: "/patients/{id}/account",
   summary: "A patient's account",
-  description: "Credit and what each finalised bill still owes. Audited.",
+  description: "Credit, oldest received first, and what each finalised bill still owes, oldest finalised first. Audited.",
   middleware: [readersOnly] as const,
   request: { headers: facilityHeaders, params: IdParamsSchema },
   responses: {

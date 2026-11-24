@@ -347,8 +347,9 @@ async function linkPlacedTransaction(tx: AppDb, request: StkRow, transaction: Tr
 /**
  * A prompt for a bill needs the payment on that bill; one for a stay needs it
  * as that stay's deposit. One for an outpatient visit shows the patient's
- * number, so its paybill confirmation places patient credit (SCHEMA.md), and
- * that is accepted as well as a deposit on the visit.
+ * number, so its paybill confirmation pays towards the patient's one visit
+ * that owes, or is patient credit (SCHEMA.md): credit is accepted as well
+ * as a payment towards the prompt's own visit.
  */
 async function placedOnTarget(tx: AppDb, request: StkRow, placed: { id: string; encounterId: string | null }) {
   if (request.invoiceId) {

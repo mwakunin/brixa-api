@@ -1,11 +1,11 @@
 import type { AnyColumn } from "drizzle-orm";
 
-import { and, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 
 import { withAdvisoryLock } from "@/db";
-import { accounts, admissions, documents, encounters, gatewayExchanges, invoices, mpesaSettings, mpesaTransactions, normalisedNumber, patientNumbers, payments } from "@/db/schema";
+import { accounts, admissions, documents, encounters, gatewayExchanges, invoices, mpesaSettings, mpesaStkRequests, mpesaTransactions, normalisedNumber, patientNumbers, payments } from "@/db/schema";
 import { runAsFacility } from "@/db/tenant-transaction";
 import env from "@/env";
 
@@ -14,6 +14,7 @@ import type { PatientActor } from "./patients";
 import type { PaymentMethod } from "./payments";
 
 import { recordAudit } from "./audit";
+import { withMoneyDue } from "./cashier";
 import { decryptSecret, encryptSecret, generateCallbackToken } from "./crypto";
 import { exchangeOf, registerC2bUrls } from "./daraja";
 import { isUniqueViolation, pgConstraintName } from "./db-errors";
@@ -326,9 +327,11 @@ const UNMATCHED_REASONS = {
  * Finds what a reference names, if exactly one thing: a patient's bill, an
  * admission, or a patient's OP or IP number. All three are looked up, so a
  * number naming more than one is ambiguous. A payer's bill is never
- * matched: a patient's paybill payment is not the insurer's.
+ * matched: a patient's paybill payment is not the insurer's. A patient's
+ * number pays towards the visit of the prompt it answers, or their open
+ * visit when exactly one owes (`towardsTheVisitOwing`).
  */
-export async function matchReference(tx: AppDb, reference: string | null): Promise<MatchOutcome> {
+export async function matchReference(tx: AppDb, reference: string | null, amountCents: number): Promise<MatchOutcome> {
   const ref = reference ? normaliseReference(reference) : "";
   if (ref === "")
     return { kind: "unmatched", reason: "no_reference" };
@@ -359,8 +362,49 @@ export async function matchReference(tx: AppDb, reference: string | null): Promi
   if (targets.length > 1)
     return { kind: "unmatched", reason: "ambiguous" };
   if (targets.length === 1)
-    return { kind: "matched", target: targets[0] };
+    return { kind: "matched", target: people.length === 1 ? await towardsTheVisitOwing(tx, targets[0].patientId, amountCents) : targets[0] };
   return { kind: "unmatched", reason: "no_candidate" };
+}
+
+/**
+ * Where money naming only its patient goes (decided 2026-11-24).
+ *
+ * A prompt towards a visit shows the patient's number on the phone, so its
+ * paybill confirmation names only the patient, and can come before the
+ * prompt's own answer. One prompt still open to the patient, towards an
+ * outpatient visit or emergency attendance and for this amount, is this
+ * payment's (a stay's prompt shows its admission number): it goes towards that visit,
+ * as the prompt would have placed it. Two such prompts leave it credit,
+ * which either prompt accepts.
+ *
+ * Otherwise it goes towards their open outpatient visit or emergency
+ * attendance when exactly one has money due, as the cashier's list counts
+ * it, so it settles that visit's bills oldest first and the rest waits on it
+ * as a deposit. With none owing, or more than one, it is credit on their
+ * account, for a person to place.
+ */
+async function towardsTheVisitOwing(tx: AppDb, patientId: string, amountCents: number): Promise<PaymentTarget> {
+  const prompts = await tx
+    .select({ encounterId: mpesaStkRequests.encounterId })
+    .from(mpesaStkRequests)
+    .innerJoin(encounters, eq(encounters.id, mpesaStkRequests.encounterId))
+    .where(and(
+      eq(mpesaStkRequests.patientId, patientId),
+      inArray(mpesaStkRequests.status, ["queued", "sending", "sent"]),
+      inArray(encounters.kind, ["opd", "emergency"]),
+      isNull(mpesaStkRequests.invoiceId),
+      eq(mpesaStkRequests.amountCents, amountCents),
+    ));
+  if (prompts.length > 1)
+    return { patientId };
+  if (prompts[0]?.encounterId)
+    return { patientId, encounterId: prompts[0].encounterId };
+  const open = await tx
+    .select({ id: encounters.id })
+    .from(encounters)
+    .where(and(eq(encounters.patientId, patientId), eq(encounters.status, "open"), inArray(encounters.kind, ["opd", "emergency"])));
+  const owing = [...await withMoneyDue(tx, open.map(visit => visit.id))];
+  return owing.length === 1 ? { patientId, encounterId: owing[0] } : { patientId };
 }
 
 /**
@@ -405,7 +449,7 @@ export async function matchTransaction(tx: AppDb, facilityId: string, id: string
   const [transaction] = await tx.select().from(mpesaTransactions).where(eq(mpesaTransactions.id, id)).for("update").limit(1);
   if (!transaction || transaction.status !== "unmatched")
     return { kind: "unmatched", reason: "no_candidate" };
-  const outcome = await matchReference(tx, transaction.accountReference);
+  const outcome = await matchReference(tx, transaction.accountReference, transaction.amountCents);
   if (outcome.kind === "matched")
     await settleTransaction(tx, facilityId, transaction, outcome.target, null);
   else
