@@ -9,6 +9,7 @@ import { runAsFacility } from "@/db/tenant-transaction";
 import { approveAdjustment, requestAdjustment } from "@/lib/adjustments";
 import { allocate } from "@/lib/allocations";
 import { FIELD_LENGTH } from "@/lib/document-content";
+import { finaliseInvoice } from "@/lib/billing";
 import { admitPatient, dischargePatient } from "@/lib/encounters";
 import { billsPaidFor, recordPayment } from "@/lib/payments";
 import { resetDb } from "@/test/helpers";
@@ -333,6 +334,23 @@ describe("payments", () => {
     const [entry] = await db.select().from(auditLog).where(eq(auditLog.action, "account.viewed"));
     expect(entry).toMatchObject({ actorId: h.cashier.id, entityId: patientId });
     expect((await call("GET", `/patients/${patientId}/account`, h.facility.id, h.nurse)).status).toBe(403);
+  });
+
+  it("show on the account in the order of their numbers when finalised in the same instant", async () => {
+    const patientId = await h.patient();
+    // Two bills drafted in turn, then finalised at one instant in the other order: the later draft takes the earlier number.
+    const drafts: string[] = [];
+    for (const kind of ["opd", "emergency"] as const) {
+      const encounterId = (await (await call("POST", "/encounters", h.facility.id, h.nurse, { patientId, kind })).json()).id;
+      await call("POST", `/encounters/${encounterId}/charges`, h.facility.id, h.clerk, { billableItemId: h.items.consultation, quantity: "1", reason: "Before P3" });
+      drafts.push((await (await call("POST", `/encounters/${encounterId}/invoices`, h.facility.id, h.clerk, { kind: "final" })).json()).id);
+    }
+    const instant = new Date();
+    for (const invoiceId of [...drafts].reverse())
+      await runAsFacility(h.facility.id, tx => finaliseInvoice(tx, h.facility.id, invoiceId, h.clerk.actor, instant));
+
+    const account = await (await call("GET", `/patients/${patientId}/account`, h.facility.id, h.cashier)).json();
+    expect(account.invoices.map((i: { id: string }) => i.id)).toEqual([...drafts].reverse());
   });
 
   it("are not found from another facility", async () => {
