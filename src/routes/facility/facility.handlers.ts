@@ -35,7 +35,7 @@ async function facilityRow(tx: AppDb) {
 }
 
 function facilityJson(c: Context<TenantBindings>, row: Awaited<ReturnType<typeof facilityRow>>) {
-  return { ...row, roles: c.var.membership.roles };
+  return { ...row, membershipId: c.var.membership.id, roles: c.var.membership.roles };
 }
 
 export const getFacility: TenantRouteHandler<GetFacilityRoute> = async (c) => {
