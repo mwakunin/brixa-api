@@ -371,8 +371,9 @@ export async function matchReference(tx: AppDb, reference: string | null, amount
  *
  * A prompt towards a visit shows the patient's number on the phone, so its
  * paybill confirmation names only the patient, and can come before the
- * prompt's own answer. One prompt still open to the patient, towards a
- * visit and for this amount, is this payment's: it goes towards that visit,
+ * prompt's own answer. One prompt still open to the patient, towards an
+ * outpatient visit or emergency attendance and for this amount, is this
+ * payment's (a stay's prompt shows its admission number): it goes towards that visit,
  * as the prompt would have placed it. Two such prompts leave it credit,
  * which either prompt accepts.
  *
@@ -386,10 +387,11 @@ async function towardsTheVisitOwing(tx: AppDb, patientId: string, amountCents: n
   const prompts = await tx
     .select({ encounterId: mpesaStkRequests.encounterId })
     .from(mpesaStkRequests)
+    .innerJoin(encounters, eq(encounters.id, mpesaStkRequests.encounterId))
     .where(and(
       eq(mpesaStkRequests.patientId, patientId),
       inArray(mpesaStkRequests.status, ["queued", "sending", "sent"]),
-      isNotNull(mpesaStkRequests.encounterId),
+      inArray(encounters.kind, ["opd", "emergency"]),
       isNull(mpesaStkRequests.invoiceId),
       eq(mpesaStkRequests.amountCents, amountCents),
     ));

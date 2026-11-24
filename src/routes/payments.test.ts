@@ -321,15 +321,15 @@ describe("payments", () => {
     expect(await refusal(asked)).toEqual([409, "exceeds_balance"]);
   });
 
-  it("show on the patient's account, which is audited and kept to those who handle money", async () => {
+  it("show on the patient's account, oldest first, which is audited and kept to those who handle money", async () => {
     const { patientId, invoiceId } = await billed();
     await pay({ patientId, method: "cash", amountCents: 10_000 });
-    await billed(patientId);
+    const { invoiceId: later } = await billed(patientId);
 
     const res = await call("GET", `/patients/${patientId}/account`, h.facility.id, h.cashier);
     const account = await res.json();
     expect(account).toMatchObject({ creditCents: 10_000, owedCents: 101_600 });
-    expect(account.invoices.map((i: { id: string }) => i.id)).toContain(invoiceId);
+    expect(account.invoices.map((i: { id: string }) => i.id)).toEqual([invoiceId, later]);
     const [entry] = await db.select().from(auditLog).where(eq(auditLog.action, "account.viewed"));
     expect(entry).toMatchObject({ actorId: h.cashier.id, entityId: patientId });
     expect((await call("GET", `/patients/${patientId}/account`, h.facility.id, h.nurse)).status).toBe(403);

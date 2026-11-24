@@ -478,6 +478,21 @@ describe("m-Pesa prompts", () => {
     expect(await invoice(elsewhere)).toMatchObject({ balanceCents: 50_800 });
   });
 
+  it("for a stay never take a payment that names the patient, which pays their visit that owes", async () => {
+    await setUp();
+    const patientId = await h.patient();
+    const { id: stay } = await (await call("POST", "/admissions", h.facility.id, h.nurse, { patientId, bedId: h.beds.general })).json();
+    const { encounterId, invoiceId } = await owing(patientId);
+    await prompt({ patientId, phone: "0712345678", amountCents: 50_800, encounterId: stay });
+    daraja();
+    await drainOutbox();
+
+    // A stay's prompt shows its admission number, so a payment naming the patient is not its own, whatever the amount.
+    await post("/c2b/confirmation", confirmation({ TransID: "SKSTAY0001", TransAmount: "508.00", BillRefNumber: await opNumberOf(patientId) }));
+    expect(await paymentOf("SKSTAY0001")).toMatchObject({ encounterId });
+    expect(await invoice(invoiceId)).toMatchObject({ balanceCents: 0 });
+  });
+
   it("close their prompt when the paybill confirmation placed a different amount first", async () => {
     await setUp();
     const patientId = await h.patient();
