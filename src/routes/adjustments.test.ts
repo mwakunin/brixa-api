@@ -145,6 +145,29 @@ describe("adjustments", () => {
     expect(listed).toMatchObject({ actorId: h.finance.id, detail: { status: "pending", ids: [id] } });
   });
 
+  it("name, for the approver, the patient, the visit and the bill, and who asked and decided; and are listed for one visit", async () => {
+    const { id } = await (await ask({ kind: "waiver", amountCents: 800 })).json();
+    await decide(id, "approve", h.finance);
+    const otherVisit = (await (await call("POST", "/encounters", h.facility.id, h.nurse, { patientId: await h.patient(), kind: "opd" })).json()).id;
+    const nameOf = async (userId: string) => (await pool.query(`SELECT name FROM "user" WHERE id = $1`, [userId])).rows[0].name as string;
+    const [patient] = (await pool.query(
+      "SELECT e.patient_id AS id, pn.number FROM encounters e JOIN patient_numbers pn ON pn.patient_id = e.patient_id AND pn.kind = 'outpatient' WHERE e.id = $1",
+      [encounterId],
+    )).rows;
+
+    const { adjustments } = await (await call("GET", `/adjustments?encounterId=${encounterId}`, h.facility.id, h.finance)).json();
+
+    expect(adjustments).toMatchObject([{
+      id,
+      encounterId,
+      invoiceTotalCents: 50_800,
+      patient: { id: patient.id, name: "Test Patient", opNumber: patient.number },
+      requestedByName: await nameOf(h.cashier.id),
+      decidedByName: await nameOf(h.finance.id),
+    }]);
+    expect((await (await call("GET", `/adjustments?encounterId=${otherVisit}`, h.facility.id, h.cashier)).json()).adjustments).toEqual([]);
+  });
+
   it("are audited when asked for and when decided", async () => {
     const { id } = await (await ask({ kind: "waiver", amountCents: 800 })).json();
     await decide(id, "approve", h.finance);

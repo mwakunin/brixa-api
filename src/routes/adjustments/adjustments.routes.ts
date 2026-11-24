@@ -29,6 +29,11 @@ const AdjustmentSchema = z.object({
   id: z.uuid(),
   invoiceId: z.uuid(),
   invoiceNumber: z.string().nullable(),
+  /** What the bill is for, in all. */
+  invoiceTotalCents: z.number().int().nullable(),
+  encounterId: z.uuid(),
+  /** The patient billed, with their outpatient number; none on a payer's bill. */
+  patient: z.object({ id: z.uuid(), name: z.string(), opNumber: z.string().nullable() }).nullable(),
   /** An approved credit note's own document (to print, `/documents/{id}/pdf`) and number. */
   documentId: z.uuid().nullable(),
   number: z.string().nullable(),
@@ -36,16 +41,19 @@ const AdjustmentSchema = z.object({
   amountCents: z.number().int(),
   reason: z.string(),
   status: StatusSchema,
-  /** Memberships. */
+  /** Memberships, with their people's names. */
   requestedBy: z.uuid(),
+  requestedByName: z.string().nullable(),
   requestedAt: z.string(),
   decidedBy: z.uuid().nullable(),
+  decidedByName: z.string().nullable(),
   decidedAt: z.string().nullable(),
   /** Set once a second person approves reversing it; it then counts for nothing. */
   reversedAt: z.string().nullable(),
   reversalReason: z.string().nullable(),
 });
 
+const ListQuerySchema = z.object({ status: StatusSchema.optional(), encounterId: z.uuid().optional() });
 const RequestBodySchema = z.object({
   /** `credit_note` corrects a billing error and is numbered; `waiver` forgives; `write_off` gives up on a debt. */
   kind: KindSchema,
@@ -82,12 +90,12 @@ export const listAdjustments = createRoute({
   method: "get",
   path: "/adjustments",
   summary: "Adjustments, newest first",
-  description: "`?status=pending` is the approver's queue. At most 100.",
+  description: "`?status=pending` is the approver's queue; `?encounterId=` is one visit's, for the cashier. Each names the patient billed and who asked and decided. At most 100.",
   middleware: [readersOnly] as const,
-  request: { headers: facilityHeaders, query: z.object({ status: StatusSchema.optional() }) },
+  request: { headers: facilityHeaders, query: ListQuerySchema },
   responses: {
     [HttpStatusCodes.OK]: jsonContent(z.object({ adjustments: z.array(AdjustmentSchema) }), "Adjustments"),
-    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(z.object({ status: StatusSchema.optional() })), "Unknown status"),
+    [HttpStatusCodes.UNPROCESSABLE_ENTITY]: jsonContent(createErrorSchema(ListQuerySchema), "Unknown status, or not a visit id"),
     ...tenantResponses,
   },
 });

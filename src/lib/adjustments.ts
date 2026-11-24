@@ -1,9 +1,9 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 
 import type { AppDb } from "@/db";
 
-import { adjustmentReversals, documents, encounters, invoiceAdjustments, invoices } from "@/db/schema";
+import { accounts, adjustmentReversals, documents, encounters, invoiceAdjustments, invoices, memberships, patientNumbers, patients, user } from "@/db/schema";
 
 import type { PrintedContent } from "./document-content";
 import type { PatientActor } from "./patients";
@@ -210,6 +210,11 @@ export interface ListedAdjustment {
   id: string;
   invoiceId: string;
   invoiceNumber: string | null;
+  /** What the bill is for, in all: the size of what is asked for beside it. */
+  invoiceTotalCents: number | null;
+  encounterId: string;
+  /** The patient billed; none on a payer's bill. */
+  patient: { id: string; name: string; opNumber: string | null } | null;
   /** An approved credit note's own document and number. */
   documentId: string | null;
   number: string | null;
@@ -218,21 +223,37 @@ export interface ListedAdjustment {
   reason: string;
   status: AdjustmentStatus;
   requestedBy: string;
+  requestedByName: string | null;
   requestedAt: Date;
   decidedBy: string | null;
+  decidedByName: string | null;
   decidedAt: Date | null;
   reversedAt: Date | null;
   reversalReason: string | null;
 }
 
-/** Adjustments, newest first: the approver's queue when filtered to `pending`. Names no patient. */
-export async function listAdjustments(tx: AppDb, filter: { status?: AdjustmentStatus; id?: string } = {}): Promise<ListedAdjustment[]> {
+/**
+ * Adjustments, newest first: the approver's queue when filtered to
+ * `pending`, or one visit's for the cashier with `encounterId`. Each names
+ * the patient billed and who asked and decided, as the approver chooses by
+ * who the waiver is for (brixa-web, 2026-11-24).
+ */
+export async function listAdjustments(tx: AppDb, filter: { status?: AdjustmentStatus; id?: string; encounterId?: string } = {}): Promise<ListedAdjustment[]> {
   const invoiceDocument = alias(documents, "invoice_document");
-  return tx
+  const asker = alias(memberships, "asker");
+  const askerUser = alias(user, "asker_user");
+  const decider = alias(memberships, "decider");
+  const deciderUser = alias(user, "decider_user");
+  const rows = await tx
     .select({
       id: invoiceAdjustments.id,
       invoiceId: invoiceAdjustments.invoiceId,
       invoiceNumber: invoiceDocument.number,
+      invoiceTotalCents: invoices.totalCents,
+      encounterId: invoices.encounterId,
+      patientId: patients.id,
+      patientName: sql<string>`concat_ws(' ', ${patients.givenName}, ${patients.middleNames}, ${patients.familyName})`,
+      opNumber: patientNumbers.number,
       documentId: invoiceAdjustments.documentId,
       number: documents.number,
       kind: invoiceAdjustments.kind,
@@ -240,22 +261,36 @@ export async function listAdjustments(tx: AppDb, filter: { status?: AdjustmentSt
       reason: invoiceAdjustments.reason,
       status: invoiceAdjustments.status,
       requestedBy: invoiceAdjustments.requestedBy,
+      requestedByName: askerUser.name,
       requestedAt: invoiceAdjustments.requestedAt,
       decidedBy: invoiceAdjustments.decidedBy,
+      decidedByName: deciderUser.name,
       decidedAt: invoiceAdjustments.decidedAt,
       reversedAt: invoiceAdjustments.reversedAt,
       reversalReason: invoiceAdjustments.reversalReason,
     })
     .from(invoiceAdjustments)
     .innerJoin(invoices, eq(invoices.id, invoiceAdjustments.invoiceId))
+    .innerJoin(accounts, eq(accounts.id, invoices.accountId))
+    .leftJoin(patients, eq(patients.id, accounts.patientId))
+    .leftJoin(patientNumbers, and(eq(patientNumbers.patientId, patients.id), eq(patientNumbers.kind, "outpatient")))
     .leftJoin(invoiceDocument, eq(invoiceDocument.id, invoices.documentId))
     .leftJoin(documents, eq(documents.id, invoiceAdjustments.documentId))
+    .leftJoin(asker, eq(asker.id, invoiceAdjustments.requestedBy))
+    .leftJoin(askerUser, eq(askerUser.id, asker.userId))
+    .leftJoin(decider, eq(decider.id, invoiceAdjustments.decidedBy))
+    .leftJoin(deciderUser, eq(deciderUser.id, decider.userId))
     .where(and(
       filter.status ? eq(invoiceAdjustments.status, filter.status) : undefined,
       filter.id ? eq(invoiceAdjustments.id, filter.id) : undefined,
+      filter.encounterId ? eq(invoices.encounterId, filter.encounterId) : undefined,
     ))
     .orderBy(desc(invoiceAdjustments.requestedAt), desc(invoiceAdjustments.id))
     .limit(100);
+  return rows.map(({ patientId, patientName, opNumber, ...row }) => ({
+    ...row,
+    patient: patientId ? { id: patientId, name: patientName, opNumber } : null,
+  }));
 }
 
 // ---------------------------------------------------------------------------
