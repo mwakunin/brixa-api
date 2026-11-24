@@ -25,6 +25,7 @@ export const listMyFacilities: AppRouteHandler<ListMyFacilitiesRoute> = async (c
       id: facilities.id,
       name: facilities.name,
       status: facilities.status,
+      membershipId: memberships.id,
       roles: memberships.roles,
     })
     .from(memberships)

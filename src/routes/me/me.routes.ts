@@ -14,6 +14,8 @@ export const MyFacilitySchema = z.object({
   id: z.uuid(),
   name: z.string(),
   status: z.enum(["active", "suspended"]),
+  /** The membership itself: how the API names this person in what it returns, such as who is serving a queue entry. */
+  membershipId: z.uuid(),
   roles: z.array(MembershipRoleSchema),
 });
 

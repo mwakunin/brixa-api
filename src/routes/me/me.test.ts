@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import app from "@/app";
+import { pool } from "@/db";
 import { addMembership, makeFacility, resetDb, signedInUser, signedInUserAt } from "@/test/helpers";
 
 describe("the facility picker, /me/facilities", () => {
@@ -14,19 +15,22 @@ describe("the facility picker, /me/facilities", () => {
     expect(res.status).toBe(401);
   });
 
-  it("lists my active memberships by facility name, with my roles at each", async () => {
+  it("lists my active memberships by facility name, with each membership and my roles at each", async () => {
     const zawadi = await makeFacility({ name: "Zawadi Hospital" });
     const amani = await makeFacility({ name: "Amani Hospital" });
     const person = await signedInUserAt(zawadi.id, ["doctor"]);
     await addMembership(person.id, amani.id, ["clinical_officer", "facility_admin"]);
+
+    const membershipAt = async (facilityId: string) =>
+      (await pool.query("SELECT id FROM memberships WHERE user_id = $1 AND facility_id = $2", [person.id, facilityId])).rows[0].id as string;
 
     const res = await app.request("/me/facilities", { headers: person.headers });
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       facilities: [
-        { id: amani.id, name: "Amani Hospital", status: "active", roles: ["clinical_officer", "facility_admin"] },
-        { id: zawadi.id, name: "Zawadi Hospital", status: "active", roles: ["doctor"] },
+        { id: amani.id, name: "Amani Hospital", status: "active", membershipId: await membershipAt(amani.id), roles: ["clinical_officer", "facility_admin"] },
+        { id: zawadi.id, name: "Zawadi Hospital", status: "active", membershipId: await membershipAt(zawadi.id), roles: ["doctor"] },
       ],
     });
   });
