@@ -621,7 +621,8 @@ export async function viewAccount(tx: AppDb, facilityId: string, patientId: stri
         .from(invoices)
         .innerJoin(documents, eq(documents.id, invoices.documentId))
         .where(and(eq(invoices.accountId, account.id), eq(invoices.status, "finalised")))
-        .orderBy(asc(invoices.finalisedAt))
+        // Bills finalised in the same instant keep the order of their numbers, which are issued in sequence.
+        .orderBy(asc(invoices.finalisedAt), asc(documents.number))
     : [];
 
   let creditCents = 0;
