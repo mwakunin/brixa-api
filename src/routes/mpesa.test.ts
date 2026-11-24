@@ -422,7 +422,7 @@ describe("m-Pesa prompts", () => {
     expect(await db.select().from(payments)).toHaveLength(1);
   });
 
-  it("for an outpatient visit complete their prompt when the paybill confirmation placed the payment as credit first", async () => {
+  it("for an outpatient visit complete their prompt when the paybill confirmation placed the payment towards it first", async () => {
     await setUp();
     const patientId = await h.patient();
     const { id: encounterId } = await (await call("POST", "/encounters", h.facility.id, h.nurse, { patientId, kind: "opd" })).json();
@@ -430,10 +430,10 @@ describe("m-Pesa prompts", () => {
     daraja();
     await drainOutbox();
 
-    // A visit's prompt shows the patient's number, so its confirmation places patient credit, not a visit deposit.
+    // A visit's prompt shows the patient's number; the confirmation is the open prompt's, so it is a deposit on the prompt's visit.
     const [op] = (await pool.query("SELECT number FROM patient_numbers WHERE patient_id = $1 AND kind = 'outpatient'", [patientId])).rows;
     await post("/c2b/confirmation", confirmation({ TransID: "SKVISIT001", TransAmount: "600.00", BillRefNumber: op.number }));
-    expect(await paymentOf("SKVISIT001")).toMatchObject({ encounterId: null });
+    expect(await paymentOf("SKVISIT001")).toMatchObject({ encounterId });
     await paid("ws_CO_1", "SKVISIT001", 600);
 
     expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).toMatchObject({ status: "completed", receiptNumber: "SKVISIT001" });
@@ -456,6 +456,26 @@ describe("m-Pesa prompts", () => {
     expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).toMatchObject({ status: "completed", receiptNumber: "SKVISIT002" });
     expect(await db.select().from(payments)).toHaveLength(1);
     expect(await invoice(invoiceId)).toMatchObject({ balanceCents: 0 });
+  });
+
+  it("for a visit complete their prompt when the paybill confirmation came first, though another of the patient's visits owes", async () => {
+    await setUp();
+    const patientId = await h.patient();
+    // The prompt is a deposit towards today's visit, which owes nothing yet; the patient's emergency attendance owes.
+    const { id: encounterId } = await (await call("POST", "/encounters", h.facility.id, h.nurse, { patientId, kind: "opd" })).json();
+    const { invoiceId: elsewhere } = await owing(patientId, "emergency");
+    const request = await (await prompt({ patientId, phone: "0712345678", amountCents: 60_000, encounterId })).json();
+    daraja();
+    await drainOutbox();
+
+    // The confirmation names the patient, and is the open prompt's payment: it goes towards the prompt's visit.
+    await post("/c2b/confirmation", confirmation({ TransID: "SKVISIT003", TransAmount: "600.00", BillRefNumber: await opNumberOf(patientId) }));
+    expect(await paymentOf("SKVISIT003")).toMatchObject({ encounterId });
+    await paid("ws_CO_1", "SKVISIT003", 600);
+
+    expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).toMatchObject({ status: "completed", receiptNumber: "SKVISIT003" });
+    expect(await db.select().from(payments)).toHaveLength(1);
+    expect(await invoice(elsewhere)).toMatchObject({ balanceCents: 50_800 });
   });
 
   it("close their prompt when the paybill confirmation placed a different amount first", async () => {
