@@ -1,6 +1,6 @@
 import type { AnyColumn } from "drizzle-orm";
 
-import { and, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
 
 import type { AppDb } from "@/db";
 
@@ -14,6 +14,7 @@ import type { PatientActor } from "./patients";
 import type { PaymentMethod } from "./payments";
 
 import { recordAudit } from "./audit";
+import { withMoneyDue } from "./cashier";
 import { decryptSecret, encryptSecret, generateCallbackToken } from "./crypto";
 import { exchangeOf, registerC2bUrls } from "./daraja";
 import { isUniqueViolation, pgConstraintName } from "./db-errors";
@@ -326,7 +327,9 @@ const UNMATCHED_REASONS = {
  * Finds what a reference names, if exactly one thing: a patient's bill, an
  * admission, or a patient's OP or IP number. All three are looked up, so a
  * number naming more than one is ambiguous. A payer's bill is never
- * matched: a patient's paybill payment is not the insurer's.
+ * matched: a patient's paybill payment is not the insurer's. A patient's
+ * number pays towards their open visit when exactly one owes
+ * (`towardsTheVisitOwing`).
  */
 export async function matchReference(tx: AppDb, reference: string | null): Promise<MatchOutcome> {
   const ref = reference ? normaliseReference(reference) : "";
@@ -359,8 +362,24 @@ export async function matchReference(tx: AppDb, reference: string | null): Promi
   if (targets.length > 1)
     return { kind: "unmatched", reason: "ambiguous" };
   if (targets.length === 1)
-    return { kind: "matched", target: targets[0] };
+    return { kind: "matched", target: people.length === 1 ? await towardsTheVisitOwing(tx, targets[0].patientId) : targets[0] };
   return { kind: "unmatched", reason: "no_candidate" };
+}
+
+/**
+ * Where money naming only its patient goes (decided 2026-11-24): towards their
+ * open outpatient visit or emergency attendance when exactly one has money
+ * due, as the cashier's list counts it, so it settles that visit's bills
+ * oldest first and the rest waits on it as a deposit. With none owing, or
+ * more than one, it is credit on their account, for a person to place.
+ */
+async function towardsTheVisitOwing(tx: AppDb, patientId: string): Promise<PaymentTarget> {
+  const open = await tx
+    .select({ id: encounters.id })
+    .from(encounters)
+    .where(and(eq(encounters.patientId, patientId), eq(encounters.status, "open"), inArray(encounters.kind, ["opd", "emergency"])));
+  const owing = [...await withMoneyDue(tx, open.map(visit => visit.id))];
+  return owing.length === 1 ? { patientId, encounterId: owing[0] } : { patientId };
 }
 
 /**

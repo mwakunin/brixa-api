@@ -96,6 +96,20 @@ async function billed(patientId: string) {
   return invoiceId as string;
 }
 
+/** A patient's open visit of `kind` with a finalised KES 508 bill, still owed. */
+async function owing(patientId: string, kind: "opd" | "emergency" = "opd") {
+  const encounterId = (await (await call("POST", "/encounters", h.facility.id, h.nurse, { patientId, kind })).json()).id as string;
+  for (const [item, quantity] of [[h.items.consultation, "1"], [h.items.tablet, "3"]])
+    await call("POST", `/encounters/${encounterId}/charges`, h.facility.id, h.clerk, { billableItemId: item, quantity, reason: "Before P3" });
+  const invoiceId = (await (await call("POST", `/encounters/${encounterId}/invoices`, h.facility.id, h.clerk, { kind: "final" })).json()).id as string;
+  await call("POST", `/invoices/${invoiceId}/finalise`, h.facility.id, h.clerk);
+  return { encounterId, invoiceId };
+}
+
+async function opNumberOf(patientId: string): Promise<string> {
+  return (await pool.query("SELECT number FROM patient_numbers WHERE patient_id = $1 AND kind = 'outpatient'", [patientId])).rows[0].number;
+}
+
 const invoice = async (id: string) => (await call("GET", `/invoices/${id}`, h.facility.id, h.finance)).json();
 async function checkoutOfExchange(id: string) {
   const [row] = await db.select({ checkout: stkCheckoutId(gatewayExchanges.response) }).from(gatewayExchanges).where(eq(gatewayExchanges.id, id));
@@ -177,6 +191,34 @@ describe("paybill payments", () => {
     const credit = await paymentOf("SKOPD00001");
     expect(credit).toMatchObject({ encounterId: null });
     expect((await (await call("GET", `/patients/${walkIn}/account`, h.facility.id, h.cashier)).json()).creditCents).toBe(60_000);
+  });
+
+  it("naming a patient whose one open visit owes pay towards it: its bills, then a deposit on it", async () => {
+    const patientId = await h.patient();
+    const { encounterId, invoiceId } = await owing(patientId);
+
+    await post("/c2b/confirmation", confirmation({ TransID: "SKOWE00001", TransAmount: "600.00", BillRefNumber: await opNumberOf(patientId) }));
+
+    expect(await paymentOf("SKOWE00001")).toMatchObject({ encounterId });
+    expect(await invoice(invoiceId)).toMatchObject({ paidCents: 50_800, balanceCents: 0 });
+    // Paid beyond what the visit owes: the rest waits on the visit, for its next bill.
+    const account = await (await call("GET", `/patients/${patientId}/account`, h.facility.id, h.cashier)).json();
+    expect(account.credit).toEqual([expect.objectContaining({ encounterId, unallocatedCents: 9_200 })]);
+  });
+
+  it("naming a patient with no open visit that owes, or two, are credit for a person to place", async () => {
+    const quiet = await h.patient();
+    // Open, with nothing charged yet: nothing is owed on it.
+    await call("POST", "/encounters", h.facility.id, h.nurse, { patientId: quiet, kind: "opd" });
+    const both = await h.patient();
+    await owing(both, "opd");
+    await owing(both, "emergency");
+
+    await post("/c2b/confirmation", confirmation({ TransID: "SKQUIET001", BillRefNumber: await opNumberOf(quiet) }));
+    await post("/c2b/confirmation", confirmation({ TransID: "SKBOTH0001", BillRefNumber: await opNumberOf(both) }));
+
+    expect(await paymentOf("SKQUIET001")).toMatchObject({ encounterId: null });
+    expect(await paymentOf("SKBOTH0001")).toMatchObject({ encounterId: null });
   });
 
   it("matching nothing wait in the queue, where a biller places them and finance sets them aside", async () => {
@@ -396,6 +438,24 @@ describe("m-Pesa prompts", () => {
 
     expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).toMatchObject({ status: "completed", receiptNumber: "SKVISIT001" });
     expect(await db.select().from(payments)).toHaveLength(1);
+  });
+
+  it("for an outpatient visit that owes complete their prompt when the paybill confirmation paid towards the visit first", async () => {
+    await setUp();
+    const patientId = await h.patient();
+    const { encounterId, invoiceId } = await owing(patientId);
+    const request = await (await prompt({ patientId, phone: "0712345678", amountCents: 50_800, encounterId })).json();
+    daraja();
+    await drainOutbox();
+
+    // The prompt shows the patient's number; the visit is the patient's one that owes, so the confirmation pays it.
+    await post("/c2b/confirmation", confirmation({ TransID: "SKVISIT002", TransAmount: "508.00", BillRefNumber: await opNumberOf(patientId) }));
+    expect(await paymentOf("SKVISIT002")).toMatchObject({ encounterId });
+    await paid("ws_CO_1", "SKVISIT002", 508);
+
+    expect(await (await call("GET", `/mpesa/stk/${request.id}`, h.facility.id, h.cashier)).json()).toMatchObject({ status: "completed", receiptNumber: "SKVISIT002" });
+    expect(await db.select().from(payments)).toHaveLength(1);
+    expect(await invoice(invoiceId)).toMatchObject({ balanceCents: 0 });
   });
 
   it("close their prompt when the paybill confirmation placed a different amount first", async () => {
